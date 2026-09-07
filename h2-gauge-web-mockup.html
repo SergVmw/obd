@@ -52,6 +52,7 @@
     .pid-table{width:100%;border-collapse:collapse;font-size:11px}.pid-table td,.pid-table th{padding:10px 9px;border-bottom:1px solid #21302c;text-align:left}.pid-table th{color:#789087;font-size:9px;text-transform:uppercase;letter-spacing:.08em}.pid-table td:last-child{text-align:right}.ok{color:var(--green)}.maybe{color:var(--amber)}
     .advanced{display:none}.show-advanced .advanced{display:block}.advanced-tag{display:inline-block;border:1px solid #5a4821;color:#e3bd6c;border-radius:6px;padding:3px 5px;font-size:8px;text-transform:uppercase;letter-spacing:.08em;margin-left:7px;vertical-align:1px}
     .firmware{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.firmware div{padding:13px;border-radius:12px;border:1px solid #283934;background:#0a1412}.firmware span{display:block;color:var(--muted);font-size:9px;margin-bottom:5px;text-transform:uppercase}.firmware b{font-size:12px}
+    .ota-box{margin-top:13px;padding:13px;border:1px solid #283934;background:#091310;border-radius:13px}.ota-file{display:flex;justify-content:space-between;gap:12px;align-items:center;color:#b8cbc5;font-size:11px}.ota-file span:last-child{color:var(--muted);white-space:nowrap}.progress{height:7px;margin-top:12px;background:#1b2824;border-radius:999px;overflow:hidden}.progress-bar{width:0;height:100%;background:linear-gradient(90deg,#38d98d,#75f2b5);border-radius:inherit;transition:width .18s}.ota-state{display:flex;justify-content:space-between;margin-top:7px;color:var(--muted);font-size:9px}.btn:disabled{opacity:.42;cursor:not-allowed}
     .actions{position:sticky;bottom:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-top:1px solid #283833;background:rgba(9,18,16,.94);backdrop-filter:blur(15px)}.actions-left{color:#81958f;font-size:10px}.actions-right{display:flex;gap:8px}
     .toast{position:fixed;left:50%;bottom:24px;z-index:100;transform:translate(-50%,20px);background:#e5fff2;color:#082117;padding:11px 16px;border-radius:12px;font-size:12px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;box-shadow:0 14px 40px rgba(0,0,0,.4)}.toast.show{opacity:1;transform:translate(-50%,0)}
     .file-label{display:inline-flex;align-items:center}.file-label input{display:none}
@@ -158,7 +159,7 @@
         <div class="section">
           <h3 class="section-title">Расчёт</h3>
           <div class="form-grid">
-            <div class="field full"><label for="fuelSource">Источник расхода</label><select id="fuelSource"><option value="auto">Автоматически: Fuel Rate → MAF</option><option value="pid5e">Fuel Rate · PID 5E</option><option value="maf">Расчёт по MAF · PID 10</option><option value="custom">Фирменный CAN-параметр</option></select></div>
+            <div class="field full"><label for="fuelSource">Источник расхода</label><select id="fuelSource"><option value="auto">Авто: бензин PID 5E/MAF, LPG по MAF</option><option value="pid5e">Engine Fuel Rate · PID 5E</option><option value="maf">Расчёт по MAF · PID 10</option><option value="haval_can">Фирменный CAN Haval · экспериментально</option><option value="brc_kline">BRC K-Line · экспериментально</option><option value="speed_density">MAP/IAT/RPM · резервный расчёт</option></select></div>
             <div class="field"><label for="fuelCorrection">Коэффициент коррекции</label><input id="fuelCorrection" type="number" min="0.5" max="1.5" step="0.001" value="1.000"></div>
             <div class="field"><label for="fuelDensity">Плотность бензина, г/л</label><input id="fuelDensity" type="number" min="680" max="800" step="1" value="745"></div>
             <div class="field"><label for="switchSpeed">Переход на л/100 км</label><select id="switchSpeed"><option>3 км/ч</option><option selected>5 км/ч</option><option>10 км/ч</option></select></div>
@@ -197,6 +198,15 @@
             <div class="field"><label for="lpgAverage">Средний расход</label><select id="lpgAverage"><option selected>Раздельно: газ и бензин</option><option>Общий бензиновый эквивалент</option><option>Только активное топливо</option></select></div>
             <div class="field"><label for="lpgUnits">Расход газа</label><select id="lpgUnits"><option selected>л/100 км</option><option>Бензиновый эквивалент</option></select></div>
           </div>
+        </div>
+        <div class="section">
+          <h3 class="section-title">Калибровка LPG по заправке</h3>
+          <div class="form-grid">
+            <div class="field"><label for="lpgCalculated">Рассчитано прибором, л</label><input id="lpgCalculated" type="number" min="1" step="0.1" value="38.2"></div>
+            <div class="field"><label for="lpgActual">Заправлено фактически, л</label><input id="lpgActual" type="number" min="1" step="0.1" value="42.1"></div>
+          </div>
+          <div class="btn-row"><button class="btn" id="calculateLpgCorrection">Рассчитать коэффициент LPG</button></div>
+          <div class="callout" style="margin-top:13px"><strong>Формула:</strong> новый коэффициент = текущий коэффициент × фактические литры / рассчитанные литры. Коэффициент умножает расчётный расход, а не прибавляется к нему.</div>
         </div>
         <div class="section">
           <h3 class="section-title">Ограничения сигнала клапана</h3>
@@ -283,8 +293,13 @@
         </div>
         <div class="section">
           <h3 class="section-title">Обновление прошивки</h3>
-          <div class="callout"><strong>Локальное OTA:</strong> файл прошивки загружается напрямую в устройство. Интернет для обновления не требуется.</div>
-          <div class="btn-row"><label class="btn file-label">Выбрать файл .bin<input type="file" accept=".bin"></label></div>
+          <div class="callout"><strong>Локальное OTA:</strong> файл прошивки загружается в резервный раздел. После проверки устройство перезапустится с новой версией. Интернет не требуется.</div>
+          <div class="ota-box">
+            <div class="ota-file"><span id="otaFileName">Файл не выбран</span><span id="otaFileSize">—</span></div>
+            <div class="progress"><div class="progress-bar" id="otaProgress"></div></div>
+            <div class="ota-state"><span id="otaState">Ожидание файла .bin</span><span id="otaPercent">0%</span></div>
+          </div>
+          <div class="btn-row"><label class="btn file-label">Выбрать файл .bin<input id="firmwareFile" type="file" accept=".bin,application/octet-stream"></label><button class="btn primary" id="uploadFirmware" disabled>Установить обновление</button></div>
         </div>
         <div class="section">
           <h3 class="section-title">Опасная зона</h3>
@@ -379,6 +394,7 @@
     $('#expertMode').addEventListener('change',e=>$('#tab-obd').classList.toggle('show-advanced',e.target.checked));
     $('#captureBaro').addEventListener('click',()=>{ $('#fixedBaro').value='99.2';markDirty();showToast('BARO принято: 99.2 кПа') });
     $('#calculateCorrection').addEventListener('click',()=>{const calc=num('calculatedFuel'),actual=num('actualFuel');if(calc>0&&actual>0){const k=num('fuelCorrection')*actual/calc;$('#fuelCorrection').value=k.toFixed(3);markDirty();showToast('Коэффициент рассчитан: '+k.toFixed(3))}});
+    $('#calculateLpgCorrection').addEventListener('click',()=>{const calc=num('lpgCalculated'),actual=num('lpgActual');if(calc>0&&actual>0){const k=num('lpgCorrection')*actual/calc;$('#lpgCorrection').value=k.toFixed(3);markDirty();showToast('Коэффициент LPG рассчитан: '+k.toFixed(3))}});
     $('#scanPids').addEventListener('click',e=>{e.target.disabled=true;e.target.textContent='Поиск…';setTimeout(()=>{const cells=$$('#pidBody .maybe');cells.forEach((c,i)=>{c.textContent=i?'Не поддерживается':'Доступен';c.className=i?'maybe':'ok'});e.target.disabled=false;e.target.textContent='Повторить поиск PID';showToast('Поиск завершён: найдено 19 PID')},1200)});
     $('#applyBtn').addEventListener('click',()=>showToast('Настройки применены к предпросмотру'));
     $('#saveBtn').addEventListener('click',()=>{const data=JSON.stringify(collectConfig());try{localStorage.setItem('h2GaugeConfig',data)}catch(e){}savedSnapshot=data;dirty=false;$('#dirtyState').textContent='Конфигурация сохранена';showToast('Настройки сохранены')});
@@ -386,6 +402,16 @@
     $('#exportConfig').addEventListener('click',()=>{const blob=new Blob([JSON.stringify(collectConfig(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='h2-gauge-config.json';a.click();URL.revokeObjectURL(a.href);showToast('Конфигурация экспортирована')});
     $('#importConfig').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{applyConfig(JSON.parse(r.result));markDirty();showToast('Конфигурация импортирована')}catch(err){showToast('Ошибка файла конфигурации')}};r.readAsText(f)});
     $('#rebootDevice').addEventListener('click',()=>showToast('Команда перезагрузки отправлена'));
+    let selectedFirmware=null,otaTimer;
+    $('#firmwareFile').addEventListener('change',e=>{
+      selectedFirmware=e.target.files[0]||null;clearInterval(otaTimer);$('#otaProgress').style.width='0%';$('#otaPercent').textContent='0%';
+      if(selectedFirmware){$('#otaFileName').textContent=selectedFirmware.name;$('#otaFileSize').textContent=(selectedFirmware.size/1024/1024).toFixed(2)+' МБ';$('#otaState').textContent='Готово к загрузке';$('#uploadFirmware').disabled=false}
+      else{$('#otaFileName').textContent='Файл не выбран';$('#otaFileSize').textContent='—';$('#otaState').textContent='Ожидание файла .bin';$('#uploadFirmware').disabled=true}
+    });
+    $('#uploadFirmware').addEventListener('click',()=>{
+      if(!selectedFirmware)return;let p=0;$('#uploadFirmware').disabled=true;$('#otaState').textContent='Загрузка в резервный раздел…';
+      otaTimer=setInterval(()=>{p=Math.min(100,p+Math.ceil(Math.random()*9));$('#otaProgress').style.width=p+'%';$('#otaPercent').textContent=p+'%';if(p===100){clearInterval(otaTimer);$('#otaState').textContent='Проверка прошивки и подготовка перезапуска…';setTimeout(()=>{showToast('Макет: обновление проверено, устройство перезапускается');$('#otaState').textContent='Обновление готово';$('#uploadFirmware').disabled=false},900)}},180)
+    });
     $('#factoryReset').addEventListener('click',()=>{if(confirm('Вернуть заводские настройки?')){applyConfig(defaults);markDirty();showToast('Заводские значения восстановлены')}});
     try{const stored=localStorage.getItem('h2GaugeConfig');if(stored){savedSnapshot=stored;applyConfig(JSON.parse(stored))}else{applyConfig(defaults)}}catch(e){applyConfig(defaults)}
     savedSnapshot=savedSnapshot||JSON.stringify(collectConfig());syncOutputs();drawGauge();
