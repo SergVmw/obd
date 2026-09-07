@@ -123,7 +123,7 @@
             <label class="screen-item"><input type="checkbox" checked disabled> Главный экран</label>
             <label class="screen-item"><input id="pageFuel" type="checkbox" checked> Расход топлива</label>
             <label class="screen-item"><input id="pageTemp" type="checkbox" checked> Температуры</label>
-            <label class="screen-item"><input id="pageDiag" type="checkbox"> Диагностика</label>
+            <label class="screen-item" title="Добавляет служебную страницу OBD в цикл переключения экранов"><input id="pageDiag" type="checkbox"> Служебный экран OBD</label>
           </div>
           <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>Показывать пиковый наддув</b><span>Тонкая отметка максимального значения на шкале</span></div><label class="switch"><input id="peakEnabled" type="checkbox" checked><span class="slider"></span></label></div>
         </div>
@@ -187,7 +187,7 @@
             <div class="field"><label>Фильтрация сигнала <output id="lpgDebounceOut">800 мс</output></label><input id="lpgDebounce" type="range" min="100" max="3000" step="100" value="800"></div>
             <div class="field"><label for="lpgOffDelay">Задержка отключения</label><select id="lpgOffDelay"><option>0 секунд</option><option selected>1 секунда</option><option>2 секунды</option><option>5 секунд</option></select></div>
           </div>
-          <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>Показывать режим на главном экране</b><span>Зелёный LPG или янтарный 95 возле верхней части шкалы</span></div><label class="switch"><input id="lpgBadge" type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>Показывать режим на главном экране</b><span>Зелёный LPG или янтарный 95 в нижней строке рядом с OBD</span></div><label class="switch"><input id="lpgBadge" type="checkbox" checked><span class="slider"></span></label></div>
         </div>
         <div class="section">
           <h3 class="section-title">Раздельный учёт топлива</h3>
@@ -355,11 +355,17 @@
       for(let i=0;i<=10;i++){const vv=min+(max-min)*i/10,a=angleFor(vv,min,max),major=i%2===0,r1=major?89:92,r2=major?96:96;ctx.beginPath();ctx.moveTo(120+Math.cos(a)*r1,120+Math.sin(a)*r1);ctx.lineTo(120+Math.cos(a)*r2,120+Math.sin(a)*r2);ctx.strokeStyle='rgba(218,238,230,.45)';ctx.lineWidth=major?1.5:1;ctx.stroke()}
       if(val('peakEnabled')){const peak=Math.min(max,Math.max(v,.94)),a=angleFor(peak,min,max);ctx.beginPath();ctx.moveTo(120+Math.cos(a)*84,120+Math.sin(a)*84);ctx.lineTo(120+Math.cos(a)*96,120+Math.sin(a)*96);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke()}
       ctx.textAlign='center';ctx.fillStyle='rgba(198,221,213,.82)';ctx.font='600 11px Inter,Arial';ctx.fillText('13.9 V',120,37);
-      if(val('lpgEnabled')&&val('lpgBadge')){const gas=previewFuel==='lpg',badgeColor=gas?boost:'#ffbd59';ctx.beginPath();ctx.roundRect(27,28,32,16,7);ctx.fillStyle=cssColor(badgeColor,.16);ctx.fill();ctx.strokeStyle=cssColor(badgeColor,.48);ctx.lineWidth=1;ctx.stroke();ctx.fillStyle=badgeColor;ctx.font='700 8px Inter,Arial';ctx.fillText(gas?'LPG':'95',43,39)}
       ctx.fillStyle=text;ctx.font='700 43px Inter,Arial';ctx.fillText((v>=0?'+':'')+v.toFixed(2),120,113);ctx.fillStyle='rgba(174,198,190,.78)';ctx.font='700 10px Inter,Arial';ctx.fillText('BAR',120,131);
       ctx.textAlign='left';ctx.fillStyle=text;ctx.font='700 19px Inter,Arial';ctx.fillText('9.6',55,174);ctx.font='600 8px Inter,Arial';ctx.fillStyle='rgba(149,174,166,.72)';ctx.fillText(v<.02?'Л/Ч':'ТЕКУЩ.',55,188);
       ctx.textAlign='right';ctx.fillStyle=text;ctx.font='700 19px Inter,Arial';ctx.fillText('8.1',185,174);ctx.font='600 8px Inter,Arial';ctx.fillStyle='rgba(149,174,166,.72)';ctx.fillText('СРЕДН.',185,188);
-      ctx.textAlign='center';ctx.fillStyle=boost;ctx.beginPath();ctx.arc(120,211,3,0,Math.PI*2);ctx.fill();ctx.font='600 7px Inter,Arial';ctx.fillStyle='rgba(128,155,146,.65)';ctx.fillText('OBD',120,224);
+      ctx.textAlign='center';
+      if(val('lpgEnabled')&&val('lpgBadge')){
+        const gas=previewFuel==='lpg',badgeColor=gas?boost:'#ffbd59';
+        ctx.beginPath();ctx.roundRect(75,202,36,17,8);ctx.fillStyle=cssColor(badgeColor,.16);ctx.fill();ctx.strokeStyle=cssColor(badgeColor,.48);ctx.lineWidth=1;ctx.stroke();ctx.fillStyle=badgeColor;ctx.font='700 8px Inter,Arial';ctx.fillText(gas?'LPG':'95',93,213);
+        ctx.fillStyle=boost;ctx.beginPath();ctx.arc(130,210,3,0,Math.PI*2);ctx.fill();ctx.textAlign='left';ctx.font='600 8px Inter,Arial';ctx.fillStyle='rgba(128,155,146,.72)';ctx.fillText('OBD',138,213);
+      }else{
+        ctx.fillStyle=boost;ctx.beginPath();ctx.arc(108,210,3,0,Math.PI*2);ctx.fill();ctx.textAlign='left';ctx.font='600 8px Inter,Arial';ctx.fillStyle='rgba(128,155,146,.72)';ctx.fillText('OBD',116,213);
+      }
       if(brightness<1){ctx.fillStyle=`rgba(0,0,0,${(1-brightness)*.72})`;ctx.fillRect(0,0,W,H)}
       $('#testValueLabel').textContent=(v>=0?'+':'')+v.toFixed(2)+' bar';
     }
