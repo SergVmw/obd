@@ -68,8 +68,11 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
 void DashboardUi::drawStartupLogo() {
   constexpr int16_t kLogoX = (240 - kHavalLogoWidth) / 2;
   constexpr int16_t kLogoY = (240 - kHavalLogoHeight) / 2;
-  constexpr uint8_t kFrames = 14;
+  constexpr uint8_t kFrames = 18;
+  constexpr uint32_t kFadeDurationMs = 1500;
+  constexpr uint32_t kTotalDurationMs = 2000;
   uint16_t line[kHavalLogoWidth];
+  const uint32_t startedAt = millis();
 
   // The image stays in Flash. Only one 432-byte scanline is held in RAM.
   tft_.setSwapBytes(true);
@@ -86,9 +89,16 @@ void DashboardUi::drawStartupLogo() {
       }
       tft_.pushImage(kLogoX, kLogoY + y, kHavalLogoWidth, 1, line);
     }
-    delay(55);
+
+    const uint32_t frameDeadline =
+        startedAt + kFadeDurationMs * frame / kFrames;
+    const int32_t waitMs = static_cast<int32_t>(frameDeadline - millis());
+    if (waitMs > 0) delay(waitMs);
   }
-  delay(450);
+
+  const int32_t remainingMs =
+      static_cast<int32_t>(startedAt + kTotalDurationMs - millis());
+  if (remainingMs > 0) delay(remainingMs);
   tft_.setSwapBytes(false);
 }
 

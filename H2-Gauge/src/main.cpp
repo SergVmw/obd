@@ -4,6 +4,7 @@
 #include "dashboard_ui.h"
 #include "input_manager.h"
 #include "obd_client.h"
+#include "pins.h"
 #include "service_portal.h"
 #include "telemetry.h"
 #include "version.h"
@@ -54,8 +55,13 @@ void updateDemoData(uint32_t now) {
 #endif
 
 void setup() {
+  // Keep the GC9A01 in hardware reset from the first application instruction.
+  // This hides the previous dashboard frame while ESP32 services are starting.
+  pinMode(Pins::TftReset, OUTPUT);
+  digitalWrite(Pins::TftReset, LOW);
+
   Serial.begin(115200);
-  delay(150);
+  delay(20);
   Serial.printf("\nH2 Gauge %s (%s)\n", H2G_FW_VERSION, H2G_BUILD_TARGET);
   Serial.printf("Flash: %u MB, free heap: %u bytes\n",
                 ESP.getFlashChipSize() / 1024 / 1024, ESP.getFreeHeap());
