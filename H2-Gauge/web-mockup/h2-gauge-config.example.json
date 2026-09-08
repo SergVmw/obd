@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "display": {
+    "theme": "classic",
+    "rotation": 0,
+    "brightnessDay": 82,
+    "brightnessNight": 26,
+    "startScreen": "main",
+    "autoReturnSec": 10,
+    "colors": {
+      "text": "#f2faf7",
+      "vacuum": "#5dc9e8",
+      "boost": "#5ef0a8",
+      "warning": "#ffbd59",
+      "danger": "#ff5f68"
+    },
+    "pages": {
+      "main": true,
+      "fuel": true,
+      "temperature": true,
+      "diagnostics": false
+    },
+    "peakEnabled": true,
+    "peakHoldSec": 5
+  },
+  "boost": {
+    "source": "obd_map",
+    "baroSource": "auto",
+    "fixedBaroKpa": 99.4,
+    "offsetBar": 0.0,
+    "minBar": -1.0,
+    "maxBar": 1.5,
+    "warningBar": 0.9,
+    "dangerBar": 1.15,
+    "mapRateHz": 10,
+    "smoothingMs": 250
+  },
+  "fuel": {
+    "source": "auto",
+    "fallback": "maf",
+    "correction": 1.0,
+    "densityGramPerLiter": 745,
+    "stoichiometricAfr": 14.7,
+    "switchSpeedKmh": 5,
+    "averageMode": "trip",
+    "saveTrip": true
+  },
+  "lpg": {
+    "enabled": true,
+    "stateSource": "valve_opto",
+    "inputPin": 34,
+    "activeLevel": "low",
+    "debounceMs": 800,
+    "offDelaySec": 1,
+    "showBadge": true,
+    "badgeGas": "LPG",
+    "badgePetrol": "95",
+    "separateFuelAverages": true,
+    "lpgCorrection": 1.0,
+    "petrolCorrection": 1.0,
+    "petrolAssistDetection": false,
+    "diagnostic": {
+      "ecu": "BRC Sequent 32 EVO OBD",
+      "physicalLayer": "k_line",
+      "protocol": "kwp2000",
+      "enabled": false,
+      "status": "protocol_data_ids_required"
+    }
+  },
+  "voltage": {
+    "source": "pid_42",
+    "correction": 1.0,
+    "warningLow": 11.8,
+    "warningHigh": 15.0,
+    "smoothingMs": 500
+  },
+  "controls": {
+    "buttonPin": 32,
+    "shortAction": "next_screen",
+    "longAction": "context",
+    "longPressSec": 1.8,
+    "serviceHoldSec": 5.0,
+    "lockLongActionsWhenMoving": true,
+    "movingThresholdKmh": 3,
+    "returnMain": true,
+    "serviceTimeoutMin": 15
+  },
+  "obd": {
+    "protocol": "iso_15765_4",
+    "autoDetect": true,
+    "bitrate": 500000,
+    "extendedId": false,
+    "requestId": "0x7DF",
+    "ecuResponseId": "auto",
+    "timeoutMs": 120,
+    "maxRequestsPerSecond": 30,
+    "pins": {
+      "tx": 16,
+      "rx": 17
+    }
+  },
+  "service": {
+    "deviceName": "H2 Gauge",
+    "apName": "H2-Gauge-4F2A",
+    "apPassword": "change-this-password",
+    "address": "192.168.4.1",
+    "captivePortal": true,
+    "allowOta": true,
+    "autoExit": true
+  }
+}
