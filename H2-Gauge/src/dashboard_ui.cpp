@@ -246,12 +246,13 @@ void DashboardUi::drawStatusRow(const TelemetryData& data,
 void DashboardUi::drawFuel(const TelemetryData& data,
                            const TelemetryEngine& engine,
                            const ConfigData& config, uint32_t now) {
+  char value[24];
+  snprintf(value, sizeof(value), "TRIP %.1f KM", engine.trip().totalDistanceKm);
   sprite_.setTextDatum(MC_DATUM);
   sprite_.setTextColor(kMuted, kBackground);
   sprite_.setFreeFont(FSSB9);
-  sprite_.drawString("FUEL / TRIP", 120, 28);
+  sprite_.drawString(value, 120, 28);
 
-  char value[24];
   sprite_.setTextColor(kWhite, kBackground);
   sprite_.setFreeFont(FSSB24);
   if (data.fuelValueValid) snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
@@ -266,11 +267,6 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   snprintf(value, sizeof(value), "%.2f L", engine.lpgLiters(config));
   drawValueCell(173, 153, value, "LPG", kGreen);
 
-  snprintf(value, sizeof(value), "TRIP %.1f KM", engine.trip().totalDistanceKm);
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
-  sprite_.setFreeFont(FSS9);
-  sprite_.drawString(value, 120, 205);
   drawStatusRow(data, config, now);
 }
 
