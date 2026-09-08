@@ -9,7 +9,9 @@
 - LPG state: защищённый вход клапана на GPIO34 (по умолчанию отключён)
 - Configuration: локальный Wi-Fi service portal
 
-## Статус revision 0.1.0
+## Статус revision 0.1.1
+
+Исправление 0.1.1: полноэкранный framebuffer переключён с RGB565 16-bit (115200 байт) на 8-bit (57600 байт), поскольку на ESP32-WROOM без PSRAM не удалось выделить один непрерывный 16-bit блок. В таблицу разделов добавлен Core Dump 64 КиБ.
 
 Реализовано:
 
@@ -157,7 +159,8 @@ pio run
 
 - APP0: 1.5 MiB
 - APP1: 1.5 MiB
-- LittleFS: 960 KiB
+- Core dump: 64 KiB
+- LittleFS: 896 KiB
 
 Обычный веб-OTA принимает только app image `firmware.bin`. Не загружать через него `bootloader.bin`, `partitions.bin` или merged image.
 

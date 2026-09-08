@@ -42,10 +42,16 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
   lastInteractionAt_ = millis();
 
   if (normalMode) {
-    sprite_.setColorDepth(16);
+    // A full 16-bit 240x240 sprite needs 115200 contiguous bytes and may fail
+    // on ESP32-WROOM without PSRAM. The 8-bit sprite needs 57600 bytes.
+    sprite_.setColorDepth(8);
     framebufferReady_ = sprite_.createSprite(240, 240) != nullptr;
     if (!framebufferReady_) {
-      Serial.println("[UI] framebuffer allocation failed");
+      Serial.printf("[UI] framebuffer allocation failed, free heap=%u\n",
+                    ESP.getFreeHeap());
+    } else {
+      Serial.printf("[UI] 8-bit framebuffer ready, free heap=%u\n",
+                    ESP.getFreeHeap());
     }
   }
 }
