@@ -6,7 +6,9 @@
     "brightnessDay": 82,
     "brightnessNight": 26,
     "startScreen": "main",
-    "autoReturnSec": 10,
+    "mainCenterValue": "boost",
+    "language": "ru",
+    "autoReturnSec": 5,
     "colors": {
       "text": "#f2faf7",
       "vacuum": "#5dc9e8",

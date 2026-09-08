@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui_font_cyrillic.h"
+
 // TFT_eSPI includes these GFXFF font objects when LOAD_GFXFF is enabled.
 #define FSS9   (&FreeSans9pt7b)
 #define FSS12  (&FreeSans12pt7b)

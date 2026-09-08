@@ -26,6 +26,18 @@ enum class BoostArcStyle : uint8_t {
   Solid = 1,
 };
 
+enum class MainCenterValue : uint8_t {
+  Boost = 0,
+  Speed = 1,
+  CurrentConsumption = 2,
+  AverageConsumption = 3,
+};
+
+enum class UiLanguage : uint8_t {
+  Russian = 0,
+  English = 1,
+};
+
 struct ConfigData {
   uint32_t magic;
   uint16_t schemaVersion;
@@ -34,6 +46,9 @@ struct ConfigData {
   uint8_t brightnessDay;
   uint8_t brightnessNight;
   uint8_t rotation;
+  // Packed to preserve the revision-2 NVS layout:
+  // bits 0..1 start page, 2..3 main center value, bit 4 UI language,
+  // bit 7 marks completion of the one-time packed-settings migration.
   uint8_t startPage;
   uint16_t autoReturnSec;
   bool pageFuel;
@@ -89,6 +104,25 @@ struct ConfigData {
   char deviceName[24];
   char apName[32];
   char apPassword[32];
+
+  uint8_t displayStartPage() const { return startPage & 0x03; }
+  void setDisplayStartPage(uint8_t page) {
+    startPage = (startPage & 0xFC) | (page & 0x03);
+  }
+  MainCenterValue mainCenterValue() const {
+    return static_cast<MainCenterValue>((startPage >> 2) & 0x03);
+  }
+  void setMainCenterValue(MainCenterValue value) {
+    startPage = (startPage & 0xF3) |
+                ((static_cast<uint8_t>(value) & 0x03) << 2);
+  }
+  UiLanguage uiLanguage() const {
+    return static_cast<UiLanguage>((startPage >> 4) & 0x01);
+  }
+  void setUiLanguage(UiLanguage language) {
+    startPage = (startPage & 0xEF) |
+                ((static_cast<uint8_t>(language) & 0x01) << 4);
+  }
 
   uint32_t checksum;
 };

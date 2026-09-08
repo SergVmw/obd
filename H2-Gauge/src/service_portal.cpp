@@ -144,6 +144,9 @@ void ServicePortal::sendConfig() {
   display["brightnessDay"] = c.brightnessDay;
   display["brightnessNight"] = c.brightnessNight;
   display["rotation"] = c.rotation;
+  display["startPage"] = c.displayStartPage();
+  display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
+  display["uiLanguage"] = static_cast<uint8_t>(c.uiLanguage());
   display["autoReturnSec"] = c.autoReturnSec;
   display["pageFuel"] = c.pageFuel;
   display["pageTemperature"] = c.pageTemperature;
@@ -222,6 +225,12 @@ void ServicePortal::receiveConfig() {
     c.brightnessDay = clampValue<int>(d["brightnessDay"] | c.brightnessDay, 10, 100);
     c.brightnessNight = clampValue<int>(d["brightnessNight"] | c.brightnessNight, 5, 80);
     c.rotation = clampValue<int>(d["rotation"] | c.rotation, 0, 3);
+    c.setDisplayStartPage(clampValue<int>(
+        d["startPage"] | c.displayStartPage(), 0, 3));
+    c.setMainCenterValue(static_cast<MainCenterValue>(clampValue<int>(
+        d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
+    c.setUiLanguage(static_cast<UiLanguage>(clampValue<int>(
+        d["uiLanguage"] | static_cast<int>(c.uiLanguage()), 0, 1)));
     c.autoReturnSec = clampValue<int>(d["autoReturnSec"] | c.autoReturnSec, 0, 120);
     c.pageFuel = d["pageFuel"] | c.pageFuel;
     c.pageTemperature = d["pageTemperature"] | c.pageTemperature;

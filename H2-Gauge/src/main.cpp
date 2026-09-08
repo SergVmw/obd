@@ -32,9 +32,16 @@ void enterServiceMode() {
   dashboard.releaseFramebuffer();
 
   if (servicePortal.begin()) {
-    dashboard.showService(servicePortal.ssid(), servicePortal.ip());
+    dashboard.showService(servicePortal.ssid(), servicePortal.ip(),
+                          configStore.data());
   } else {
-    dashboard.showMessage("SERVICE ERROR", "Wi-Fi AP failed", "Restart device");
+    if (configStore.data().uiLanguage() == UiLanguage::Russian) {
+      dashboard.showMessage("ОШИБКА СЕРВИСА", "WI-FI НЕ ЗАПУЩЕН",
+                            configStore.data(), "ПЕРЕЗАПУСТИТЕ");
+    } else {
+      dashboard.showMessage("SERVICE ERROR", "Wi-Fi AP failed",
+                            configStore.data(), "Restart device");
+    }
   }
 }
 

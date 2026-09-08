@@ -16,8 +16,10 @@ class DashboardUi {
   void setPage(uint8_t page) { page_ = page % 4; }
   uint8_t page() const { return page_; }
   void resetPeak() { peakBoost_ = -10.0f; }
-  void showService(const String& ssid, const String& ip);
-  void showMessage(const char* title, const char* line1, const char* line2 = nullptr);
+  void showService(const String& ssid, const String& ip,
+                   const ConfigData& config);
+  void showMessage(const char* title, const char* line1,
+                   const ConfigData& config, const char* line2 = nullptr);
   void releaseFramebuffer();
 
  private:
@@ -35,7 +37,8 @@ class DashboardUi {
   void drawStatusRow(const TelemetryData& data, const ConfigData& config,
                      uint32_t now);
   void drawValueCell(int16_t x, int16_t y, const char* value,
-                     const char* label, uint16_t color = TFT_WHITE);
+                     const char* label, const ConfigData& config,
+                     uint16_t color = TFT_WHITE);
   bool pageEnabled(uint8_t page, const ConfigData& config) const;
   static uint16_t boostColor(float boost, const ConfigData& config);
 

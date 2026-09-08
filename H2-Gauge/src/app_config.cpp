@@ -11,8 +11,11 @@ ConfigData ConfigStore::defaults() {
   c.brightnessDay = 82;
   c.brightnessNight = 26;
   c.rotation = 0;
-  c.startPage = 0;
-  c.autoReturnSec = 10;
+  c.startPage = 0x80;  // packed-display settings migration marker
+  c.setDisplayStartPage(0);
+  c.setMainCenterValue(MainCenterValue::Boost);
+  c.setUiLanguage(UiLanguage::Russian);
+  c.autoReturnSec = 5;
   c.pageFuel = true;
   c.pageTemperature = true;
   c.pageDiagnostics = false;
@@ -95,6 +98,13 @@ bool ConfigStore::begin() {
 
   if (!valid(config_)) {
     config_ = defaults();
+    save();
+  } else if ((config_.startPage & 0x80) == 0) {
+    // One-time migration from revisions <= 0.1.7 without changing the raw
+    // ConfigData size: preserve settings, enable the new packed options and
+    // change only the former default auto-return value from 10 to 5 seconds.
+    config_.startPage |= 0x80;
+    if (config_.autoReturnSec == 10) config_.autoReturnSec = 5;
     save();
   }
   return true;
