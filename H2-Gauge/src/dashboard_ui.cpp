@@ -9,6 +9,8 @@ namespace {
 constexpr uint16_t kBackground = 0x0841;
 constexpr uint16_t kPanel = 0x10E3;
 constexpr uint16_t kTrack = 0x2145;
+constexpr uint16_t kCarbonThread = 0x2945;
+constexpr uint16_t kCarbonEdge = 0x4208;
 constexpr uint16_t kMuted = 0x7C10;
 constexpr uint16_t kWhite = 0xEFFF;
 constexpr uint16_t kGreen = 0x5F75;
@@ -100,6 +102,22 @@ void DashboardUi::drawStartupLogo() {
   tft_.setSwapBytes(false);
 }
 
+void DashboardUi::drawCarbonBackground() {
+  sprite_.fillSprite(kBackground);
+
+  // Compact 4x16 px twill. Rows shift by four pixels to create the
+  // characteristic diagonal carbon weave without a large bitmap in RAM/Flash.
+  for (int16_t y = 0; y < 240; y += 4) {
+    const int16_t shift = ((y / 4) & 0x03) * 4 - 16;
+    const bool highlightRow = ((y / 4) & 0x03) == 0;
+    for (int16_t x = shift; x < 240; x += 16) {
+      sprite_.fillRect(x, y, 7, 3, kCarbonThread);
+      if (highlightRow) sprite_.drawFastHLine(x, y, 7, kCarbonEdge);
+      sprite_.fillRect(x + 8, y, 7, 3, kPanel);
+    }
+  }
+}
+
 void DashboardUi::releaseFramebuffer() {
   if (framebufferReady_) {
     sprite_.deleteSprite();
@@ -118,7 +136,7 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
     page_ = 0;
   }
 
-  sprite_.fillSprite(kBackground);
+  drawCarbonBackground();
   switch (page_) {
     case 1:
       drawFuel(data, engine, config, now);
@@ -243,7 +261,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
 
   char buffer[24];
   sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSS9);
   if (data.ecuVoltage.valid(now)) {
     snprintf(buffer, sizeof(buffer), "%.1f V", data.ecuVoltage.value);
@@ -252,7 +270,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   }
   sprite_.drawString(buffer, 120, 36);
 
-  sprite_.setTextColor(config.colorText, kBackground);
+  sprite_.setTextColor(config.colorText);
   sprite_.setFreeFont(FSSB24);
   if (data.mapKpa.valid(now)) {
     snprintf(buffer, sizeof(buffer), "%+.2f", data.filteredBoostBar);
@@ -262,7 +280,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   sprite_.drawString(buffer, 120, 102);
 
   sprite_.setFreeFont(FSSB9);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.drawString("BAR", 120, 132);
 
   char current[16];
@@ -284,10 +302,10 @@ void DashboardUi::drawMain(const TelemetryData& data,
 void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,
                                 const char* label, uint16_t color) {
   sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(color, kBackground);
+  sprite_.setTextColor(color);
   sprite_.setFreeFont(FSSB12);
   sprite_.drawString(value, x, y);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSS9);
   sprite_.drawString(label, x, y + 19);
 }
@@ -320,7 +338,7 @@ void DashboardUi::drawStatusRow(const TelemetryData& data,
 
   sprite_.fillCircle(config.lpgBadge ? 131 : 105, 211, 3, obdColor);
   sprite_.setTextDatum(ML_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSS9);
   sprite_.drawString("OBD", config.lpgBadge ? 139 : 113, 211);
 }
@@ -331,16 +349,16 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   char value[24];
   snprintf(value, sizeof(value), "TRIP %.1f KM", engine.trip().totalDistanceKm);
   sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSSB9);
   sprite_.drawString(value, 120, 28);
 
-  sprite_.setTextColor(config.colorText, kBackground);
+  sprite_.setTextColor(config.colorText);
   sprite_.setFreeFont(FSSB24);
   if (data.fuelValueValid) snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
   else strlcpy(value, "--.-", sizeof(value));
   sprite_.drawString(value, 120, 82);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSS9);
   sprite_.drawString(data.consumptionIsPerHour ? "L/H" : "L/100 KM", 120, 114);
 
@@ -355,7 +373,7 @@ void DashboardUi::drawFuel(const TelemetryData& data,
 void DashboardUi::drawTemperatures(const TelemetryData& data,
                                    const ConfigData& config, uint32_t now) {
   sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSSB9);
   sprite_.drawString("ENGINE", 120, 25);
 
@@ -382,7 +400,7 @@ void DashboardUi::drawTemperatures(const TelemetryData& data,
 void DashboardUi::drawDiagnostics(const TelemetryData& data,
                                   const ConfigData& config, uint32_t now) {
   sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.setFreeFont(FSSB9);
   sprite_.drawString("OBD SERVICE", 120, 25);
 
@@ -390,10 +408,9 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
   sprite_.setTextDatum(ML_DATUM);
   sprite_.setFreeFont(FSS9);
   sprite_.setTextColor(data.obdConnected(now) ? config.colorBoost
-                                               : config.colorDanger,
-                       kBackground);
+                                               : config.colorDanger);
   sprite_.drawString(data.obdConnected(now) ? "CAN CONNECTED" : "CAN OFFLINE", 35, 63);
-  sprite_.setTextColor(config.colorText, kBackground);
+  sprite_.setTextColor(config.colorText);
   snprintf(line, sizeof(line), "ECU: 0x%03X", data.ecuResponseId);
   sprite_.drawString(line, 35, 91);
   snprintf(line, sizeof(line), "Responses: %lu", static_cast<unsigned long>(data.obdResponseCount));
@@ -402,7 +419,7 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
   sprite_.drawString(line, 35, 147);
   snprintf(line, sizeof(line), "CAN errors: %lu", static_cast<unsigned long>(data.canErrorCount));
   sprite_.drawString(line, 35, 175);
-  sprite_.setTextColor(kMuted, kBackground);
+  sprite_.setTextColor(kMuted);
   sprite_.drawString("Read-only Mode 01", 35, 205);
 }
 

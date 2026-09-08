@@ -364,7 +364,7 @@
       const min=num('boostMin')||-1,max=num('boostMax')||1.5,v=Math.max(min,Math.min(max,num('testValue'))),warn=num('warningBoost'),danger=num('dangerBoost');
       const text=val('colorText')||'#f2faf7',vac=val('colorVacuum')||'#5dc9e8',boost=val('colorBoost')||'#5ef0a8',red=val('colorDanger')||'#ff5f68';
       const brightness=(previewMode==='day'?num('dayBrightness'):num('nightBrightness'))/100;
-      ctx.clearRect(0,0,W,H);const bg=ctx.createRadialGradient(95,74,8,120,120,125);bg.addColorStop(0,'#101b19');bg.addColorStop(.58,'#060c0b');bg.addColorStop(1,'#020504');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+      ctx.clearRect(0,0,W,H);const bg=ctx.createRadialGradient(95,74,8,120,120,125);bg.addColorStop(0,'#101b19');bg.addColorStop(.58,'#060c0b');bg.addColorStop(1,'#020504');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);for(let yy=0;yy<240;yy+=4){const shift=(yy/4%4)*4-16,hi=yy/4%4===0;for(let xx=shift;xx<240;xx+=16){ctx.fillStyle='rgba(42,48,46,.42)';ctx.fillRect(xx,yy,7,3);if(hi){ctx.fillStyle='rgba(82,92,89,.30)';ctx.fillRect(xx,yy,7,1)}ctx.fillStyle='rgba(3,7,6,.48)';ctx.fillRect(xx+8,yy,7,3)}}
       const aMin=angleFor(min,min,max),aZero=angleFor(0,min,max),aWarn=angleFor(warn,min,max),aDanger=angleFor(danger,min,max),aMax=angleFor(max,min,max);
       ctx.setLineDash(val('arcStyle')==='segmented'?[2,2.4]:[]);
       arc(101,aMin,aMax,'#172420',8);arc(101,aMin,aZero,cssColor(vac,.23),8);arc(101,aZero,aWarn,cssColor(boost,.23),8);arc(101,aWarn,aDanger,'rgba(255,189,89,.22)',8);arc(101,aDanger,aMax,cssColor(red,.26),8);

@@ -30,6 +30,7 @@ class DashboardUi {
   void drawDiagnostics(const TelemetryData& data, const ConfigData& config,
                        uint32_t now);
   void drawStartupLogo();
+  void drawCarbonBackground();
   void drawGaugeArc(float value, const ConfigData& config);
   void drawStatusRow(const TelemetryData& data, const ConfigData& config,
                      uint32_t now);
