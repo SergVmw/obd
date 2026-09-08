@@ -1,28 +1,63 @@
 #include <Arduino.h>
+#include <esp_log.h>
+#include <esp_sleep.h>
+#include "driver/gpio.h"
 
 #include "app_config.h"
+#include "can_monitor.h"
 #include "dashboard_ui.h"
 #include "input_manager.h"
 #include "obd_client.h"
 #include "pins.h"
+#include "power_manager.h"
 #include "service_portal.h"
 #include "telemetry.h"
 #include "version.h"
+
+namespace {
+constexpr const char* kTag = "MAIN";
+}
 
 ConfigStore configStore;
 TelemetryData telemetry;
 TripState trip;
 TripStore tripStore;
 TelemetryEngine telemetryEngine(telemetry);
-ObdClient obdClient(telemetry, configStore.data());
+CanMonitor canMonitor;
+ObdClient obdClient(telemetry, configStore.data(), canMonitor);
 DashboardUi dashboard;
 OneButton button;
 LpgValveInput lpgInput;
-ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore);
+PowerManager powerManager;
+ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
+                            canMonitor);
 
 bool serviceMode = false;
 uint32_t lastTripSaveAt = 0;
 uint32_t lastMemoryLogAt = 0;
+
+[[noreturn]] void enterLowVoltageSleep() {
+  ESP_LOGW(kTag, "Entering low-voltage deep sleep at %.2f V",
+           telemetry.ecuVoltage.value);
+  if (!tripStore.save(trip)) {
+    ESP_LOGE(kTag, "Forced trip checkpoint failed");
+  }
+
+  obdClient.shutdown();
+  WiFi.mode(WIFI_OFF);
+  dashboard.prepareForSleep();
+
+  // GPIO32 is an RTC-capable input and the button is active LOW.
+  esp_sleep_enable_timer_wakeup(PowerManager::kTimerWakeupUs);
+  esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(Pins::Button), 0);
+
+  // Keep the display controller in reset for the whole deep-sleep interval.
+  gpio_hold_en(static_cast<gpio_num_t>(Pins::TftReset));
+  gpio_deep_sleep_hold_en();
+  delay(20);
+  esp_deep_sleep_start();
+  __builtin_unreachable();
+}
 
 void enterServiceMode() {
   if (serviceMode) return;
@@ -62,16 +97,18 @@ void updateDemoData(uint32_t now) {
 #endif
 
 void setup() {
-  // Keep the GC9A01 in hardware reset from the first application instruction.
-  // This hides the previous dashboard frame while ESP32 services are starting.
+  // Release the deep-sleep hold, then immediately keep GC9A01 in reset. This
+  // hides the previous dashboard frame while ESP32 services are starting.
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(static_cast<gpio_num_t>(Pins::TftReset));
   pinMode(Pins::TftReset, OUTPUT);
   digitalWrite(Pins::TftReset, LOW);
 
   Serial.begin(115200);
   delay(20);
-  Serial.printf("\nH2 Gauge %s (%s)\n", H2G_FW_VERSION, H2G_BUILD_TARGET);
-  Serial.printf("Flash: %u MB, free heap: %u bytes\n",
-                ESP.getFlashChipSize() / 1024 / 1024, ESP.getFreeHeap());
+  ESP_LOGI(kTag, "H2 Gauge %s (%s)", H2G_FW_VERSION, H2G_BUILD_TARGET);
+  ESP_LOGI(kTag, "Flash=%u MB, free heap=%u bytes",
+           ESP.getFlashChipSize() / 1024 / 1024, ESP.getFreeHeap());
 
   configStore.begin();
   tripStore.begin(trip);
@@ -82,13 +119,12 @@ void setup() {
   button.begin();
   dashboard.begin(configStore.data(), !bootService);
 
-  if (bootService) {
-    enterServiceMode();
-  } else {
 #ifndef H2G_DEMO_MODE
-    obdClient.begin();
-#endif
+  if (!obdClient.begin()) {
+    ESP_LOGE(kTag, "CAN/OBD initialization failed");
   }
+#endif
+  if (bootService) enterServiceMode();
 
   lastTripSaveAt = millis();
   lastMemoryLogAt = millis();
@@ -100,6 +136,10 @@ void loop() {
   const ButtonEvent event = button.takeEvent();
 
   if (serviceMode) {
+#ifndef H2G_DEMO_MODE
+    // Requests are paused, but RX stays active for the bounded CAN Monitor.
+    obdClient.loop(now);
+#endif
     servicePortal.loop();
     if (event == ButtonEvent::ServiceHold) {
       ESP.restart();
@@ -116,6 +156,9 @@ void loop() {
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
+  if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
+    enterLowVoltageSleep();
+  }
   dashboard.render(now, telemetry, telemetryEngine, configStore.data());
 
   if (event == ButtonEvent::ShortPress) {
@@ -141,11 +184,11 @@ void loop() {
   }
 
   if (now - lastMemoryLogAt >= 30000UL) {
-    Serial.printf("[SYS] heap=%u min=%u OBD=%s responses=%lu timeouts=%lu\n",
-                  ESP.getFreeHeap(), ESP.getMinFreeHeap(),
-                  telemetry.obdConnected(now) ? "yes" : "no",
-                  static_cast<unsigned long>(telemetry.obdResponseCount),
-                  static_cast<unsigned long>(telemetry.obdTimeoutCount));
+    ESP_LOGI(kTag, "heap=%u min=%u OBD=%s responses=%lu timeouts=%lu",
+             ESP.getFreeHeap(), ESP.getMinFreeHeap(),
+             telemetry.obdConnected(now) ? "yes" : "no",
+             static_cast<unsigned long>(telemetry.obdResponseCount),
+             static_cast<unsigned long>(telemetry.obdTimeoutCount));
     lastMemoryLogAt = now;
   }
 

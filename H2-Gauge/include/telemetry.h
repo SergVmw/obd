@@ -33,6 +33,9 @@ struct TelemetryData {
   TimedFloat mafGps;
   TimedFloat fuelRateLph;
   TimedFloat equivalenceRatio;
+  TimedFloat throttlePercent;
+  TimedFloat shortFuelTrimPercent;
+  TimedFloat longFuelTrimPercent;
   TimedFloat ecuVoltage;
   TimedFloat coolantC;
 
@@ -51,6 +54,9 @@ struct TelemetryData {
   float currentConsumption = 0.0f;
   bool consumptionIsPerHour = true;
   bool fuelValueValid = false;
+  bool dfcoActive = false;
+  float fuelTrimSumPercent = 0.0f;
+  bool fuelTrimWarning = false;
   FuelMode fuelMode = FuelMode::Unknown;
 
   bool obdConnected(uint32_t now) const {
@@ -105,6 +111,7 @@ class TelemetryEngine {
   uint32_t lastUpdateAt_ = 0;
   float startupBaroKpa_ = NAN;
   bool boostFilterInitialized_ = false;
+  uint32_t fuelTrimOutOfRangeSince_ = 0;
   uint32_t petrolTimeRemainderMs_ = 0;
   uint32_t lpgTimeRemainderMs_ = 0;
 };

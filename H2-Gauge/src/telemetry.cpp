@@ -116,9 +116,28 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
                                                       : FuelMode::Petrol;
   }
 
+  data_.fuelTrimWarning = false;
+  if (config.fuelTrimEnabled() && engineRunning &&
+      data_.fuelMode == FuelMode::Lpg &&
+      data_.shortFuelTrimPercent.valid(now) &&
+      data_.longFuelTrimPercent.valid(now)) {
+    data_.fuelTrimSumPercent = data_.shortFuelTrimPercent.value +
+                               data_.longFuelTrimPercent.value;
+    if (fabsf(data_.fuelTrimSumPercent) > 10.0f) {
+      if (fuelTrimOutOfRangeSince_ == 0) fuelTrimOutOfRangeSince_ = now;
+      data_.fuelTrimWarning = now - fuelTrimOutOfRangeSince_ >= 5000;
+    } else {
+      fuelTrimOutOfRangeSince_ = 0;
+    }
+  } else {
+    data_.fuelTrimSumPercent = 0.0f;
+    fuelTrimOutOfRangeSince_ = 0;
+  }
+
   data_.currentFuelRawLph = 0.0f;
   data_.currentFuelLph = 0.0f;
   data_.fuelValueValid = false;
+  data_.dfcoActive = false;
 
   if (engineRunning) {
     float phi = 1.0f;
@@ -147,6 +166,13 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
                                      config.petrolAfr, config.petrolDensity);
       }
       // Haval CAN, BRC K-Line and speed-density are placeholders in rev. 0.1.
+    }
+
+    if (config.dfcoEnabled() && data_.throttlePercent.valid(now) &&
+        data_.throttlePercent.value <= 1.0f && data_.rpm.value > 1000.0f) {
+      // During overrun the MAF still reports air although the injectors are cut.
+      rawLph = 0.0f;
+      data_.dfcoActive = true;
     }
 
     if (!isnan(rawLph) && rawLph >= 0.0f && rawLph < 500.0f) {

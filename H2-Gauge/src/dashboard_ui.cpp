@@ -1,11 +1,13 @@
 #include "dashboard_ui.h"
 
 #include <math.h>
+#include <esp_log.h>
 #include "pins.h"
 #include "startup_logo.h"
 #include "ui_fonts.h"
 
 namespace {
+constexpr const char* kTag = "UI";
 constexpr uint16_t kBackground = 0x0841;
 constexpr uint16_t kPanel = 0x10E3;
 constexpr uint16_t kTrack = 0x2145;
@@ -70,11 +72,11 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
     sprite_.setColorDepth(8);
     framebufferReady_ = sprite_.createSprite(240, 240) != nullptr;
     if (!framebufferReady_) {
-      Serial.printf("[UI] framebuffer allocation failed, free heap=%u\n",
-                    ESP.getFreeHeap());
+      ESP_LOGE(kTag, "Framebuffer allocation failed, free heap=%u",
+               ESP.getFreeHeap());
     } else {
-      Serial.printf("[UI] 8-bit framebuffer ready, free heap=%u\n",
-                    ESP.getFreeHeap());
+      ESP_LOGI(kTag, "8-bit framebuffer ready, free heap=%u",
+               ESP.getFreeHeap());
     }
   }
 }
@@ -137,6 +139,13 @@ void DashboardUi::releaseFramebuffer() {
     sprite_.deleteSprite();
     framebufferReady_ = false;
   }
+}
+
+void DashboardUi::prepareForSleep() {
+  releaseFramebuffer();
+  ledcWrite(0, 0);
+  tft_.writecommand(TFT_DISPOFF);
+  digitalWrite(Pins::TftReset, LOW);
 }
 
 void DashboardUi::render(uint32_t now, const TelemetryData& data,
@@ -362,6 +371,18 @@ void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,
 
 void DashboardUi::drawStatusRow(const TelemetryData& data,
                                 const ConfigData& config, uint32_t now) {
+  if (data.fuelTrimWarning) {
+    sprite_.fillRoundRect(31, 201, 178, 20, 8, kPanel);
+    sprite_.drawRoundRect(31, 201, 178, 20, 8, config.colorWarning);
+    sprite_.setTextDatum(MC_DATUM);
+    sprite_.setTextColor(config.colorWarning, kPanel);
+    sprite_.setFreeFont(labelFont(config, true));
+    sprite_.drawString(translated(config, "КАЛИБРОВКА ГБО!",
+                                  "CHECK LPG CALIBRATION"),
+                       120, 211);
+    return;
+  }
+
   const bool connected = data.obdConnected(now);
   const uint16_t obdColor = connected ? config.colorBoost : config.colorDanger;
 

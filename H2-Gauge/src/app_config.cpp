@@ -11,10 +11,12 @@ ConfigData ConfigStore::defaults() {
   c.brightnessDay = 82;
   c.brightnessNight = 26;
   c.rotation = 0;
-  c.startPage = 0x80;  // packed-display settings migration marker
+  c.startPage = 0xE0;  // migration marker + fuel trims + DFCO enabled
   c.setDisplayStartPage(0);
   c.setMainCenterValue(MainCenterValue::Boost);
   c.setUiLanguage(UiLanguage::Russian);
+  c.setFuelTrimEnabled(true);
+  c.setDfcoEnabled(true);
   c.autoReturnSec = 5;
   c.pageFuel = true;
   c.pageTemperature = true;
@@ -96,15 +98,21 @@ bool ConfigStore::begin() {
     preferences_.getBytes("config", &config_, sizeof(config_));
   }
 
-  if (!valid(config_)) {
+  const bool storedChecksumValid =
+      config_.magic == kMagic && config_.checksum == checksum(config_);
+  if (storedChecksumValid && config_.schemaVersion == 2) {
+    // Schema 3 reuses reserved packed bits, so the structure size stays stable
+    // and all 0.1.8 settings can be preserved.
+    config_.schemaVersion = H2G_CONFIG_SCHEMA;
+    config_.startPage |= 0xE0;  // marker + fuel trims + DFCO enabled
+    if (config_.autoReturnSec == 10) config_.autoReturnSec = 5;
+    save();
+  } else if (!valid(config_)) {
     config_ = defaults();
     save();
   } else if ((config_.startPage & 0x80) == 0) {
-    // One-time migration from revisions <= 0.1.7 without changing the raw
-    // ConfigData size: preserve settings, enable the new packed options and
-    // change only the former default auto-return value from 10 to 5 seconds.
-    config_.startPage |= 0x80;
-    if (config_.autoReturnSec == 10) config_.autoReturnSec = 5;
+    // Defensive migration for a valid schema-3 image missing its marker.
+    config_.startPage |= 0xE0;
     save();
   }
   return true;

@@ -1,0 +1,30 @@
+name: PlatformIO build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO Core
+        run: python -m pip install "platformio>=6.1,<7"
+
+      - name: Build ESP32 firmware
+        run: pio run -e esp32dev
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-gauge-esp32dev
+          path: .pio/build/esp32dev/firmware.bin
+          if-no-files-found: error

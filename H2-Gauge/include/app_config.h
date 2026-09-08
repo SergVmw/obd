@@ -48,7 +48,7 @@ struct ConfigData {
   uint8_t rotation;
   // Packed to preserve the revision-2 NVS layout:
   // bits 0..1 start page, 2..3 main center value, bit 4 UI language,
-  // bit 7 marks completion of the one-time packed-settings migration.
+  // bit 5 fuel-trim polling, bit 6 DFCO correction, bit 7 migration marker.
   uint8_t startPage;
   uint16_t autoReturnSec;
   bool pageFuel;
@@ -122,6 +122,14 @@ struct ConfigData {
   void setUiLanguage(UiLanguage language) {
     startPage = (startPage & 0xEF) |
                 ((static_cast<uint8_t>(language) & 0x01) << 4);
+  }
+  bool fuelTrimEnabled() const { return (startPage & 0x20) != 0; }
+  void setFuelTrimEnabled(bool enabled) {
+    startPage = enabled ? (startPage | 0x20) : (startPage & 0xDF);
+  }
+  bool dfcoEnabled() const { return (startPage & 0x40) != 0; }
+  void setDfcoEnabled(bool enabled) {
+    startPage = enabled ? (startPage | 0x40) : (startPage & 0xBF);
   }
 
   uint32_t checksum;

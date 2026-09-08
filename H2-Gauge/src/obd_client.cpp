@@ -1,6 +1,11 @@
 #include "obd_client.h"
 
 #include <math.h>
+#include <esp_log.h>
+
+namespace {
+constexpr const char* kTag = "OBD";
+}
 
 constexpr uint8_t ObdClient::kDiscoveryPids_[3];
 
@@ -10,30 +15,54 @@ bool ObdClient::begin() {
   general.tx_queue_len = 10;
   general.rx_queue_len = 20;
   general.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED |
-                           TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_FAILED;
+                           TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_FAILED |
+                           TWAI_ALERT_AND_LOG;
 
   const twai_timing_config_t timing = TWAI_TIMING_CONFIG_500KBITS();
   const twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-  if (twai_driver_install(&general, &timing, &filter) != ESP_OK) {
-    Serial.println("[CAN] driver install failed");
+  const esp_err_t installResult = twai_driver_install(&general, &timing, &filter);
+  if (installResult != ESP_OK) {
+    ESP_LOGE(kTag, "TWAI install failed: %s", esp_err_to_name(installResult));
     return false;
   }
   installed_ = true;
 
-  if (twai_start() != ESP_OK) {
-    Serial.println("[CAN] start failed");
+  const esp_err_t startResult = twai_start();
+  if (startResult != ESP_OK) {
+    ESP_LOGE(kTag, "TWAI start failed: %s", esp_err_to_name(startResult));
+    twai_driver_uninstall();
+    installed_ = false;
     return false;
   }
 
   telemetry_.canDriverReady = true;
-  Serial.println("[CAN] TWAI started: 500 kbit/s, 11-bit");
+  ESP_LOGI(kTag, "TWAI started: 500 kbit/s, normal mode, accept-all filter");
   return true;
+}
+
+void ObdClient::shutdown() {
+  if (!installed_) return;
+  paused_ = true;
+  waiting_ = false;
+
+  const esp_err_t stopResult = twai_stop();
+  if (stopResult != ESP_OK && stopResult != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "TWAI stop failed: %s", esp_err_to_name(stopResult));
+  }
+  const esp_err_t uninstallResult = twai_driver_uninstall();
+  if (uninstallResult != ESP_OK) {
+    ESP_LOGW(kTag, "TWAI uninstall failed: %s",
+             esp_err_to_name(uninstallResult));
+  }
+  installed_ = false;
+  recovering_ = false;
+  telemetry_.canDriverReady = false;
 }
 
 void ObdClient::loop(uint32_t now) {
   if (!installed_) return;
-  handleAlerts();
+  handleAlerts(now);
   receiveFrames(now);
 
   if (paused_ || recovering_) return;
@@ -50,28 +79,66 @@ void ObdClient::loop(uint32_t now) {
   }
 }
 
-void ObdClient::handleAlerts() {
+void ObdClient::handleAlerts(uint32_t now) {
   uint32_t alerts = 0;
-  if (twai_read_alerts(&alerts, 0) != ESP_OK) return;
+  twai_read_alerts(&alerts, 0);
 
   if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
     ++telemetry_.canErrorCount;
-    Serial.println("[CAN] RX queue full");
+    ESP_LOGW(kTag, "TWAI RX queue full");
   }
   if (alerts & TWAI_ALERT_TX_FAILED) {
     ++telemetry_.canErrorCount;
+    ESP_LOGW(kTag, "TWAI transmit failed");
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     ++telemetry_.canErrorCount;
     waiting_ = false;
     recovering_ = true;
-    Serial.println("[CAN] bus off, recovery requested");
-    twai_initiate_recovery();
+    ESP_LOGE(kTag, "TWAI bus off; requesting recovery");
+    const esp_err_t result = twai_initiate_recovery();
+    recoveryRequestedAt_ = now;
+    if (result != ESP_OK) {
+      ESP_LOGE(kTag, "Recovery request failed: %s", esp_err_to_name(result));
+    }
   }
   if (alerts & TWAI_ALERT_BUS_RECOVERED) {
-    Serial.println("[CAN] bus recovered");
-    recovering_ = false;
-    twai_start();
+    const esp_err_t result = twai_start();
+    if (result == ESP_OK) {
+      recovering_ = false;
+      recoveryRequestedAt_ = 0;
+      ESP_LOGI(kTag, "TWAI bus recovered and restarted");
+    } else {
+      recoveryRequestedAt_ = now;
+      ESP_LOGE(kTag, "TWAI restart after recovery failed: %s",
+               esp_err_to_name(result));
+    }
+  }
+
+  // Recovery usually completes quickly. If an alert was lost or restart
+  // failed, inspect the driver state and retry the valid IDF transition.
+  if (recovering_ && now - recoveryRequestedAt_ >= 2000) {
+    twai_status_info_t status{};
+    if (twai_get_status_info(&status) == ESP_OK) {
+      esp_err_t result = ESP_ERR_INVALID_STATE;
+      if (status.state == TWAI_STATE_BUS_OFF) {
+        result = twai_initiate_recovery();
+        ESP_LOGW(kTag, "TWAI recovery watchdog: recovery requested again");
+      } else if (status.state == TWAI_STATE_STOPPED) {
+        result = twai_start();
+        ESP_LOGW(kTag, "TWAI recovery watchdog: restart requested");
+        if (result == ESP_OK) recovering_ = false;
+      } else if (status.state == TWAI_STATE_RUNNING) {
+        result = ESP_OK;
+        recovering_ = false;
+        ESP_LOGI(kTag, "TWAI recovery watchdog: controller is running");
+      }
+      if (result != ESP_OK && status.state != TWAI_STATE_RECOVERING) {
+        ESP_LOGE(kTag, "TWAI recovery watchdog failed: %s",
+                 esp_err_to_name(result));
+      }
+    }
+    recoveryRequestedAt_ = now;
   }
 }
 
@@ -98,6 +165,7 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
     return false;
   }
 
+  monitor_.record(message, true, now);
   waiting_ = true;
   pendingPid_ = pid;
   requestSentAt_ = now;
@@ -105,9 +173,50 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
   return true;
 }
 
+bool ObdClient::sendMode22(uint32_t now) {
+  const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
+                                  ? 1
+                                  : config_.maxRequestsPerSecond;
+  uint32_t minGap = 1000UL / maxRequests;
+  if (minGap < 20) minGap = 20;
+  if (now - lastAnyRequestAt_ < minGap) return false;
+
+  twai_message_t message{};
+  if (!mode22_.buildDueRequest(now, message)) return false;
+  if (twai_transmit(&message, pdMS_TO_TICKS(20)) != ESP_OK) {
+    ++telemetry_.canErrorCount;
+    mode22_.timeout();
+    return false;
+  }
+
+  monitor_.record(message, true, now);
+  waiting_ = true;
+  pendingPid_ = 0xFF;  // Reserved internal marker for a Mode 22 transaction.
+  requestSentAt_ = now;
+  lastAnyRequestAt_ = now;
+  return true;
+}
+
 void ObdClient::receiveFrames(uint32_t now) {
   twai_message_t message{};
-  while (twai_receive(&message, 0) == ESP_OK) {
+  uint8_t processed = 0;
+  while (processed++ < 64 && twai_receive(&message, 0) == ESP_OK) {
+    monitor_.record(message, false, now);
+    twai_message_t flowControl{};
+    bool needsFlowControl = false;
+    if (mode22_.handleFrame(message, now, flowControl, needsFlowControl)) {
+      if (needsFlowControl) {
+        if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
+          ++telemetry_.canErrorCount;
+          mode22_.timeout();
+        } else {
+          monitor_.record(flowControl, true, now);
+        }
+      }
+      if (pendingPid_ == 0xFF && !mode22_.waiting()) finishPending(false);
+      continue;
+    }
+
     if (!message.extd && message.identifier >= 0x7E8 &&
         message.identifier <= 0x7EF) {
       parseResponse(message, now);
@@ -136,6 +245,14 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x05:
       telemetry_.coolantC.set(static_cast<float>(a) - 40.0f, now);
       break;
+    case 0x06:
+      telemetry_.shortFuelTrimPercent.set(
+          (static_cast<float>(a) - 128.0f) * (100.0f / 128.0f), now);
+      break;
+    case 0x07:
+      telemetry_.longFuelTrimPercent.set(
+          (static_cast<float>(a) - 128.0f) * (100.0f / 128.0f), now);
+      break;
     case 0x0B:
       telemetry_.mapKpa.set(static_cast<float>(a), now);
       break;
@@ -148,6 +265,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x10:
       telemetry_.mafGps.set(((static_cast<uint16_t>(a) << 8) | b) / 100.0f,
                             now);
+      break;
+    case 0x11:
+      telemetry_.throttlePercent.set(static_cast<float>(a) * (100.0f / 255.0f),
+                                     now);
       break;
     case 0x33:
       telemetry_.baroKpa.set(static_cast<float>(a), now);
@@ -194,7 +315,7 @@ bool ObdClient::isSupported(uint8_t pid) const {
 void ObdClient::runDiscovery(uint32_t now) {
   if (discoveryIndex_ >= 3) {
     discoveryDone_ = true;
-    Serial.println("[OBD] PID discovery completed");
+    ESP_LOGI(kTag, "Mode 01 PID discovery completed");
     return;
   }
 
@@ -204,17 +325,58 @@ void ObdClient::runDiscovery(uint32_t now) {
 }
 
 void ObdClient::runPolling(uint32_t now) {
-  for (auto& item : poll_) {
+  constexpr uint8_t kPollCount = sizeof(poll_) / sizeof(poll_[0]);
+  const bool parked = telemetry_.speedKph.valid(now) &&
+                      telemetry_.speedKph.value < 1.0f;
+
+  PollItem* selected = nullptr;
+  uint8_t selectedIndex = 0;
+  uint32_t selectedAge = 0;
+  uint32_t selectedInterval = 1;
+
+  // Choose the largest age/target-interval ratio. This preserves more MAP/RPM
+  // bandwidth than a plain round-robin while guaranteeing that slow PIDs are
+  // eventually selected when the global requests-per-second cap is lower than
+  // the sum of all requested rates. pollCursor_ resolves equal startup scores.
+  for (uint8_t checked = 0; checked < kPollCount; ++checked) {
+    const uint8_t index = (pollCursor_ + checked) % kPollCount;
+    auto& item = poll_[index];
     if (!isSupported(item.pid)) continue;
-    if (now - item.lastSentAt < item.intervalMs) continue;
-    if (sendPid(item.pid, now)) {
-      item.lastSentAt = now;
-      return;
+    if ((item.pid == 0x06 || item.pid == 0x07) &&
+        !config_.fuelTrimEnabled()) {
+      continue;
     }
+    if (item.pid == 0x11 && !config_.dfcoEnabled()) continue;
+
+    uint32_t intervalMs = item.intervalMs;
+    if (parked && intervalMs < 1000) intervalMs = 1000;
+    const uint32_t age = now - item.lastSentAt;
+    if (age < intervalMs) continue;
+
+    if (selected == nullptr ||
+        static_cast<uint64_t>(age) * selectedInterval >
+            static_cast<uint64_t>(selectedAge) * intervalMs) {
+      selected = &item;
+      selectedIndex = index;
+      selectedAge = age;
+      selectedInterval = intervalMs;
+    }
+  }
+
+  // This is a no-op in production until verified entries are added to the
+  // intentionally empty Mode 22 table. A future low-rate verified DID gets a
+  // chance even when the Mode 01 demand reaches the global rate cap.
+  if (sendMode22(now)) return;
+
+  if (selected != nullptr && sendPid(selected->pid, now)) {
+    selected->lastSentAt = now;
+    pollCursor_ = (selectedIndex + 1) % kPollCount;
   }
 }
 
 void ObdClient::finishPending(bool timeout) {
   if (timeout) ++telemetry_.obdTimeoutCount;
+  if (pendingPid_ == 0xFF) mode22_.timeout();
   waiting_ = false;
+  pendingPid_ = 0;
 }

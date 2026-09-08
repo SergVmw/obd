@@ -168,6 +168,8 @@
             <div class="field"><label for="averageMode">Средний расход</label><select id="averageMode"><option value="trip">После ручного сброса</option><option value="start">С запуска двигателя</option><option value="rolling">Последние 20 км</option></select></div>
           </div>
           <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>Сохранять поездку</b><span>Восстановить средний расход после кратковременного отключения питания</span></div><label class="switch"><input id="saveTrip" type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>DFCO по PID 11</b><span>Нулевой расчётный расход при throttle ≤1% и RPM выше 1000</span></div><label class="switch"><input id="dfcoEnabled" type="checkbox" checked><span class="slider"></span></label></div>
+          <div class="switch-row" style="margin-top:13px"><div class="switch-copy"><b>Контроль STFT + LTFT на LPG</b><span>Предупреждать при выходе суммы PID 06/07 за ±10% дольше 5 секунд</span></div><label class="switch"><input id="fuelTrimEnabled" type="checkbox" checked><span class="slider"></span></label></div>
         </div>
         <div class="section">
           <h3 class="section-title">Калибровка по заправке</h3>
@@ -263,14 +265,23 @@
             <thead><tr><th>PID</th><th>Параметр</th><th>Состояние</th></tr></thead>
             <tbody id="pidBody">
               <tr><td>0B</td><td>MAP</td><td class="ok">Доступен</td></tr>
+              <tr><td>06/07</td><td>STFT + LTFT bank 1</td><td class="maybe">Проверить на Haval</td></tr>
               <tr><td>0D</td><td>Скорость</td><td class="ok">Доступен</td></tr>
               <tr><td>10</td><td>MAF</td><td class="ok">Доступен</td></tr>
+              <tr><td>11</td><td>Absolute throttle</td><td class="maybe">Проверить на Haval</td></tr>
               <tr><td>33</td><td>Атмосферное давление</td><td class="maybe">Не проверен</td></tr>
               <tr><td>42</td><td>Напряжение ECU</td><td class="ok">Доступен</td></tr>
               <tr><td>5E</td><td>Fuel Rate</td><td class="maybe">Не проверен</td></tr>
             </tbody>
           </table>
           <div class="btn-row"><button class="btn" id="scanPids">Повторить поиск PID</button><button class="btn ghost">Скачать журнал</button></div>
+          <div class="callout" style="margin-top:14px"><strong>Mode 22:</strong> ISO-TP framework установлен, но production-список Haval DID пуст до подтверждения реальными захватами.</div>
+        </div>
+        <div class="section">
+          <h3 class="section-title">CAN Monitor · REST snapshot</h3>
+          <div class="callout"><strong>Безопасная агрегация:</strong> максимум 32 ID/направления, последний payload и счётчик; один snapshot не чаще 500 мс. Отправка кадров отсутствует.</div>
+          <table class="pid-table" style="margin-top:14px"><thead><tr><th>DIR</th><th>ID</th><th>DLC</th><th>Последние DATA</th><th>COUNT</th></tr></thead><tbody><tr><td class="ok">RX</td><td>0x7E8</td><td>8</td><td>04 41 0B 64 00 00 00 00</td><td>128</td></tr><tr><td class="maybe">TX</td><td>0x7DF</td><td>8</td><td>02 01 0B 00 00 00 00 00</td><td>127</td></tr></tbody></table>
+          <div class="btn-row"><button class="btn">Обновить снимок</button><button class="btn ghost">Авто: 1 с</button><button class="btn ghost">Очистить</button></div>
         </div>
       </div>
 
@@ -287,7 +298,7 @@
         </div>
         <div class="section">
           <h3 class="section-title">Состояние</h3>
-          <div class="firmware"><div><span>Прошивка</span><b>0.1.0 prototype</b></div><div><span>ESP32</span><b>Rev. 1 · 240 MHz</b></div><div><span>Свободная память</span><b>184 KB</b></div></div>
+          <div class="firmware"><div><span>Прошивка</span><b>0.1.9 prototype</b></div><div><span>ESP32</span><b>Rev. 1 · 240 MHz</b></div><div><span>Свободная память</span><b>184 KB</b></div></div>
         </div>
         <div class="section">
           <h3 class="section-title">Конфигурация</h3>
@@ -321,10 +332,10 @@
   <script>
     const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
     const defaults={
-      schemaVersion:1,
+      schemaVersion:3,
       display:{theme:'classic',rotation:'0°',brightnessDay:82,brightnessNight:26,startScreen:'main',mainCenter:'boost',autoReturnSec:5,colors:{text:'#f2faf7',vacuum:'#5dc9e8',boost:'#5ef0a8',danger:'#ff5f68'},pages:{fuel:true,temperature:true,diagnostics:false},peakEnabled:true},
       boost:{baroSource:'auto',arcStyle:'segmented',fixedBaroKpa:99.4,offsetBar:0,minBar:-1,maxBar:1.5,warningBar:.9,dangerBar:1.15,mapRateHz:10,smoothingMs:250},
-      fuel:{source:'auto',correction:1,density:745,switchSpeedKmh:5,averageMode:'trip',saveTrip:true},
+      fuel:{source:'auto',correction:1,density:745,switchSpeedKmh:5,averageMode:'trip',saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},
       lpg:{enabled:true,source:'valve',inputPin:34,activeLevel:'low',debounceMs:800,offDelaySec:1,showBadge:true,lpgCorrection:1,petrolCorrection:1,averageMode:'Раздельно: газ и бензин',units:'л/100 км'},
       controls:{shortAction:'next',longAction:'context',longPressSec:1.8,serviceHoldSec:5,lockWhenMoving:true,returnMain:true,serviceTimeoutMin:15},
       obd:{protocol:'auto',ecu:'auto',bitrate:500000,extendedId:false,requestId:'0x7DF',timeoutMs:120},
@@ -337,10 +348,10 @@
     const num=id=>Number(val(id));
     const cssColor=(hex,a=1)=>{const n=parseInt(hex.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`};
     function collectConfig(){return{
-      schemaVersion:1,
+      schemaVersion:3,
       display:{theme:val('theme'),rotation:val('rotation'),brightnessDay:num('dayBrightness'),brightnessNight:num('nightBrightness'),startScreen:val('startScreen'),mainCenter:val('mainCenter'),autoReturnSec:num('autoReturn'),colors:{text:val('colorText'),vacuum:val('colorVacuum'),boost:val('colorBoost'),danger:val('colorDanger')},pages:{fuel:val('pageFuel'),temperature:val('pageTemp'),diagnostics:val('pageDiag')},peakEnabled:val('peakEnabled')},
       boost:{baroSource:val('baroSource'),arcStyle:val('arcStyle'),fixedBaroKpa:num('fixedBaro'),offsetBar:num('boostOffset'),minBar:num('boostMin'),maxBar:num('boostMax'),warningBar:num('warningBoost'),dangerBar:num('dangerBoost'),mapRateHz:parseInt(val('mapRate')),smoothingMs:num('smoothing')},
-      fuel:{source:val('fuelSource'),correction:num('fuelCorrection'),density:num('fuelDensity'),switchSpeedKmh:parseInt(val('switchSpeed')),averageMode:val('averageMode'),saveTrip:val('saveTrip')},
+      fuel:{source:val('fuelSource'),correction:num('fuelCorrection'),density:num('fuelDensity'),switchSpeedKmh:parseInt(val('switchSpeed')),averageMode:val('averageMode'),saveTrip:val('saveTrip'),dfcoEnabled:val('dfcoEnabled'),fuelTrimEnabled:val('fuelTrimEnabled')},
       lpg:{enabled:val('lpgEnabled'),source:val('lpgSource'),inputPin:parseInt(val('lpgPin')),activeLevel:val('lpgActiveLevel').startsWith('LOW')?'low':'high',debounceMs:num('lpgDebounce'),offDelaySec:parseInt(val('lpgOffDelay')),showBadge:val('lpgBadge'),lpgCorrection:num('lpgCorrection'),petrolCorrection:num('petrolCorrection'),averageMode:val('lpgAverage'),units:val('lpgUnits')},
       controls:{shortAction:val('shortAction'),longAction:val('longAction'),longPressSec:num('longPress'),serviceHoldSec:num('serviceHold'),lockWhenMoving:val('lockMoving'),returnMain:val('returnMain'),serviceTimeout:val('serviceTimeout')},
       obd:{protocol:val('protocol'),ecu:val('ecuAddress'),bitrate:parseInt(val('canRate'))*1000||500000,extendedId:val('canFormat')==='29-bit',requestId:val('requestId'),timeoutMs:num('obdTimeout')},
@@ -350,7 +361,7 @@
       const set=(id,v)=>{const e=$('#'+id);if(!e||v===undefined)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v};
       set('theme',c.display?.theme);set('rotation',c.display?.rotation);set('dayBrightness',c.display?.brightnessDay);set('nightBrightness',c.display?.brightnessNight);set('startScreen',c.display?.startScreen);set('mainCenter',c.display?.mainCenter);set('autoReturn',c.display?.autoReturnSec);set('colorText',c.display?.colors?.text);set('colorVacuum',c.display?.colors?.vacuum);set('colorBoost',c.display?.colors?.boost);set('colorDanger',c.display?.colors?.danger);set('pageFuel',c.display?.pages?.fuel);set('pageTemp',c.display?.pages?.temperature);set('pageDiag',c.display?.pages?.diagnostics);set('peakEnabled',c.display?.peakEnabled);
       set('baroSource',c.boost?.baroSource);set('arcStyle',c.boost?.arcStyle);set('fixedBaro',c.boost?.fixedBaroKpa);set('boostOffset',c.boost?.offsetBar);set('boostMin',c.boost?.minBar);set('boostMax',c.boost?.maxBar);set('warningBoost',c.boost?.warningBar);set('dangerBoost',c.boost?.dangerBar);if(c.boost?.mapRateHz)set('mapRate',c.boost.mapRateHz+' Гц');set('smoothing',c.boost?.smoothingMs);
-      set('fuelSource',c.fuel?.source);set('fuelCorrection',c.fuel?.correction);set('fuelDensity',c.fuel?.density);if(c.fuel?.switchSpeedKmh)set('switchSpeed',c.fuel.switchSpeedKmh+' км/ч');set('averageMode',c.fuel?.averageMode);set('saveTrip',c.fuel?.saveTrip);
+      set('fuelSource',c.fuel?.source);set('fuelCorrection',c.fuel?.correction);set('fuelDensity',c.fuel?.density);if(c.fuel?.switchSpeedKmh)set('switchSpeed',c.fuel.switchSpeedKmh+' км/ч');set('averageMode',c.fuel?.averageMode);set('saveTrip',c.fuel?.saveTrip);set('dfcoEnabled',c.fuel?.dfcoEnabled);set('fuelTrimEnabled',c.fuel?.fuelTrimEnabled);
       set('lpgEnabled',c.lpg?.enabled);set('lpgSource',c.lpg?.source);if(c.lpg?.inputPin)set('lpgPin','GPIO'+c.lpg.inputPin);set('lpgActiveLevel',c.lpg?.activeLevel==='high'?'HIGH':'LOW · оптопара включена');set('lpgDebounce',c.lpg?.debounceMs);if(c.lpg?.offDelaySec!==undefined)set('lpgOffDelay',c.lpg.offDelaySec===0?'0 секунд':c.lpg.offDelaySec===1?'1 секунда':c.lpg.offDelaySec+' секунды');set('lpgBadge',c.lpg?.showBadge);set('lpgCorrection',c.lpg?.lpgCorrection);set('petrolCorrection',c.lpg?.petrolCorrection);set('lpgAverage',c.lpg?.averageMode);set('lpgUnits',c.lpg?.units);
       set('longPress',c.controls?.longPressSec);set('serviceHold',c.controls?.serviceHoldSec);set('lockMoving',c.controls?.lockWhenMoving);set('returnMain',c.controls?.returnMain);set('serviceTimeout',c.controls?.serviceTimeout);
       set('protocol',c.obd?.protocol);set('ecuAddress',c.obd?.ecu);if(c.obd?.bitrate)set('canRate',(c.obd.bitrate/1000)+' кбит/с');set('canFormat',c.obd?.extendedId?'29-bit':'11-bit');set('requestId',c.obd?.requestId);set('obdTimeout',c.obd?.timeoutMs);

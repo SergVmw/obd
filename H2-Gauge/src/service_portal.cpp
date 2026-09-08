@@ -1,10 +1,13 @@
 #include "service_portal.h"
 
 #include <ArduinoJson.h>
+#include <esp_log.h>
 #include "version.h"
 #include "web_ui_gz.h"
 
 namespace {
+constexpr const char* kTag = "WEB";
+
 template <typename T>
 T clampValue(T value, T low, T high) {
   return value < low ? low : (value > high ? high : value);
@@ -46,7 +49,7 @@ bool ServicePortal::begin() {
                              ? config.apPassword
                              : "h2gauge18";
   if (!WiFi.softAP(ssid_.c_str(), password)) {
-    Serial.println("[WEB] SoftAP start failed");
+    ESP_LOGE(kTag, "SoftAP start failed");
     return false;
   }
 
@@ -55,8 +58,8 @@ bool ServicePortal::begin() {
   server_.begin();
   startedAt_ = lastActivityAt_ = millis();
 
-  Serial.printf("[WEB] AP %s, http://%s\n", ssid_.c_str(),
-                WiFi.softAPIP().toString().c_str());
+  ESP_LOGI(kTag, "AP %s, http://%s", ssid_.c_str(),
+           WiFi.softAPIP().toString().c_str());
   return true;
 }
 
@@ -75,7 +78,7 @@ void ServicePortal::loop() {
   const uint32_t timeoutMs =
       configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
   if (timeoutMs > 0 && now - lastActivityAt_ > timeoutMs) {
-    Serial.println("[WEB] service timeout, rebooting");
+    ESP_LOGI(kTag, "Service timeout; rebooting");
     ESP.restart();
   }
 }
@@ -88,6 +91,10 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
   server_.on("/api/config", HTTP_POST, [this]() { receiveConfig(); });
   server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
+  server_.on("/api/can/snapshot", HTTP_GET,
+             [this]() { sendCanSnapshot(); });
+  server_.on("/api/can/clear", HTTP_POST,
+             [this]() { clearCanSnapshot(); });
 
   server_.on("/api/baro/capture", HTTP_POST, [this]() {
     touch();
@@ -177,6 +184,8 @@ void ServicePortal::sendConfig() {
   fuel["lpgDensity"] = c.lpgDensity;
   fuel["switchSpeedKph"] = c.switchSpeedKph;
   fuel["saveTrip"] = c.saveTrip;
+  fuel["dfcoEnabled"] = c.dfcoEnabled();
+  fuel["fuelTrimEnabled"] = c.fuelTrimEnabled();
 
   JsonObject lpg = doc["lpg"].to<JsonObject>();
   lpg["lpgEnabled"] = c.lpgEnabled;
@@ -266,6 +275,8 @@ void ServicePortal::receiveConfig() {
     c.lpgDensity = clampValue<float>(f["lpgDensity"] | c.lpgDensity, 400.0f, 700.0f);
     c.switchSpeedKph = clampValue<int>(f["switchSpeedKph"] | c.switchSpeedKph, 1, 30);
     c.saveTrip = f["saveTrip"] | c.saveTrip;
+    c.setDfcoEnabled(f["dfcoEnabled"] | c.dfcoEnabled());
+    c.setFuelTrimEnabled(f["fuelTrimEnabled"] | c.fuelTrimEnabled());
   }
 
   JsonObjectConst l = doc["lpg"];
@@ -331,6 +342,9 @@ void ServicePortal::sendStatus() {
   else doc["boostBar"] = nullptr;
   doc["fuelMode"] = fuelModeName(telemetry_.fuelMode);
   doc["fuelLph"] = telemetry_.fuelValueValid ? telemetry_.currentFuelLph : 0.0f;
+  doc["dfcoActive"] = telemetry_.dfcoActive;
+  doc["fuelTrimPercent"] = telemetry_.fuelTrimSumPercent;
+  doc["fuelTrimWarning"] = telemetry_.fuelTrimWarning;
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
   doc["responses"] = telemetry_.obdResponseCount;
   doc["timeouts"] = telemetry_.obdTimeoutCount;
@@ -340,6 +354,67 @@ void ServicePortal::sendStatus() {
   output.reserve(512);
   serializeJson(doc, output);
   server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendCanSnapshot() {
+  const uint32_t now = millis();
+  touch();
+  if (lastCanSnapshotAt_ != 0 && now - lastCanSnapshotAt_ < 500) {
+    server_.sendHeader("Retry-After", "1");
+    server_.send(429, "application/json",
+                 "{\"error\":\"snapshot rate limited\"}");
+    return;
+  }
+  lastCanSnapshotAt_ = now;
+
+  CanFrameSnapshot frames[CanMonitor::kCapacity]{};
+  uint32_t totalFrames = 0;
+  uint32_t evictions = 0;
+  const size_t count = canMonitor_.snapshot(
+      frames, CanMonitor::kCapacity, totalFrames, evictions);
+
+  JsonDocument doc;
+  doc["generatedAtMs"] = now;
+  doc["totalFrames"] = totalFrames;
+  doc["evictions"] = evictions;
+  doc["capacity"] = CanMonitor::kCapacity;
+  JsonArray rows = doc["frames"].to<JsonArray>();
+  for (size_t i = 0; i < count; ++i) {
+    const auto& frame = frames[i];
+    JsonObject row = rows.add<JsonObject>();
+    char id[12];
+    snprintf(id, sizeof(id), frame.extended ? "0x%08lX" : "0x%03lX",
+             static_cast<unsigned long>(frame.identifier));
+    row["id"] = id;
+    row["extended"] = frame.extended;
+    row["remote"] = frame.remote;
+    row["direction"] = frame.transmitted ? "TX" : "RX";
+    row["dlc"] = frame.length;
+    row["count"] = frame.count;
+    row["ageMs"] = now - frame.lastSeenAt;
+
+    char data[24]{};
+    size_t offset = 0;
+    for (uint8_t byte = 0; byte < frame.length && offset + 3 < sizeof(data);
+         ++byte) {
+      offset += snprintf(data + offset, sizeof(data) - offset,
+                         byte == 0 ? "%02X" : " %02X", frame.data[byte]);
+    }
+    row["data"] = data;
+  }
+
+  String output;
+  output.reserve(6144);
+  serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::clearCanSnapshot() {
+  touch();
+  canMonitor_.clear();
+  lastCanSnapshotAt_ = 0;
+  server_.send(200, "application/json", "{\"ok\":true}");
 }
 
 void ServicePortal::handleOtaUpload() {
@@ -368,27 +443,27 @@ void ServicePortal::handleOtaUpload() {
     }
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
       otaError_ = "No OTA partition or image is too large";
-      Update.printError(Serial);
+      ESP_LOGE(kTag, "OTA begin failed, code=%u", Update.getError());
       return;
     }
     otaAllowed_ = true;
-    Serial.printf("[OTA] start: %s\n", upload.filename.c_str());
+    ESP_LOGI(kTag, "OTA start: %s", upload.filename.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!otaAllowed_) return;
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       otaAllowed_ = false;
       otaError_ = "Flash write failed";
-      Update.printError(Serial);
+      ESP_LOGE(kTag, "OTA write failed, code=%u", Update.getError());
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (!otaAllowed_) return;
     if (!Update.end(true)) {
       otaError_ = "Image verification failed";
-      Update.printError(Serial);
+      ESP_LOGE(kTag, "OTA verification failed, code=%u", Update.getError());
       return;
     }
     otaSuccess_ = true;
-    Serial.printf("[OTA] completed: %u bytes\n", upload.totalSize);
+    ESP_LOGI(kTag, "OTA completed: %u bytes", upload.totalSize);
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     otaAllowed_ = false;
     otaError_ = "Upload aborted";

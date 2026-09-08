@@ -21,6 +21,7 @@ class DashboardUi {
   void showMessage(const char* title, const char* line1,
                    const ConfigData& config, const char* line2 = nullptr);
   void releaseFramebuffer();
+  void prepareForSleep();
 
  private:
   void drawMain(const TelemetryData& data, const TelemetryEngine& engine,

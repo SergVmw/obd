@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "display": {
     "theme": "classic",
     "rotation": 0,
@@ -46,7 +46,11 @@
     "stoichiometricAfr": 14.7,
     "switchSpeedKmh": 5,
     "averageMode": "trip",
-    "saveTrip": true
+    "saveTrip": true,
+    "dfcoEnabled": true,
+    "fuelTrimEnabled": true,
+    "fuelTrimWarningPercent": 10,
+    "fuelTrimWarningDelaySec": 5
   },
   "lpg": {
     "enabled": true,
@@ -75,7 +79,11 @@
     "correction": 1.0,
     "warningLow": 11.8,
     "warningHigh": 15.0,
-    "smoothingMs": 500
+    "smoothingMs": 500,
+    "deepSleepBelow": 11.5,
+    "deepSleepDelaySec": 3,
+    "wakeTimerSec": 30,
+    "wakeButtonPin": 32
   },
   "controls": {
     "buttonPin": 32,
@@ -97,6 +105,11 @@
     "ecuResponseId": "auto",
     "timeoutMs": 120,
     "maxRequestsPerSecond": 30,
+    "adaptivePolling": true,
+    "mode22": {
+      "enabledDidCount": 0,
+      "policy": "verified_haval_dids_only"
+    },
     "pins": {
       "tx": 16,
       "rx": 17
@@ -109,6 +122,11 @@
     "address": "192.168.4.1",
     "captivePortal": true,
     "allowOta": true,
+    "canMonitor": {
+      "transport": "rest_snapshot",
+      "capacity": 32,
+      "minimumIntervalMs": 500
+    },
     "autoExit": true
   }
 }
