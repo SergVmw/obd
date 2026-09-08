@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include "pins.h"
+#include "startup_logo.h"
 #include "ui_fonts.h"
 
 namespace {
@@ -26,12 +27,20 @@ void pointOnCircle(float degrees, float radius, int16_t& x, int16_t& y) {
   x = static_cast<int16_t>(120.0f + cosf(radians) * radius);
   y = static_cast<int16_t>(120.0f + sinf(radians) * radius);
 }
+
+uint16_t dimRgb565(uint16_t color, uint8_t level) {
+  const uint32_t red = ((color >> 11) & 0x1F) * level / 255;
+  const uint32_t green = ((color >> 5) & 0x3F) * level / 255;
+  const uint32_t blue = (color & 0x1F) * level / 255;
+  return static_cast<uint16_t>((red << 11) | (green << 5) | blue);
+}
 }  // namespace
 
 void DashboardUi::begin(const ConfigData& config, bool normalMode) {
   tft_.init();
   tft_.setRotation(config.rotation & 0x03);
   tft_.fillScreen(kBackground);
+  if (normalMode) drawStartupLogo();
 
   ledcSetup(0, 5000, 8);
   ledcAttachPin(Pins::Backlight, 0);
@@ -54,6 +63,33 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
                     ESP.getFreeHeap());
     }
   }
+}
+
+void DashboardUi::drawStartupLogo() {
+  constexpr int16_t kLogoX = (240 - kHavalLogoWidth) / 2;
+  constexpr int16_t kLogoY = (240 - kHavalLogoHeight) / 2;
+  constexpr uint8_t kFrames = 14;
+  uint16_t line[kHavalLogoWidth];
+
+  // The image stays in Flash. Only one 432-byte scanline is held in RAM.
+  tft_.setSwapBytes(true);
+  for (uint8_t frame = 1; frame <= kFrames; ++frame) {
+    const float progress = static_cast<float>(frame) / kFrames;
+    const float eased = progress * progress * (3.0f - 2.0f * progress);
+    const uint8_t level = static_cast<uint8_t>(255.0f * eased);
+
+    for (uint16_t y = 0; y < kHavalLogoHeight; ++y) {
+      const uint32_t rowOffset = static_cast<uint32_t>(y) * kHavalLogoWidth;
+      for (uint16_t x = 0; x < kHavalLogoWidth; ++x) {
+        const uint16_t color = pgm_read_word(&kHavalLogoRgb565[rowOffset + x]);
+        line[x] = dimRgb565(color, level);
+      }
+      tft_.pushImage(kLogoX, kLogoY + y, kHavalLogoWidth, 1, line);
+    }
+    delay(55);
+  }
+  delay(450);
+  tft_.setSwapBytes(false);
 }
 
 void DashboardUi::releaseFramebuffer() {
