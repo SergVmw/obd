@@ -165,17 +165,52 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
   const float shown = clampFloat(value, minValue, maxValue);
 
   const bool solidArc = config.boostArcStyle == BoostArcStyle::Solid;
-  const int angleStep = solidArc ? 1 : 2;
-  for (int i = 0; i <= 270; i += angleStep) {
-    const float angle = 135.0f + i;
-    const float segmentValue = minValue + (maxValue - minValue) * i / 270.0f;
-    int16_t x1, y1, x2, y2;
-    pointOnCircle(angle, 97, x1, y1);
-    pointOnCircle(angle, 104, x2, y2);
-    const bool active = segmentValue <= shown;
-    sprite_.drawLine(x1, y1, x2, y2,
-                     active ? boostColor(segmentValue, config) : kTrack);
-    if (active) sprite_.drawPixel(x1, y1, boostColor(segmentValue, config));
+  if (solidArc) {
+    // TFT_eSPI angles start at 6 o'clock. 45..315 is the same 270 degree
+    // sweep as the segmented scale from the lower-left to lower-right edge.
+    sprite_.drawArc(120, 120, 104, 97, 45, 315, kTrack, kBackground, false);
+
+    const auto angleForValue = [&](float point) -> uint16_t {
+      const float ratio = (clampFloat(point, minValue, maxValue) - minValue) /
+                          (maxValue - minValue);
+      return static_cast<uint16_t>(lroundf(45.0f + ratio * 270.0f));
+    };
+    const auto drawZone = [&](float zoneStart, float zoneEnd, uint16_t color) {
+      zoneStart = clampFloat(zoneStart, minValue, maxValue);
+      zoneEnd = clampFloat(zoneEnd, minValue, maxValue);
+      const float activeEnd = fminf(shown, zoneEnd);
+      if (activeEnd <= zoneStart) return;
+      uint16_t startAngle = angleForValue(zoneStart);
+      uint16_t endAngle = angleForValue(activeEnd);
+      if (endAngle <= startAngle) endAngle = startAngle + 1;
+      sprite_.drawArc(120, 120, 104, 97, startAngle, endAngle, color,
+                      kBackground, false);
+    };
+
+    const float zero = clampFloat(0.0f, minValue, maxValue);
+    const float warning = clampFloat(config.boostWarningBar, zero, maxValue);
+    const float danger = clampFloat(
+        fmaxf(config.boostDangerBar, config.boostWarningBar), warning,
+        maxValue);
+    drawZone(minValue, zero, config.colorVacuum);
+    drawZone(zero, warning, config.colorBoost);
+    drawZone(warning, danger, config.colorWarning);
+    drawZone(danger, maxValue, config.colorDanger);
+  } else {
+    for (int i = 0; i <= 270; i += 2) {
+      const float angle = 135.0f + i;
+      const float segmentValue =
+          minValue + (maxValue - minValue) * i / 270.0f;
+      int16_t x1, y1, x2, y2;
+      pointOnCircle(angle, 97, x1, y1);
+      pointOnCircle(angle, 104, x2, y2);
+      const bool active = segmentValue <= shown;
+      sprite_.drawLine(x1, y1, x2, y2,
+                       active ? boostColor(segmentValue, config) : kTrack);
+      if (active) {
+        sprite_.drawPixel(x1, y1, boostColor(segmentValue, config));
+      }
+    }
   }
 
   for (int i = 0; i <= 10; ++i) {
