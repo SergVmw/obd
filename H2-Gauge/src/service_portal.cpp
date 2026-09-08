@@ -9,6 +9,29 @@ template <typename T>
 T clampValue(T value, T low, T high) {
   return value < low ? low : (value > high ? high : value);
 }
+
+String color565ToHex(uint16_t color) {
+  const uint8_t red = ((color >> 11) & 0x1F) * 255 / 31;
+  const uint8_t green = ((color >> 5) & 0x3F) * 255 / 63;
+  const uint8_t blue = (color & 0x1F) * 255 / 31;
+  char text[8];
+  snprintf(text, sizeof(text), "#%02X%02X%02X", red, green, blue);
+  return String(text);
+}
+
+bool readColor565(JsonVariantConst value, uint16_t& destination) {
+  const char* text = value.as<const char*>();
+  if (!text || strlen(text) != 7 || text[0] != '#') return false;
+  char* end = nullptr;
+  const uint32_t rgb = strtoul(text + 1, &end, 16);
+  if (!end || *end != '\0') return false;
+  const uint8_t red = (rgb >> 16) & 0xFF;
+  const uint8_t green = (rgb >> 8) & 0xFF;
+  const uint8_t blue = rgb & 0xFF;
+  destination = static_cast<uint16_t>(((red & 0xF8) << 8) |
+                                      ((green & 0xFC) << 3) | (blue >> 3));
+  return true;
+}
 }  // namespace
 
 bool ServicePortal::begin() {
@@ -126,9 +149,15 @@ void ServicePortal::sendConfig() {
   display["pageTemperature"] = c.pageTemperature;
   display["pageDiagnostics"] = c.pageDiagnostics;
   display["peakEnabled"] = c.peakEnabled;
+  display["colorText"] = color565ToHex(c.colorText);
+  display["colorVacuum"] = color565ToHex(c.colorVacuum);
+  display["colorBoost"] = color565ToHex(c.colorBoost);
+  display["colorWarning"] = color565ToHex(c.colorWarning);
+  display["colorDanger"] = color565ToHex(c.colorDanger);
 
   JsonObject boost = doc["boost"].to<JsonObject>();
   boost["baroSource"] = static_cast<uint8_t>(c.baroSource);
+  boost["boostArcStyle"] = static_cast<uint8_t>(c.boostArcStyle);
   boost["fixedBaroKpa"] = c.fixedBaroKpa;
   boost["boostOffsetBar"] = c.boostOffsetBar;
   boost["boostMinBar"] = c.boostMinBar;
@@ -198,11 +227,18 @@ void ServicePortal::receiveConfig() {
     c.pageTemperature = d["pageTemperature"] | c.pageTemperature;
     c.pageDiagnostics = d["pageDiagnostics"] | c.pageDiagnostics;
     c.peakEnabled = d["peakEnabled"] | c.peakEnabled;
+    readColor565(d["colorText"], c.colorText);
+    readColor565(d["colorVacuum"], c.colorVacuum);
+    readColor565(d["colorBoost"], c.colorBoost);
+    readColor565(d["colorWarning"], c.colorWarning);
+    readColor565(d["colorDanger"], c.colorDanger);
   }
 
   JsonObjectConst b = doc["boost"];
   if (!b.isNull()) {
     c.baroSource = static_cast<BaroSource>(clampValue<int>(b["baroSource"] | static_cast<int>(c.baroSource), 0, 4));
+    c.boostArcStyle = static_cast<BoostArcStyle>(clampValue<int>(
+        b["boostArcStyle"] | static_cast<int>(c.boostArcStyle), 0, 1));
     c.fixedBaroKpa = clampValue<float>(b["fixedBaroKpa"] | c.fixedBaroKpa, 70.0f, 110.0f);
     c.boostOffsetBar = clampValue<float>(b["boostOffsetBar"] | c.boostOffsetBar, -0.5f, 0.5f);
     c.boostMinBar = clampValue<float>(b["boostMinBar"] | c.boostMinBar, -1.2f, 0.0f);

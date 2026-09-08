@@ -13,8 +13,6 @@ constexpr uint16_t kMuted = 0x7C10;
 constexpr uint16_t kWhite = 0xEFFF;
 constexpr uint16_t kGreen = 0x5F75;
 constexpr uint16_t kCyan = 0x5E5C;
-constexpr uint16_t kAmber = 0xFDCB;
-constexpr uint16_t kRed = 0xFB0D;
 
 float clampFloat(float value, float lo, float hi) {
   if (value < lo) return lo;
@@ -129,7 +127,7 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
       drawTemperatures(data, config, now);
       break;
     case 3:
-      drawDiagnostics(data, now);
+      drawDiagnostics(data, config, now);
       break;
     default:
       drawMain(data, engine, config, now);
@@ -155,10 +153,10 @@ void DashboardUi::nextPage(const ConfigData& config) {
 }
 
 uint16_t DashboardUi::boostColor(float boost, const ConfigData& config) {
-  if (boost < 0.0f) return kCyan;
-  if (boost >= config.boostDangerBar) return kRed;
-  if (boost >= config.boostWarningBar) return kAmber;
-  return kGreen;
+  if (boost < 0.0f) return config.colorVacuum;
+  if (boost >= config.boostDangerBar) return config.colorDanger;
+  if (boost >= config.boostWarningBar) return config.colorWarning;
+  return config.colorBoost;
 }
 
 void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
@@ -166,7 +164,9 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
   const float maxValue = max(config.boostMaxBar, minValue + 0.2f);
   const float shown = clampFloat(value, minValue, maxValue);
 
-  for (int i = 0; i <= 270; i += 2) {
+  const bool solidArc = config.boostArcStyle == BoostArcStyle::Solid;
+  const int angleStep = solidArc ? 1 : 2;
+  for (int i = 0; i <= 270; i += angleStep) {
     const float angle = 135.0f + i;
     const float segmentValue = minValue + (maxValue - minValue) * i / 270.0f;
     int16_t x1, y1, x2, y2;
@@ -193,8 +193,8 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
     int16_t x1, y1, x2, y2;
     pointOnCircle(angle, 84, x1, y1);
     pointOnCircle(angle, 95, x2, y2);
-    sprite_.drawLine(x1, y1, x2, y2, kWhite);
-    sprite_.drawLine(x1 + 1, y1, x2 + 1, y2, kWhite);
+    sprite_.drawLine(x1, y1, x2, y2, config.colorText);
+    sprite_.drawLine(x1 + 1, y1, x2 + 1, y2, config.colorText);
   }
 }
 
@@ -217,7 +217,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   }
   sprite_.drawString(buffer, 120, 36);
 
-  sprite_.setTextColor(kWhite, kBackground);
+  sprite_.setTextColor(config.colorText, kBackground);
   sprite_.setFreeFont(FSSB24);
   if (data.mapKpa.valid(now)) {
     snprintf(buffer, sizeof(buffer), "%+.2f", data.filteredBoostBar);
@@ -240,8 +240,9 @@ void DashboardUi::drawMain(const TelemetryData& data,
   snprintf(average, sizeof(average), "%.1f",
            engine.averageForCurrentFuel(config));
   drawValueCell(68, 169, current,
-                data.consumptionIsPerHour ? "L/H" : "CURRENT");
-  drawValueCell(172, 169, average, "AVERAGE");
+                data.consumptionIsPerHour ? "L/H" : "CURRENT",
+                config.colorText);
+  drawValueCell(172, 169, average, "AVERAGE", config.colorText);
   drawStatusRow(data, config, now);
 }
 
@@ -259,16 +260,16 @@ void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,
 void DashboardUi::drawStatusRow(const TelemetryData& data,
                                 const ConfigData& config, uint32_t now) {
   const bool connected = data.obdConnected(now);
-  const uint16_t obdColor = connected ? kGreen : kRed;
+  const uint16_t obdColor = connected ? config.colorBoost : config.colorDanger;
 
   const char* fuel = "--";
   uint16_t fuelColor = kMuted;
   if (data.fuelMode == FuelMode::Lpg) {
     fuel = "LPG";
-    fuelColor = kGreen;
+    fuelColor = config.colorBoost;
   } else if (data.fuelMode == FuelMode::Petrol) {
     fuel = "95";
-    fuelColor = kAmber;
+    fuelColor = config.colorWarning;
   } else if (data.fuelMode == FuelMode::Off) {
     fuel = "OFF";
   }
@@ -299,7 +300,7 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   sprite_.setFreeFont(FSSB9);
   sprite_.drawString(value, 120, 28);
 
-  sprite_.setTextColor(kWhite, kBackground);
+  sprite_.setTextColor(config.colorText, kBackground);
   sprite_.setFreeFont(FSSB24);
   if (data.fuelValueValid) snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
   else strlcpy(value, "--.-", sizeof(value));
@@ -309,16 +310,15 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   sprite_.drawString(data.consumptionIsPerHour ? "L/H" : "L/100 KM", 120, 114);
 
   snprintf(value, sizeof(value), "%.2f L", engine.petrolLiters(config));
-  drawValueCell(67, 153, value, "PETROL", kAmber);
+  drawValueCell(67, 153, value, "PETROL", config.colorWarning);
   snprintf(value, sizeof(value), "%.2f L", engine.lpgLiters(config));
-  drawValueCell(173, 153, value, "LPG", kGreen);
+  drawValueCell(173, 153, value, "LPG", config.colorBoost);
 
   drawStatusRow(data, config, now);
 }
 
 void DashboardUi::drawTemperatures(const TelemetryData& data,
                                    const ConfigData& config, uint32_t now) {
-  (void)config;
   sprite_.setTextDatum(MC_DATUM);
   sprite_.setTextColor(kMuted, kBackground);
   sprite_.setFreeFont(FSSB9);
@@ -327,24 +327,25 @@ void DashboardUi::drawTemperatures(const TelemetryData& data,
   char value[24];
   if (data.coolantC.valid(now)) snprintf(value, sizeof(value), "%.0f C", data.coolantC.value);
   else strlcpy(value, "-- C", sizeof(value));
-  drawValueCell(67, 77, value, "COOLANT");
+  drawValueCell(67, 77, value, "COOLANT", config.colorText);
 
   if (data.rpm.valid(now)) snprintf(value, sizeof(value), "%.0f", data.rpm.value);
   else strlcpy(value, "----", sizeof(value));
-  drawValueCell(173, 77, value, "RPM");
+  drawValueCell(173, 77, value, "RPM", config.colorText);
 
   if (data.mapKpa.valid(now)) snprintf(value, sizeof(value), "%.0f", data.mapKpa.value);
   else strlcpy(value, "---", sizeof(value));
-  drawValueCell(67, 143, value, "MAP KPA");
+  drawValueCell(67, 143, value, "MAP KPA", config.colorText);
 
   if (data.speedKph.valid(now)) snprintf(value, sizeof(value), "%.0f", data.speedKph.value);
   else strlcpy(value, "---", sizeof(value));
-  drawValueCell(173, 143, value, "KM/H");
+  drawValueCell(173, 143, value, "KM/H", config.colorText);
 
   drawStatusRow(data, config, now);
 }
 
-void DashboardUi::drawDiagnostics(const TelemetryData& data, uint32_t now) {
+void DashboardUi::drawDiagnostics(const TelemetryData& data,
+                                  const ConfigData& config, uint32_t now) {
   sprite_.setTextDatum(MC_DATUM);
   sprite_.setTextColor(kMuted, kBackground);
   sprite_.setFreeFont(FSSB9);
@@ -353,9 +354,11 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data, uint32_t now) {
   char line[40];
   sprite_.setTextDatum(ML_DATUM);
   sprite_.setFreeFont(FSS9);
-  sprite_.setTextColor(data.obdConnected(now) ? kGreen : kRed, kBackground);
+  sprite_.setTextColor(data.obdConnected(now) ? config.colorBoost
+                                               : config.colorDanger,
+                       kBackground);
   sprite_.drawString(data.obdConnected(now) ? "CAN CONNECTED" : "CAN OFFLINE", 35, 63);
-  sprite_.setTextColor(kWhite, kBackground);
+  sprite_.setTextColor(config.colorText, kBackground);
   snprintf(line, sizeof(line), "ECU: 0x%03X", data.ecuResponseId);
   sprite_.drawString(line, 35, 91);
   snprintf(line, sizeof(line), "Responses: %lu", static_cast<unsigned long>(data.obdResponseCount));

@@ -144,6 +144,7 @@
         <div class="section">
           <h3 class="section-title">Шкала и предупреждения</h3>
           <div class="form-grid">
+            <div class="field full"><label for="arcStyle">Вид шкалы турбо</label><select id="arcStyle"><option value="segmented">Сегментная — рисочками</option><option value="solid">Сплошная полоса</option></select></div>
             <div class="field"><label for="boostMin">Минимум, bar</label><input id="boostMin" type="number" min="-1.2" max="0" step="0.1" value="-1.0"></div>
             <div class="field"><label for="boostMax">Максимум, bar</label><input id="boostMax" type="number" min="0.5" max="2.5" step="0.1" value="1.5"></div>
             <div class="field"><label>Жёлтая зона <output id="warningBoostOut">0.90 bar</output></label><input id="warningBoost" type="range" min="0.3" max="1.5" step="0.05" value="0.9"></div>
@@ -321,7 +322,7 @@
     const defaults={
       schemaVersion:1,
       display:{theme:'classic',rotation:'0°',brightnessDay:82,brightnessNight:26,startScreen:'main',autoReturnSec:10,colors:{text:'#f2faf7',vacuum:'#5dc9e8',boost:'#5ef0a8',danger:'#ff5f68'},pages:{fuel:true,temperature:true,diagnostics:false},peakEnabled:true},
-      boost:{baroSource:'auto',fixedBaroKpa:99.4,offsetBar:0,minBar:-1,maxBar:1.5,warningBar:.9,dangerBar:1.15,mapRateHz:10,smoothingMs:250},
+      boost:{baroSource:'auto',arcStyle:'segmented',fixedBaroKpa:99.4,offsetBar:0,minBar:-1,maxBar:1.5,warningBar:.9,dangerBar:1.15,mapRateHz:10,smoothingMs:250},
       fuel:{source:'auto',correction:1,density:745,switchSpeedKmh:5,averageMode:'trip',saveTrip:true},
       lpg:{enabled:true,source:'valve',inputPin:34,activeLevel:'low',debounceMs:800,offDelaySec:1,showBadge:true,lpgCorrection:1,petrolCorrection:1,averageMode:'Раздельно: газ и бензин',units:'л/100 км'},
       controls:{shortAction:'next',longAction:'context',longPressSec:1.8,serviceHoldSec:5,lockWhenMoving:true,returnMain:true,serviceTimeoutMin:15},
@@ -337,7 +338,7 @@
     function collectConfig(){return{
       schemaVersion:1,
       display:{theme:val('theme'),rotation:val('rotation'),brightnessDay:num('dayBrightness'),brightnessNight:num('nightBrightness'),startScreen:val('startScreen'),autoReturnSec:num('autoReturn'),colors:{text:val('colorText'),vacuum:val('colorVacuum'),boost:val('colorBoost'),danger:val('colorDanger')},pages:{fuel:val('pageFuel'),temperature:val('pageTemp'),diagnostics:val('pageDiag')},peakEnabled:val('peakEnabled')},
-      boost:{baroSource:val('baroSource'),fixedBaroKpa:num('fixedBaro'),offsetBar:num('boostOffset'),minBar:num('boostMin'),maxBar:num('boostMax'),warningBar:num('warningBoost'),dangerBar:num('dangerBoost'),mapRateHz:parseInt(val('mapRate')),smoothingMs:num('smoothing')},
+      boost:{baroSource:val('baroSource'),arcStyle:val('arcStyle'),fixedBaroKpa:num('fixedBaro'),offsetBar:num('boostOffset'),minBar:num('boostMin'),maxBar:num('boostMax'),warningBar:num('warningBoost'),dangerBar:num('dangerBoost'),mapRateHz:parseInt(val('mapRate')),smoothingMs:num('smoothing')},
       fuel:{source:val('fuelSource'),correction:num('fuelCorrection'),density:num('fuelDensity'),switchSpeedKmh:parseInt(val('switchSpeed')),averageMode:val('averageMode'),saveTrip:val('saveTrip')},
       lpg:{enabled:val('lpgEnabled'),source:val('lpgSource'),inputPin:parseInt(val('lpgPin')),activeLevel:val('lpgActiveLevel').startsWith('LOW')?'low':'high',debounceMs:num('lpgDebounce'),offDelaySec:parseInt(val('lpgOffDelay')),showBadge:val('lpgBadge'),lpgCorrection:num('lpgCorrection'),petrolCorrection:num('petrolCorrection'),averageMode:val('lpgAverage'),units:val('lpgUnits')},
       controls:{shortAction:val('shortAction'),longAction:val('longAction'),longPressSec:num('longPress'),serviceHoldSec:num('serviceHold'),lockWhenMoving:val('lockMoving'),returnMain:val('returnMain'),serviceTimeout:val('serviceTimeout')},
@@ -347,7 +348,7 @@
     function applyConfig(c){
       const set=(id,v)=>{const e=$('#'+id);if(!e||v===undefined)return;if(e.type==='checkbox')e.checked=!!v;else e.value=v};
       set('theme',c.display?.theme);set('rotation',c.display?.rotation);set('dayBrightness',c.display?.brightnessDay);set('nightBrightness',c.display?.brightnessNight);set('startScreen',c.display?.startScreen);set('autoReturn',c.display?.autoReturnSec);set('colorText',c.display?.colors?.text);set('colorVacuum',c.display?.colors?.vacuum);set('colorBoost',c.display?.colors?.boost);set('colorDanger',c.display?.colors?.danger);set('pageFuel',c.display?.pages?.fuel);set('pageTemp',c.display?.pages?.temperature);set('pageDiag',c.display?.pages?.diagnostics);set('peakEnabled',c.display?.peakEnabled);
-      set('baroSource',c.boost?.baroSource);set('fixedBaro',c.boost?.fixedBaroKpa);set('boostOffset',c.boost?.offsetBar);set('boostMin',c.boost?.minBar);set('boostMax',c.boost?.maxBar);set('warningBoost',c.boost?.warningBar);set('dangerBoost',c.boost?.dangerBar);if(c.boost?.mapRateHz)set('mapRate',c.boost.mapRateHz+' Гц');set('smoothing',c.boost?.smoothingMs);
+      set('baroSource',c.boost?.baroSource);set('arcStyle',c.boost?.arcStyle);set('fixedBaro',c.boost?.fixedBaroKpa);set('boostOffset',c.boost?.offsetBar);set('boostMin',c.boost?.minBar);set('boostMax',c.boost?.maxBar);set('warningBoost',c.boost?.warningBar);set('dangerBoost',c.boost?.dangerBar);if(c.boost?.mapRateHz)set('mapRate',c.boost.mapRateHz+' Гц');set('smoothing',c.boost?.smoothingMs);
       set('fuelSource',c.fuel?.source);set('fuelCorrection',c.fuel?.correction);set('fuelDensity',c.fuel?.density);if(c.fuel?.switchSpeedKmh)set('switchSpeed',c.fuel.switchSpeedKmh+' км/ч');set('averageMode',c.fuel?.averageMode);set('saveTrip',c.fuel?.saveTrip);
       set('lpgEnabled',c.lpg?.enabled);set('lpgSource',c.lpg?.source);if(c.lpg?.inputPin)set('lpgPin','GPIO'+c.lpg.inputPin);set('lpgActiveLevel',c.lpg?.activeLevel==='high'?'HIGH':'LOW · оптопара включена');set('lpgDebounce',c.lpg?.debounceMs);if(c.lpg?.offDelaySec!==undefined)set('lpgOffDelay',c.lpg.offDelaySec===0?'0 секунд':c.lpg.offDelaySec===1?'1 секунда':c.lpg.offDelaySec+' секунды');set('lpgBadge',c.lpg?.showBadge);set('lpgCorrection',c.lpg?.lpgCorrection);set('petrolCorrection',c.lpg?.petrolCorrection);set('lpgAverage',c.lpg?.averageMode);set('lpgUnits',c.lpg?.units);
       set('longPress',c.controls?.longPressSec);set('serviceHold',c.controls?.serviceHoldSec);set('lockMoving',c.controls?.lockWhenMoving);set('returnMain',c.controls?.returnMain);set('serviceTimeout',c.controls?.serviceTimeout);
@@ -365,8 +366,10 @@
       const brightness=(previewMode==='day'?num('dayBrightness'):num('nightBrightness'))/100;
       ctx.clearRect(0,0,W,H);const bg=ctx.createRadialGradient(95,74,8,120,120,125);bg.addColorStop(0,'#101b19');bg.addColorStop(.58,'#060c0b');bg.addColorStop(1,'#020504');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
       const aMin=angleFor(min,min,max),aZero=angleFor(0,min,max),aWarn=angleFor(warn,min,max),aDanger=angleFor(danger,min,max),aMax=angleFor(max,min,max);
+      ctx.setLineDash(val('arcStyle')==='segmented'?[2,2.4]:[]);
       arc(101,aMin,aMax,'#172420',8);arc(101,aMin,aZero,cssColor(vac,.23),8);arc(101,aZero,aWarn,cssColor(boost,.23),8);arc(101,aWarn,aDanger,'rgba(255,189,89,.22)',8);arc(101,aDanger,aMax,cssColor(red,.26),8);
       const end=angleFor(v,min,max);if(v<0)arc(101,aMin,end,vac,8);else{arc(101,aMin,aZero,cssColor(vac,.55),8);arc(101,aZero,Math.min(end,aWarn),boost,8);if(v>warn)arc(101,aWarn,Math.min(end,aDanger),'#ffbd59',8);if(v>danger)arc(101,aDanger,end,red,8)}
+      ctx.setLineDash([]);
       for(let i=0;i<=10;i++){const vv=min+(max-min)*i/10,a=angleFor(vv,min,max),major=i%2===0,r1=major?89:92,r2=major?96:96;ctx.beginPath();ctx.moveTo(120+Math.cos(a)*r1,120+Math.sin(a)*r1);ctx.lineTo(120+Math.cos(a)*r2,120+Math.sin(a)*r2);ctx.strokeStyle='rgba(218,238,230,.45)';ctx.lineWidth=major?1.5:1;ctx.stroke()}
       if(val('peakEnabled')){const peak=Math.min(max,Math.max(v,.94)),a=angleFor(peak,min,max);ctx.beginPath();ctx.moveTo(120+Math.cos(a)*84,120+Math.sin(a)*84);ctx.lineTo(120+Math.cos(a)*96,120+Math.sin(a)*96);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke()}
       ctx.textAlign='center';ctx.fillStyle='rgba(198,221,213,.82)';ctx.font='600 11px Inter,Arial';ctx.fillText('13.9 V',120,37);

@@ -17,8 +17,14 @@ ConfigData ConfigStore::defaults() {
   c.pageTemperature = true;
   c.pageDiagnostics = false;
   c.peakEnabled = true;
+  c.colorText = 0xF7DE;     // #f2faf7
+  c.colorVacuum = 0x5E5D;   // #5dc9e8
+  c.colorBoost = 0x5F95;    // #5ef0a8
+  c.colorWarning = 0xFDEB;  // #ffbd59
+  c.colorDanger = 0xFAED;   // #ff5f68
 
   c.baroSource = BaroSource::Auto;
+  c.boostArcStyle = BoostArcStyle::Segmented;
   c.fixedBaroKpa = 99.4f;
   c.boostOffsetBar = 0.0f;
   c.boostMinBar = -1.0f;

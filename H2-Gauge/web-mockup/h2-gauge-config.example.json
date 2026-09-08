@@ -26,6 +26,7 @@
   "boost": {
     "source": "obd_map",
     "baroSource": "auto",
+    "arcStyle": "segmented",
     "fixedBaroKpa": 99.4,
     "offsetBar": 0.0,
     "minBar": -1.0,

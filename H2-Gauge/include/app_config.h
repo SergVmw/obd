@@ -21,6 +21,11 @@ enum class FuelSource : uint8_t {
   SpeedDensity = 5,
 };
 
+enum class BoostArcStyle : uint8_t {
+  Segmented = 0,
+  Solid = 1,
+};
+
 struct ConfigData {
   uint32_t magic;
   uint16_t schemaVersion;
@@ -35,9 +40,15 @@ struct ConfigData {
   bool pageTemperature;
   bool pageDiagnostics;
   bool peakEnabled;
+  uint16_t colorText;
+  uint16_t colorVacuum;
+  uint16_t colorBoost;
+  uint16_t colorWarning;
+  uint16_t colorDanger;
 
   // Boost
   BaroSource baroSource;
+  BoostArcStyle boostArcStyle;
   float fixedBaroKpa;
   float boostOffsetBar;
   float boostMinBar;
