@@ -439,11 +439,18 @@ void DashboardUi::drawFuel(const TelemetryData& data,
                      120, 114);
 
   snprintf(value, sizeof(value), "%.2f L", engine.petrolLiters(config));
-  drawValueCell(67, 153, value, translated(config, "БЕНЗИН", "PETROL"),
-                config, config.colorWarning);
-  snprintf(value, sizeof(value), "%.2f L", engine.lpgLiters(config));
-  drawValueCell(173, 153, value, translated(config, "ГАЗ", "LPG"), config,
-                config.colorBoost);
+  if (config.lpgEnabled) {
+    drawValueCell(67, 153, value, translated(config, "БЕНЗИН", "PETROL"),
+                  config, config.colorWarning);
+    snprintf(value, sizeof(value), "%.2f L", engine.lpgLiters(config));
+    drawValueCell(173, 153, value, translated(config, "ГАЗ", "LPG"), config,
+                  config.colorBoost);
+  } else {
+    // Gasoline-only mode keeps every petrol statistic while removing all LPG
+    // values from the instrument screen.
+    drawValueCell(120, 153, value, translated(config, "БЕНЗИН", "PETROL"),
+                  config, config.colorWarning);
+  }
 
   drawStatusRow(data, config, now);
 }

@@ -41,8 +41,51 @@ bool TripStore::reset(TripState& trip) {
   return save(trip);
 }
 
-void TelemetryEngine::begin(TripState* trip) {
+uint32_t PetrolCalibrationStore::checksum(
+    const PetrolCalibrationState& state) {
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&state);
+  const size_t length = offsetof(PetrolCalibrationState, checksum);
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < length; ++i) {
+    hash ^= bytes[i];
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+bool PetrolCalibrationStore::begin(PetrolCalibrationState& state) {
+  if (!preferences_.begin("h2petcal", false)) {
+    state = PetrolCalibrationState{};
+    return false;
+  }
+  if (preferences_.getBytesLength("state") == sizeof(state)) {
+    preferences_.getBytes("state", &state, sizeof(state));
+  }
+  if (state.magic != 0x5043414CUL || state.schemaVersion != 1 ||
+      state.checksum != checksum(state)) {
+    state = PetrolCalibrationState{};
+    save(state);
+  }
+  return true;
+}
+
+bool PetrolCalibrationStore::save(PetrolCalibrationState& state) {
+  state.magic = 0x5043414CUL;
+  state.schemaVersion = 1;
+  state.checksum = checksum(state);
+  return preferences_.putBytes("state", &state, sizeof(state)) ==
+         sizeof(state);
+}
+
+bool PetrolCalibrationStore::reset(PetrolCalibrationState& state) {
+  state = PetrolCalibrationState{};
+  return save(state);
+}
+
+void TelemetryEngine::begin(TripState* trip,
+                            PetrolCalibrationState* petrolCalibration) {
   trip_ = trip;
+  petrolCalibration_ = petrolCalibration;
   lastUpdateAt_ = millis();
 }
 
@@ -87,6 +130,18 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   lastUpdateAt_ = now;
   if (dtMs == 0 || dtMs > 2000) dtMs = 0;
   const float dtSec = dtMs / 1000.0f;
+
+  // Keep the PID 0D value untouched and derive one corrected speed used by
+  // every display, distance and L/100 km calculation. Preserve the original
+  // timestamp so a stale PID cannot be made fresh by this fast update loop.
+  if (!isnan(data_.rawSpeedKph.value)) {
+    data_.speedKph.value =
+        fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
+    data_.speedKph.updatedAt = data_.rawSpeedKph.updatedAt;
+  } else {
+    data_.speedKph.value = NAN;
+    data_.speedKph.updatedAt = 0;
+  }
 
   data_.effectiveBaroKpa = chooseBaro(now, config);
   if (data_.mapKpa.valid(now)) {
@@ -220,6 +275,16 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
       ++trip_->petrolSeconds;
       petrolTimeRemainderMs_ -= 1000;
     }
+
+    if (petrolCalibration_ && petrolCalibration_->active) {
+      petrolCalibration_->rawPetrolLiters += rawLiters;
+      petrolCalibration_->distanceKm += distance;
+      calibrationTimeRemainderMs_ += dtMs;
+      while (calibrationTimeRemainderMs_ >= 1000) {
+        ++petrolCalibration_->petrolSeconds;
+        calibrationTimeRemainderMs_ -= 1000;
+      }
+    }
   }
 }
 
@@ -237,14 +302,44 @@ void TelemetryEngine::resetTrip() {
   lpgTimeRemainderMs_ = 0;
 }
 
+void TelemetryEngine::startPetrolCalibration() {
+  if (!petrolCalibration_) return;
+  petrolCalibration_->rawPetrolLiters = 0.0;
+  petrolCalibration_->distanceKm = 0.0;
+  petrolCalibration_->petrolSeconds = 0;
+  petrolCalibration_->active = 1;
+  calibrationTimeRemainderMs_ = 0;
+}
+
+void TelemetryEngine::finishPetrolCalibration(
+    float actualLiters, float calculatedLiters, float oldCorrection,
+    float newCorrection) {
+  if (!petrolCalibration_) return;
+  petrolCalibration_->active = 0;
+  petrolCalibration_->lastActualLiters = actualLiters;
+  petrolCalibration_->lastCalculatedLiters = calculatedLiters;
+  petrolCalibration_->lastOldCorrection = oldCorrection;
+  petrolCalibration_->lastNewCorrection = newCorrection;
+  ++petrolCalibration_->calibrationCount;
+  calibrationTimeRemainderMs_ = 0;
+}
+
 float TelemetryEngine::petrolLiters(const ConfigData& config) const {
   return trip_ ? static_cast<float>(trip_->rawPetrolLiters * config.petrolCorrection)
                : 0.0f;
 }
 
 float TelemetryEngine::lpgLiters(const ConfigData& config) const {
-  return trip_ ? static_cast<float>(trip_->rawLpgLiters * config.lpgCorrection)
-               : 0.0f;
+  if (!config.lpgEnabled || !trip_) return 0.0f;
+  return static_cast<float>(trip_->rawLpgLiters * config.lpgCorrection);
+}
+
+float TelemetryEngine::petrolCalibrationLiters(
+    const ConfigData& config) const {
+  return petrolCalibration_
+             ? static_cast<float>(petrolCalibration_->rawPetrolLiters *
+                                  config.petrolCorrection)
+             : 0.0f;
 }
 
 float TelemetryEngine::averageForCurrentFuel(const ConfigData& config) const {

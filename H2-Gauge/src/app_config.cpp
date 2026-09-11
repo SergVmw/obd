@@ -2,6 +2,18 @@
 
 #include <cstring>
 #include <cstddef>
+#include <cmath>
+
+namespace {
+uint32_t fnv1a(const uint8_t* bytes, size_t length) {
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < length; ++i) {
+    hash ^= bytes[i];
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+}  // namespace
 
 ConfigData ConfigStore::defaults() {
   ConfigData c{};
@@ -67,19 +79,17 @@ ConfigData ConfigStore::defaults() {
   strlcpy(c.apName, "H2-Gauge", sizeof(c.apName));
   strlcpy(c.apPassword, "h2gauge18", sizeof(c.apPassword));
 
+  // User-selectable. A typical speedometer correction can be entered as -5,
+  // but a firmware update must not silently change distance accounting.
+  c.speedCorrectionKph = 0.0f;
+
   c.checksum = checksum(c);
   return c;
 }
 
 uint32_t ConfigStore::checksum(const ConfigData& config) {
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&config);
-  const size_t length = offsetof(ConfigData, checksum);
-  uint32_t hash = 2166136261UL;  // FNV-1a
-  for (size_t i = 0; i < length; ++i) {
-    hash ^= bytes[i];
-    hash *= 16777619UL;
-  }
-  return hash;
+  return fnv1a(bytes, offsetof(ConfigData, checksum));
 }
 
 bool ConfigStore::valid(const ConfigData& config) {
@@ -94,27 +104,69 @@ bool ConfigStore::begin() {
     return false;
   }
 
-  if (preferences_.getBytesLength("config") == sizeof(ConfigData)) {
+  const size_t storedLength = preferences_.getBytesLength("config");
+  bool loaded = false;
+  bool needsSave = false;
+
+  if (storedLength == sizeof(ConfigData)) {
     preferences_.getBytes("config", &config_, sizeof(config_));
+    loaded = valid(config_);
+  } else {
+    // Schema 4 appends speedCorrectionKph immediately before checksum.  The
+    // whole schema-2/3 prefix can therefore be migrated without resetting any
+    // older setting, even though the NVS blob is four bytes shorter.
+    constexpr size_t kLegacyPrefix = offsetof(ConfigData, speedCorrectionKph);
+    constexpr size_t kLegacySize = kLegacyPrefix + sizeof(uint32_t);
+    if (storedLength == kLegacySize) {
+      uint8_t legacy[kLegacySize]{};
+      preferences_.getBytes("config", legacy, sizeof(legacy));
+
+      uint32_t legacyMagic = 0;
+      uint16_t legacySchema = 0;
+      uint32_t legacyChecksum = 0;
+      memcpy(&legacyMagic, legacy, sizeof(legacyMagic));
+      memcpy(&legacySchema, legacy + sizeof(legacyMagic), sizeof(legacySchema));
+      memcpy(&legacyChecksum, legacy + kLegacyPrefix,
+             sizeof(legacyChecksum));
+
+      if (legacyMagic == kMagic &&
+          (legacySchema == 2 || legacySchema == 3) &&
+          legacyChecksum == fnv1a(legacy, kLegacyPrefix)) {
+        config_ = defaults();
+        memcpy(&config_, legacy, kLegacyPrefix);
+        config_.schemaVersion = H2G_CONFIG_SCHEMA;
+        config_.speedCorrectionKph = 0.0f;
+        if (legacySchema == 2) {
+          config_.startPage |= 0xE0;  // migration marker + trims + DFCO
+          if (config_.autoReturnSec == 10) config_.autoReturnSec = 5;
+        }
+        loaded = true;
+        needsSave = true;
+      }
+    }
   }
 
-  const bool storedChecksumValid =
-      config_.magic == kMagic && config_.checksum == checksum(config_);
-  if (storedChecksumValid && config_.schemaVersion == 2) {
-    // Schema 3 reuses reserved packed bits, so the structure size stays stable
-    // and all 0.1.8 settings can be preserved.
-    config_.schemaVersion = H2G_CONFIG_SCHEMA;
-    config_.startPage |= 0xE0;  // marker + fuel trims + DFCO enabled
-    if (config_.autoReturnSec == 10) config_.autoReturnSec = 5;
-    save();
-  } else if (!valid(config_)) {
+  if (!loaded) {
     config_ = defaults();
-    save();
-  } else if ((config_.startPage & 0x80) == 0) {
-    // Defensive migration for a valid schema-3 image missing its marker.
-    config_.startPage |= 0xE0;
-    save();
+    needsSave = true;
   }
+
+  if ((config_.startPage & 0x80) == 0) {
+    config_.startPage |= 0xE0;
+    needsSave = true;
+  }
+  if (!std::isfinite(config_.speedCorrectionKph) ||
+      config_.speedCorrectionKph < -20.0f ||
+      config_.speedCorrectionKph > 20.0f) {
+    config_.speedCorrectionKph = 0.0f;
+    needsSave = true;
+  }
+  if (!config_.lpgEnabled && config_.fuelSource == FuelSource::BrcKLine) {
+    config_.fuelSource = FuelSource::Auto;
+    needsSave = true;
+  }
+
+  if (needsSave) save();
   return true;
 }
 

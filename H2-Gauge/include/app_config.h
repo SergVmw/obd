@@ -83,7 +83,9 @@ struct ConfigData {
   uint8_t switchSpeedKph;
   bool saveTrip;
 
-  // LPG input
+  // Global LPG feature switch and valve input.  When lpgEnabled is false the
+  // valve input, LPG calculations, trim polling/warnings and LPG UI are off;
+  // petrol calculation remains fully operational.
   bool lpgEnabled;
   bool lpgActiveLow;
   uint16_t lpgDebounceMs;
@@ -104,6 +106,10 @@ struct ConfigData {
   char deviceName[24];
   char apName[32];
   char apPassword[32];
+
+  // Schema 4 append-only field. Applied to OBD PID 0D before display,
+  // distance and L/100 km calculations. Range is validated to -20..+20 km/h.
+  float speedCorrectionKph;
 
   uint8_t displayStartPage() const { return startPage & 0x03; }
   void setDisplayStartPage(uint8_t page) {

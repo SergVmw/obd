@@ -9,7 +9,7 @@
 - LPG state: защищённый вход клапана на GPIO34 (по умолчанию отключён)
 - Configuration: локальный Wi-Fi service portal
 
-## Статус revision 0.1.9
+## Статус revision 0.2.0
 
 Исправление 0.1.1: полноэкранный framebuffer переключён с RGB565 16-bit (115200 байт) на 8-bit (57600 байт), поскольку на ESP32-WROOM без PSRAM не удалось выделить один непрерывный 16-bit блок. В таблицу разделов добавлен Core Dump 64 КиБ.
 
@@ -29,6 +29,9 @@
 
 Добавление 0.1.9: свежий PID 42 контролирует low-voltage policy — ниже 11.5 В в течение 3 секунд trip принудительно сохраняется, TWAI и дисплей останавливаются, затем ESP32 уходит в deep sleep с пробуждением через 30 секунд или кнопкой GPIO32. Усиллено автоматическое восстановление TWAI bus-off и включён `TWAI_ALERT_AND_LOG`. Добавлены PID 11/06/07, DFCO, контроль STFT+LTFT на LPG и адаптивный polling. Создан отключённый Mode 22/ISO-TP framework без выдуманных Haval DID. Сервис получил ограниченный REST CAN Monitor с агрегацией до 32 ID/направлений. Все собственные runtime-сообщения переведены на `ESP_LOGI/W/E`; добавлены схема автомобильного питания, troubleshooting и CI-сборка GitHub Actions. Schema 3 мигрирует настройки 0.1.8 без сброса.
 
+
+Добавление 0.2.0: `lpgEnabled` стал глобальным выключателем всех газовых функций, не затрагивающим бензиновый расчёт. Добавлена отдельная сохраняемая калибровка бензина «полный бак → полный бак», автоматически вычисляющая `petrolCorrection` без сброса обычной поездки. PID 0D теперь хранится как raw speed, а на экран, расстояние и л/100 км подаётся скорость с регулируемой поправкой `−20…+20 км/ч`; default 0. Safety-проверки продолжают использовать сырую скорость. Schema 4 сохраняет все настройки schema 2/3. Подробности: [`docs/revision-0.2.0.md`](docs/revision-0.2.0.md).
+
 Реализовано:
 
 - запуск встроенного TWAI ESP32 и автоматический bus-off recovery;
@@ -36,6 +39,9 @@
 - чтение MAP, RPM, speed, MAF, throttle, STFT, LTFT, BARO, voltage, coolant, Fuel Rate и commanded equivalence ratio;
 - расчёт относительного наддува;
 - расчёт бензина по PID 5E с резервом MAF;
+- отдельная full-tank калибровка коэффициента бензина без сброса trip;
+- регулируемая коррекция скорости PID 0D для экрана, пути и л/100 км;
+- глобальный выключатель всех функций ГБО с сохранением бензинового режима;
 - расчёт LPG по MAF с отдельным коэффициентом;
 - DFCO по закрытому throttle/RPM и предупреждение STFT+LTFT для LPG;
 - раздельное накопление бензина и LPG;
@@ -81,7 +87,7 @@
 
 Для подавления вспышки до логотипа установить 10 кОм между GPIO26/RST дисплея и GND. На текущем стенде BL/BLK подключён к 3.3 В, GPIO25 не подключён; PWM заработает только после установки аппаратного ключа подсветки.
 
-Полная схема питания, кнопки, CAN и ключа подсветки: [`docs/wiring.md`](docs/wiring.md).
+Подключение, питание, CAN, LPG и подсветка: [`docs/wiring.md`](docs/wiring.md). Четырёхлистная **принципиальная электрическая схема**: [PDF](docs/h2-gauge-principle-schematic.pdf), [SVG](docs/h2-gauge-principle-schematic.svg), [PNG](docs/h2-gauge-principle-schematic.png); расчёты и BOM: [`docs/h2-gauge-schematic-notes.md`](docs/h2-gauge-schematic-notes.md).
 
 ### CAN transceiver
 
@@ -125,12 +131,14 @@ pio run
 .pio/build/esp32dev/firmware.bin
 ```
 
-Готовый release 0.1.9:
+Готовый release 0.2.0:
 
 ```text
-releases/h2-gauge-v0.1.9-esp32.bin
-SHA-256: 86d01b6aec6c0f8c39b70e18e25b3f34576ec0032d1c8dab9f8e70d9fd4d77d6
+releases/h2-gauge-v0.2.0-esp32.bin
+SHA-256: 0ab821e6e7de824e16e6253b7ff4f36309db3144fed921f84799dfb0fdab3efd
 ```
+
+Предыдущий стабильный образ 0.1.9 сохранён в `releases/`.
 
 Первая полная прошивка по USB:
 

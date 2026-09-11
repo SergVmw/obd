@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "display": {
     "theme": "classic",
     "rotation": 0,
@@ -53,7 +53,7 @@
     "fuelTrimWarningDelaySec": 5
   },
   "lpg": {
-    "enabled": true,
+    "enabled": false,
     "stateSource": "valve_opto",
     "inputPin": 34,
     "activeLevel": "low",
@@ -106,6 +106,7 @@
     "timeoutMs": 120,
     "maxRequestsPerSecond": 30,
     "adaptivePolling": true,
+    "speedCorrectionKph": 0,
     "mode22": {
       "enabledDidCount": 0,
       "policy": "verified_haval_dids_only"

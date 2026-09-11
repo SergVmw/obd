@@ -13,9 +13,12 @@ class ServicePortal {
  public:
   ServicePortal(ConfigStore& configStore, TelemetryData& telemetry,
                 TelemetryEngine& engine, TripStore& tripStore,
+                PetrolCalibrationStore& petrolCalibrationStore,
                 CanMonitor& canMonitor)
       : configStore_(configStore), telemetry_(telemetry), engine_(engine),
-        tripStore_(tripStore), canMonitor_(canMonitor), server_(80) {}
+        tripStore_(tripStore),
+        petrolCalibrationStore_(petrolCalibrationStore),
+        canMonitor_(canMonitor), server_(80) {}
 
   bool begin();
   void loop();
@@ -28,6 +31,9 @@ class ServicePortal {
   void sendConfig();
   void receiveConfig();
   void sendStatus();
+  void sendPetrolCalibration();
+  void startPetrolCalibration();
+  void applyPetrolCalibration();
   void sendCanSnapshot();
   void clearCanSnapshot();
   void handleOtaUpload();
@@ -39,6 +45,7 @@ class ServicePortal {
   TelemetryData& telemetry_;
   TelemetryEngine& engine_;
   TripStore& tripStore_;
+  PetrolCalibrationStore& petrolCalibrationStore_;
   CanMonitor& canMonitor_;
   DNSServer dns_;
   WebServer server_;

@@ -260,7 +260,7 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
       break;
     case 0x0D:
-      telemetry_.speedKph.set(static_cast<float>(a), now);
+      telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
       break;
     case 0x10:
       telemetry_.mafGps.set(((static_cast<uint16_t>(a) << 8) | b) / 100.0f,
@@ -326,8 +326,8 @@ void ObdClient::runDiscovery(uint32_t now) {
 
 void ObdClient::runPolling(uint32_t now) {
   constexpr uint8_t kPollCount = sizeof(poll_) / sizeof(poll_[0]);
-  const bool parked = telemetry_.speedKph.valid(now) &&
-                      telemetry_.speedKph.value < 1.0f;
+  const bool parked = telemetry_.rawSpeedKph.valid(now) &&
+                      telemetry_.rawSpeedKph.value < 1.0f;
 
   PollItem* selected = nullptr;
   uint8_t selectedIndex = 0;
@@ -343,7 +343,7 @@ void ObdClient::runPolling(uint32_t now) {
     auto& item = poll_[index];
     if (!isSupported(item.pid)) continue;
     if ((item.pid == 0x06 || item.pid == 0x07) &&
-        !config_.fuelTrimEnabled()) {
+        (!config_.lpgEnabled || !config_.fuelTrimEnabled())) {
       continue;
     }
     if (item.pid == 0x11 && !config_.dfcoEnabled()) continue;

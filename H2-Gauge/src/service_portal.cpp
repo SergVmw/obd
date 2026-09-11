@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <esp_log.h>
+#include <math.h>
 #include "version.h"
 #include "web_ui_gz.h"
 
@@ -109,6 +110,13 @@ void ServicePortal::setupRoutes() {
     server_.send(200, "application/json", "{\"ok\":true}");
   });
 
+  server_.on("/api/fuel/petrol-calibration", HTTP_GET,
+             [this]() { sendPetrolCalibration(); });
+  server_.on("/api/fuel/petrol-calibration/start", HTTP_POST,
+             [this]() { startPetrolCalibration(); });
+  server_.on("/api/fuel/petrol-calibration/apply", HTTP_POST,
+             [this]() { applyPetrolCalibration(); });
+
   server_.on("/api/reboot", HTTP_POST, [this]() {
     touch();
     server_.send(200, "application/json", "{\"ok\":true}");
@@ -119,6 +127,7 @@ void ServicePortal::setupRoutes() {
     touch();
     configStore_.factoryReset();
     tripStore_.reset(engine_.trip());
+    petrolCalibrationStore_.reset(engine_.petrolCalibration());
     server_.send(200, "application/json", "{\"ok\":true}");
     rebootAt_ = millis() + 1000;
   });
@@ -202,6 +211,7 @@ void ServicePortal::sendConfig() {
   JsonObject obd = doc["obd"].to<JsonObject>();
   obd["obdTimeoutMs"] = c.obdTimeoutMs;
   obd["maxRequestsPerSecond"] = c.maxRequestsPerSecond;
+  obd["speedCorrectionKph"] = c.speedCorrectionKph;
 
   JsonObject service = doc["service"].to<JsonObject>();
   service["deviceName"] = c.deviceName;
@@ -287,6 +297,10 @@ void ServicePortal::receiveConfig() {
     c.lpgOffDelayMs = clampValue<int>(l["lpgOffDelayMs"] | c.lpgOffDelayMs, 0, 5000);
   }
 
+  if (!c.lpgEnabled && c.fuelSource == FuelSource::BrcKLine) {
+    c.fuelSource = FuelSource::Auto;
+  }
+
   JsonObjectConst controls = doc["controls"];
   if (!controls.isNull()) {
     c.longPressMs = clampValue<int>(controls["longPressMs"] | c.longPressMs, 800, 4000);
@@ -299,6 +313,8 @@ void ServicePortal::receiveConfig() {
   if (!obd.isNull()) {
     c.obdTimeoutMs = clampValue<int>(obd["obdTimeoutMs"] | c.obdTimeoutMs, 50, 1000);
     c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 40);
+    c.speedCorrectionKph = clampValue<float>(
+        obd["speedCorrectionKph"] | c.speedCorrectionKph, -20.0f, 20.0f);
   }
 
   JsonObjectConst service = doc["service"];
@@ -340,19 +356,171 @@ void ServicePortal::sendStatus() {
   doc["ecuId"] = ecu;
   if (telemetry_.mapKpa.valid(now)) doc["boostBar"] = telemetry_.filteredBoostBar;
   else doc["boostBar"] = nullptr;
-  doc["fuelMode"] = fuelModeName(telemetry_.fuelMode);
-  doc["fuelLph"] = telemetry_.fuelValueValid ? telemetry_.currentFuelLph : 0.0f;
+  const bool lpgEnabled = configStore_.data().lpgEnabled;
+  const bool staleLpgSample = !lpgEnabled && telemetry_.fuelMode == FuelMode::Lpg;
+  const FuelMode statusFuelMode = staleLpgSample ? FuelMode::Petrol
+                                                 : telemetry_.fuelMode;
+  doc["fuelMode"] = fuelModeName(statusFuelMode);
+  doc["lpgEnabled"] = lpgEnabled;
+  doc["fuelLph"] = telemetry_.fuelValueValid && !staleLpgSample
+                       ? telemetry_.currentFuelLph
+                       : 0.0f;
+  doc["tripPetrolLiters"] = engine_.petrolLiters(configStore_.data());
+  doc["tripLpgLiters"] = engine_.lpgLiters(configStore_.data());
+  doc["rawSpeedKph"] = telemetry_.rawSpeedKph.valid(now)
+                             ? telemetry_.rawSpeedKph.value
+                             : 0.0f;
+  doc["speedKph"] = telemetry_.speedKph.valid(now)
+                         ? telemetry_.speedKph.value
+                         : 0.0f;
+  doc["speedCorrectionKph"] = configStore_.data().speedCorrectionKph;
   doc["dfcoActive"] = telemetry_.dfcoActive;
-  doc["fuelTrimPercent"] = telemetry_.fuelTrimSumPercent;
-  doc["fuelTrimWarning"] = telemetry_.fuelTrimWarning;
+  doc["fuelTrimPercent"] = lpgEnabled ? telemetry_.fuelTrimSumPercent : 0.0f;
+  doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
   doc["responses"] = telemetry_.obdResponseCount;
   doc["timeouts"] = telemetry_.obdTimeoutCount;
   doc["freeHeap"] = ESP.getFreeHeap();
 
   String output;
+  output.reserve(1024);
+  serializeJson(doc, output);
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendPetrolCalibration() {
+  touch();
+  const ConfigData& config = configStore_.data();
+  const PetrolCalibrationState& state = engine_.petrolCalibration();
+
+  JsonDocument doc;
+  doc["active"] = state.active != 0;
+  doc["rawLiters"] = state.rawPetrolLiters;
+  doc["calculatedLiters"] = engine_.petrolCalibrationLiters(config);
+  doc["distanceKm"] = state.distanceKm;
+  doc["petrolSeconds"] = state.petrolSeconds;
+  doc["currentCorrection"] = config.petrolCorrection;
+  doc["calibrationCount"] = state.calibrationCount;
+  doc["lastActualLiters"] = state.lastActualLiters;
+  doc["lastCalculatedLiters"] = state.lastCalculatedLiters;
+  doc["lastOldCorrection"] = state.lastOldCorrection;
+  doc["lastNewCorrection"] = state.lastNewCorrection;
+
+  String output;
   output.reserve(512);
   serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::startPetrolCalibration() {
+  touch();
+  const uint32_t now = millis();
+  if (telemetry_.rawSpeedKph.valid(now) &&
+      telemetry_.rawSpeedKph.value > 3.0f) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"vehicle is moving\"}");
+    return;
+  }
+
+  engine_.startPetrolCalibration();
+  if (!petrolCalibrationStore_.save(engine_.petrolCalibration())) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"calibration state save failed\"}");
+    return;
+  }
+  server_.send(200, "application/json",
+               "{\"ok\":true,\"active\":true}");
+}
+
+void ServicePortal::applyPetrolCalibration() {
+  touch();
+  const uint32_t now = millis();
+  if (telemetry_.rawSpeedKph.valid(now) &&
+      telemetry_.rawSpeedKph.value > 3.0f) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"vehicle is moving\"}");
+    return;
+  }
+  if (!engine_.petrolCalibration().active) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"calibration interval is not active\"}");
+    return;
+  }
+  if (!server_.hasArg("plain")) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"JSON body required\"}");
+    return;
+  }
+
+  JsonDocument request;
+  const DeserializationError error =
+      deserializeJson(request, server_.arg("plain"));
+  if (error) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+
+  const float actualLiters = request["actualLiters"] | -1.0f;
+  const double rawLiters = engine_.petrolCalibration().rawPetrolLiters;
+  if (!isfinite(actualLiters) || actualLiters < 1.0f ||
+      actualLiters > 150.0f) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"actualLiters must be 1..150\"}");
+    return;
+  }
+  if (rawLiters < 0.1) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"not enough calculated petrol\"}");
+    return;
+  }
+
+  ConfigData& config = configStore_.data();
+  const float oldCorrection = config.petrolCorrection;
+  const float calculatedLiters =
+      static_cast<float>(rawLiters * oldCorrection);
+  // oldK * actual/calculated simplifies to actual/raw. Keep the expanded
+  // values in the result so the full-tank calculation is auditable.
+  const float newCorrection = static_cast<float>(actualLiters / rawLiters);
+  if (!isfinite(newCorrection) || newCorrection < 0.5f ||
+      newCorrection > 1.5f) {
+    JsonDocument response;
+    response["error"] = "resulting correction outside 0.5..1.5";
+    response["calculatedLiters"] = calculatedLiters;
+    response["actualLiters"] = actualLiters;
+    response["proposedCorrection"] = newCorrection;
+    String output;
+    serializeJson(response, output);
+    server_.send(422, "application/json", output);
+    return;
+  }
+
+  config.petrolCorrection = newCorrection;
+  if (!configStore_.save()) {
+    config.petrolCorrection = oldCorrection;
+    server_.send(500, "application/json",
+                 "{\"error\":\"configuration save failed\"}");
+    return;
+  }
+
+  engine_.finishPetrolCalibration(actualLiters, calculatedLiters,
+                                  oldCorrection, newCorrection);
+  if (!petrolCalibrationStore_.save(engine_.petrolCalibration())) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"calibration result save failed\"}");
+    return;
+  }
+
+  JsonDocument response;
+  response["ok"] = true;
+  response["calculatedLiters"] = calculatedLiters;
+  response["actualLiters"] = actualLiters;
+  response["oldCorrection"] = oldCorrection;
+  response["newCorrection"] = newCorrection;
+  String output;
+  output.reserve(256);
+  serializeJson(response, output);
   server_.send(200, "application/json", output);
 }
 
@@ -433,7 +601,8 @@ void ServicePortal::handleOtaUpload() {
       return;
     }
     const uint32_t now = millis();
-    if (telemetry_.speedKph.valid(now) && telemetry_.speedKph.value > 3.0f) {
+    if (telemetry_.rawSpeedKph.valid(now) &&
+        telemetry_.rawSpeedKph.value > 3.0f) {
       otaError_ = "Vehicle is moving";
       return;
     }

@@ -60,7 +60,9 @@ void LpgValveInput::begin() {
 bool LpgValveInput::update(uint32_t now, const ConfigData& config) {
   if (!config.lpgEnabled) {
     active_ = false;
-    return active_;
+    candidate_ = false;
+    candidateSince_ = now;
+    return false;
   }
 
   const bool levelHigh = digitalRead(Pins::LpgInput) == HIGH;
