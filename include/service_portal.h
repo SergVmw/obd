@@ -38,6 +38,9 @@ class ServicePortal {
   void clearCanSnapshot();
   void handleOtaUpload();
   void handleOtaFinished();
+  void failOta(const char* message, uint16_t httpStatus = 400);
+  bool requireAction(const char* action, uint32_t& lastAcceptedAt,
+                     uint32_t cooldownMs);
   void touch();
   static const char* fuelModeName(FuelMode mode);
 
@@ -53,8 +56,12 @@ class ServicePortal {
   uint32_t startedAt_ = 0;
   uint32_t lastActivityAt_ = 0;
   uint32_t lastCanSnapshotAt_ = 0;
+  uint32_t lastFactoryResetAt_ = 0;
+  uint32_t lastOtaAttemptAt_ = 0;
   uint32_t rebootAt_ = 0;
   bool otaAllowed_ = false;
+  bool otaInProgress_ = false;
   bool otaSuccess_ = false;
+  uint16_t otaHttpStatus_ = 400;
   String otaError_;
 };

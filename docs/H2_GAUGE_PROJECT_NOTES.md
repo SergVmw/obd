@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.0 — актуальные проектные решения
+# H2 Gauge 0.3.1 — актуальные проектные решения
 
 **Дата:** 2026-09-16  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
@@ -193,9 +193,13 @@ URL: http://192.168.4.1
 
 Полный сервис и OTA разрешены только при parked guards. Опциональный read-only Wi‑Fi во время обычной работы допускается архитектурой, но пока не реализован. BLE зарезервирован для будущей телеметрии.
 
-NVS schema 4 хранит конфигурацию, trip и калибровочные накопители. Некорректная или несовместимая запись заменяется текущими defaults.
+NVS schema 5 хранит конфигурацию, trip и калибровочные накопители. В schema 5 `startPage`, `centerValue`, `language`, `fuelTrimPollingEnabled` и `dfcoCorrectionEnabled` являются явными полями вместо вручную упакованных флагов. Schema 4 намеренно не мигрирует побитно: несовместимая или повреждённая запись заменяется текущими defaults.
 
-Web OTA принимает только app image. Bootloader, partition table и factory image через app endpoint не загружаются.
+POST `/api/config` транзакционный: новый объект проверяется отдельно, включая `isfinite()` и invariant порогов `min < 0 < warning < danger <= max`; невалидный объект получает HTTP 422 и не изменяет активную RAM-конфигурацию. При ошибке записи NVS сервер восстанавливает прежнюю RAM-конфигурацию.
+
+Factory reset требует `X-H2G-Action: factory-reset` и имеет cooldown 10 секунд. Web OTA требует `X-H2G-Action: ota`, не допускает параллельную сессию и имеет cooldown 30 секунд. Все ошибки OTA сходятся в единый abort/cleanup path. OTA принимает только app image; bootloader, partition table и factory image через app endpoint не загружаются.
+
+CAN RX обрабатывает не более 16 кадров и 2000 мкс за один вызов, чтобы очередь не монополизировала loop. Arduino loopTask подписан на Task Watchdog.
 
 ## 10. Питание и две коробки
 
@@ -263,21 +267,23 @@ LittleFS 8064 KiB
 Проверенная сборка:
 
 ```text
-RAM: 48 564 / 327 680 bytes
-app Flash payload: 946 361 / 4 194 304 bytes
+RAM: 48 580 / 327 680 bytes
+app Flash payload: 948 965 / 4 194 304 bytes
 ```
 
 Release:
 
 ```text
-h2-gauge-v0.3.0-esp32s3-n16r8.bin
-SHA-256 1dfd8287b37de87c3d2b6e055727220f2dfd4f4f76d02bfc963da3ba87e31962
+h2-gauge-v0.3.1-esp32s3-n16r8.bin
+SHA-256 82bb182a3cc62b9298401292ff03ae4ded27acb4256959292dfe0a0d64301ac2
 
-h2-gauge-v0.3.0-esp32s3-n16r8-factory.bin
-SHA-256 15e3c420aa660964bd23db947c2858bfbdf4317ee872f444852f83b3a1b44414
+h2-gauge-v0.3.1-esp32s3-n16r8-factory.bin
+SHA-256 3795a61fdc800906fe22e0654337df3a1d22bc99a44b88880591f7a388ce0b8d
 ```
 
 Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0.
+
+Финальная проверка 0.3.1 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: release build успешен, API `enableLoopWDT()`, `WebServer::collectHeaders()` и `Update.isRunning()` совместимы. Дополнительно проверены JSON, синтаксис встроенного JavaScript, точное совпадение gzip с `web/index.html`, локальные Markdown-ссылки, SHA-256 обоих образов, valid ESP image hash и расположение app payload в factory image по offset `0x10000`. Аппаратные проверки на автомобиле этой проверкой не заменяются.
 
 ## 12. Обязательная физическая проверка
 

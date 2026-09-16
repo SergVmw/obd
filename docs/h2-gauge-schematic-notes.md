@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.0 — расчёты и pin-to-pin netlist
+# H2 Gauge 0.3.1 — расчёты и pin-to-pin netlist
 
 Этот документ фиксирует электрические соединения для текущей платы **ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8**. Графические листы старой ревизии удалены из `docs`; актуальным источником подключения являются этот netlist и [`wiring.md`](wiring.md).
 

@@ -22,7 +22,6 @@ ConfigData ConfigStore::defaults() {
   c.brightnessDay = 82;
   c.brightnessNight = 26;
   c.rotation = 0;
-  c.startPage = 0x60;  // fuel trims + DFCO enabled
   c.setDisplayStartPage(0);
   c.setMainCenterValue(MainCenterValue::Boost);
   c.setUiLanguage(UiLanguage::Russian);
@@ -92,9 +91,77 @@ uint32_t ConfigStore::checksum(const ConfigData& config) {
 }
 
 bool ConfigStore::valid(const ConfigData& config) {
-  return config.magic == kMagic &&
-         config.schemaVersion == H2G_CONFIG_SCHEMA &&
-         config.checksum == checksum(config);
+  if (config.magic != kMagic ||
+      config.schemaVersion != H2G_CONFIG_SCHEMA ||
+      config.checksum != checksum(config)) {
+    return false;
+  }
+
+  const bool finiteValues =
+      std::isfinite(config.fixedBaroKpa) &&
+      std::isfinite(config.boostOffsetBar) &&
+      std::isfinite(config.boostMinBar) &&
+      std::isfinite(config.boostMaxBar) &&
+      std::isfinite(config.boostWarningBar) &&
+      std::isfinite(config.boostDangerBar) &&
+      std::isfinite(config.petrolCorrection) &&
+      std::isfinite(config.lpgCorrection) &&
+      std::isfinite(config.petrolAfr) &&
+      std::isfinite(config.petrolDensity) &&
+      std::isfinite(config.lpgAfr) &&
+      std::isfinite(config.lpgDensity) &&
+      std::isfinite(config.speedCorrectionKph);
+  const size_t deviceNameLength =
+      strnlen(config.deviceName, sizeof(config.deviceName));
+  const size_t apNameLength = strnlen(config.apName, sizeof(config.apName));
+  const size_t apPasswordLength =
+      strnlen(config.apPassword, sizeof(config.apPassword));
+
+  return finiteValues &&
+         config.brightnessDay >= 10 && config.brightnessDay <= 100 &&
+         config.brightnessNight >= 5 && config.brightnessNight <= 80 &&
+         config.rotation <= 3 && config.displayStartPage() <= 3 &&
+         static_cast<uint8_t>(config.mainCenterValue()) <= 3 &&
+         static_cast<uint8_t>(config.uiLanguage()) <= 1 &&
+         config.autoReturnSec <= 120 &&
+         static_cast<uint8_t>(config.baroSource) <= 4 &&
+         static_cast<uint8_t>(config.boostArcStyle) <= 1 &&
+         config.fixedBaroKpa >= 70.0f && config.fixedBaroKpa <= 110.0f &&
+         config.boostOffsetBar >= -0.5f && config.boostOffsetBar <= 0.5f &&
+         config.boostMinBar >= -1.2f && config.boostMinBar < 0.0f &&
+         config.boostMaxBar >= 0.5f && config.boostMaxBar <= 2.5f &&
+         config.boostWarningBar >= 0.2f &&
+         config.boostWarningBar <= 2.0f &&
+         config.boostDangerBar >= 0.3f && config.boostDangerBar <= 2.5f &&
+         config.boostMinBar < config.boostMaxBar &&
+         config.boostWarningBar > 0.0f &&
+         config.boostWarningBar < config.boostDangerBar &&
+         config.boostDangerBar <= config.boostMaxBar &&
+         config.smoothingMs <= 2000 &&
+         static_cast<uint8_t>(config.fuelSource) <= 5 &&
+         (config.lpgEnabled || config.fuelSource != FuelSource::BrcKLine) &&
+         config.petrolCorrection >= 0.5f &&
+         config.petrolCorrection <= 1.5f &&
+         config.lpgCorrection >= 0.5f && config.lpgCorrection <= 2.0f &&
+         config.petrolAfr >= 10.0f && config.petrolAfr <= 20.0f &&
+         config.petrolDensity >= 400.0f && config.petrolDensity <= 900.0f &&
+         config.lpgAfr >= 10.0f && config.lpgAfr <= 20.0f &&
+         config.lpgDensity >= 400.0f && config.lpgDensity <= 700.0f &&
+         config.switchSpeedKph >= 1 && config.switchSpeedKph <= 30 &&
+         config.lpgDebounceMs >= 100 && config.lpgDebounceMs <= 3000 &&
+         config.lpgOffDelayMs <= 5000 &&
+         config.longPressMs >= 800 && config.longPressMs <= 4000 &&
+         config.serviceHoldMs >= 3000 && config.serviceHoldMs <= 10000 &&
+         config.serviceTimeoutMin >= 3 && config.serviceTimeoutMin <= 60 &&
+         config.obdTimeoutMs >= 50 && config.obdTimeoutMs <= 1000 &&
+         config.maxRequestsPerSecond >= 5 &&
+         config.maxRequestsPerSecond <= 40 &&
+         config.speedCorrectionKph >= -20.0f &&
+         config.speedCorrectionKph <= 20.0f &&
+         deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
+         apNameLength > 0 && apNameLength < sizeof(config.apName) &&
+         apPasswordLength >= 8 &&
+         apPasswordLength < sizeof(config.apPassword);
 }
 
 bool ConfigStore::begin() {
@@ -139,7 +206,7 @@ bool ConfigStore::save() {
 }
 
 bool ConfigStore::factoryReset() {
-  preferences_.clear();
+  if (!preferences_.clear()) return false;
   config_ = defaults();
   return save();
 }

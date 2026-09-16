@@ -5,6 +5,8 @@
 
 namespace {
 constexpr const char* kTag = "OBD";
+constexpr uint8_t kMaxRxFramesPerLoop = 16;
+constexpr uint32_t kRxTimeBudgetUs = 2000;
 }
 
 constexpr uint8_t ObdClient::kDiscoveryPids_[3];
@@ -200,7 +202,11 @@ bool ObdClient::sendMode22(uint32_t now) {
 void ObdClient::receiveFrames(uint32_t now) {
   twai_message_t message{};
   uint8_t processed = 0;
-  while (processed++ < 64 && twai_receive(&message, 0) == ESP_OK) {
+  const uint32_t startedUs = micros();
+  while (processed < kMaxRxFramesPerLoop &&
+         micros() - startedUs < kRxTimeBudgetUs &&
+         twai_receive(&message, 0) == ESP_OK) {
+    ++processed;
     monitor_.record(message, false, now);
     twai_message_t flowControl{};
     bool needsFlowControl = false;

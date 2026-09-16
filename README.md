@@ -14,13 +14,14 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.0
+## Текущая версия 0.3.1
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC, проверка физического размера Flash/PSRAM при старте и RGB565 framebuffer в PSRAM.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC, проверка физического размера Flash/PSRAM при старте и RGB565 framebuffer в PSRAM. Версия 0.3.1 добавляет Task Watchdog, ограниченный CAN RX budget, транзакционную валидацию настроек, защищённые destructive API, корректное завершение неудачного OTA и явные поля NVS schema 5 без bit-packing.
 
 ## Реализовано
 
-- TWAI ESP32-S3 и автоматический bus-off recovery;
+- TWAI ESP32-S3, автоматический bus-off recovery и RX budget 16 кадров/2 мс;
+- Task Watchdog для Arduino loopTask;
 - обнаружение поддерживаемых Mode 01 PID;
 - MAP, RPM, speed, MAF, throttle, STFT, LTFT, BARO, voltage, coolant, Fuel Rate и equivalence ratio;
 - расчёт относительного наддува;
@@ -36,7 +37,7 @@
 - REST CAN Monitor;
 - четыре страницы GC9A01;
 - 16-bit RGB565 framebuffer в PSRAM и 8-bit аварийный fallback;
-- NVS schema 4;
+- NVS schema 5;
 - Wi‑Fi captive portal и локальное app OTA.
 
 ## Распиновка ESP32-S3
@@ -176,17 +177,17 @@ pio run -e esp32s3_n16r8 --target upload
 
 Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.0
+## Release 0.3.1
 
 ```text
-releases/h2-gauge-v0.3.0-esp32s3-n16r8.bin
-SHA-256: 1dfd8287b37de87c3d2b6e055727220f2dfd4f4f76d02bfc963da3ba87e31962
+releases/h2-gauge-v0.3.1-esp32s3-n16r8.bin
+SHA-256: 82bb182a3cc62b9298401292ff03ae4ded27acb4256959292dfe0a0d64301ac2
 
-releases/h2-gauge-v0.3.0-esp32s3-n16r8-factory.bin
-SHA-256: 15e3c420aa660964bd23db947c2858bfbdf4317ee872f444852f83b3a1b44414
+releases/h2-gauge-v0.3.1-esp32s3-n16r8-factory.bin
+SHA-256: 3795a61fdc800906fe22e0654337df3a1d22bc99a44b88880591f7a388ce0b8d
 ```
 
-Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.0.md`](releases/README-v0.3.0.md).
+Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.1.md`](releases/README-v0.3.1.md).
 
 ## Flash и PSRAM
 
@@ -241,7 +242,7 @@ pio run -e esp32s3_n16r8
 
 ## Пока не реализовано или не проверено
 
-- физическая проверка прошивки 0.3.0 на приобретённой ESP32-S3;
+- физическая проверка прошивки 0.3.1 на приобретённой ESP32-S3;
 - автомобильная проверка CAN Haval;
 - BRC K-Line/KWP2000;
 - подтверждённые Haval Mode 22 DID;

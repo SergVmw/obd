@@ -46,10 +46,11 @@ struct ConfigData {
   uint8_t brightnessDay;
   uint8_t brightnessNight;
   uint8_t rotation;
-  // Compact display/feature flags:
-  // bits 0..1 start page, 2..3 main center value, bit 4 UI language,
-  // bit 5 fuel-trim polling, bit 6 DFCO correction, bit 7 reserved.
   uint8_t startPage;
+  MainCenterValue centerValue;
+  UiLanguage language;
+  bool fuelTrimPollingEnabled;
+  bool dfcoCorrectionEnabled;
   uint16_t autoReturnSec;
   bool pageFuel;
   bool pageTemperature;
@@ -111,32 +112,16 @@ struct ConfigData {
   // calculations. Range is validated to -20..+20 km/h.
   float speedCorrectionKph;
 
-  uint8_t displayStartPage() const { return startPage & 0x03; }
-  void setDisplayStartPage(uint8_t page) {
-    startPage = (startPage & 0xFC) | (page & 0x03);
-  }
-  MainCenterValue mainCenterValue() const {
-    return static_cast<MainCenterValue>((startPage >> 2) & 0x03);
-  }
-  void setMainCenterValue(MainCenterValue value) {
-    startPage = (startPage & 0xF3) |
-                ((static_cast<uint8_t>(value) & 0x03) << 2);
-  }
-  UiLanguage uiLanguage() const {
-    return static_cast<UiLanguage>((startPage >> 4) & 0x01);
-  }
-  void setUiLanguage(UiLanguage language) {
-    startPage = (startPage & 0xEF) |
-                ((static_cast<uint8_t>(language) & 0x01) << 4);
-  }
-  bool fuelTrimEnabled() const { return (startPage & 0x20) != 0; }
-  void setFuelTrimEnabled(bool enabled) {
-    startPage = enabled ? (startPage | 0x20) : (startPage & 0xDF);
-  }
-  bool dfcoEnabled() const { return (startPage & 0x40) != 0; }
-  void setDfcoEnabled(bool enabled) {
-    startPage = enabled ? (startPage | 0x40) : (startPage & 0xBF);
-  }
+  uint8_t displayStartPage() const { return startPage; }
+  void setDisplayStartPage(uint8_t page) { startPage = page; }
+  MainCenterValue mainCenterValue() const { return centerValue; }
+  void setMainCenterValue(MainCenterValue value) { centerValue = value; }
+  UiLanguage uiLanguage() const { return language; }
+  void setUiLanguage(UiLanguage value) { language = value; }
+  bool fuelTrimEnabled() const { return fuelTrimPollingEnabled; }
+  void setFuelTrimEnabled(bool enabled) { fuelTrimPollingEnabled = enabled; }
+  bool dfcoEnabled() const { return dfcoCorrectionEnabled; }
+  void setDfcoEnabled(bool enabled) { dfcoCorrectionEnabled = enabled; }
 
   uint32_t checksum;
 };

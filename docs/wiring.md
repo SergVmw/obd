@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.0 — подключения ESP32-S3 DevKitC-1 N16R8
+# H2 Gauge 0.3.1 — подключения ESP32-S3 DevKitC-1 N16R8
 
 ## Целевая плата
 
@@ -244,7 +244,7 @@ PC817 pin 3 emitter → SIGNAL_GND
 - USB-to-UART;
 - native USB ESP32-S3.
 
-Сборка 0.3.0 включает `ARDUINO_USB_MODE=1` и `ARDUINO_USB_CDC_ON_BOOT=1`; основной serial log рассчитан на native USB. GPIO19/20 зарезервированы для USB и в проекте не используются.
+Сборка 0.3.1 включает `ARDUINO_USB_MODE=1` и `ARDUINO_USB_CDC_ON_BOOT=1`; основной serial log рассчитан на native USB. GPIO19/20 зарезервированы для USB и в проекте не используются.
 
 Для восстановления после неудачной прошивки можно использовать BOOT/RESET и USB-UART. Перед подключением внешних 5 В одновременно с USB проверить схему питания конкретной платы.
 

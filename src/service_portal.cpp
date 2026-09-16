@@ -8,9 +8,20 @@
 
 namespace {
 constexpr const char* kTag = "WEB";
+constexpr const char* kActionHeader = "X-H2G-Action";
+constexpr uint32_t kFactoryResetCooldownMs = 10000;
+constexpr uint32_t kOtaCooldownMs = 30000;
 
 template <typename T>
 T clampValue(T value, T low, T high) {
+  return value < low ? low : (value > high ? high : value);
+}
+
+template <>
+float clampValue<float>(float value, float low, float high) {
+  // Preserve NaN/Inf so the transaction-level finite check can reject the
+  // request instead of silently converting infinity into a boundary value.
+  if (!isfinite(value)) return value;
   return value < low ? low : (value > high ? high : value);
 }
 
@@ -66,6 +77,32 @@ bool ServicePortal::begin() {
 
 void ServicePortal::touch() { lastActivityAt_ = millis(); }
 
+bool ServicePortal::requireAction(const char* action,
+                                  uint32_t& lastAcceptedAt,
+                                  uint32_t cooldownMs) {
+  if (server_.header(kActionHeader) != action) {
+    server_.send(403, "application/json",
+                 "{\"error\":\"action confirmation header required\"}");
+    return false;
+  }
+
+  const uint32_t now = millis();
+  if (lastAcceptedAt != 0 && now - lastAcceptedAt < cooldownMs) {
+    const uint32_t retrySeconds =
+        (cooldownMs - (now - lastAcceptedAt) + 999) / 1000;
+    char retryAfter[12];
+    snprintf(retryAfter, sizeof(retryAfter), "%lu",
+             static_cast<unsigned long>(retrySeconds));
+    server_.sendHeader("Retry-After", retryAfter);
+    server_.send(429, "application/json",
+                 "{\"error\":\"action rate limited\"}");
+    return false;
+  }
+
+  lastAcceptedAt = now;
+  return true;
+}
+
 void ServicePortal::loop() {
   dns_.processNextRequest();
   server_.handleClient();
@@ -85,6 +122,9 @@ void ServicePortal::loop() {
 }
 
 void ServicePortal::setupRoutes() {
+  static const char* kCollectedHeaders[] = {kActionHeader};
+  server_.collectHeaders(kCollectedHeaders, 1);
+
   server_.on("/", HTTP_GET, [this]() { sendIndex(); });
   server_.on("/generate_204", HTTP_GET, [this]() { sendIndex(); });
   server_.on("/hotspot-detect.html", HTTP_GET, [this]() { sendIndex(); });
@@ -125,9 +165,17 @@ void ServicePortal::setupRoutes() {
 
   server_.on("/api/factory-reset", HTTP_POST, [this]() {
     touch();
-    configStore_.factoryReset();
-    tripStore_.reset(engine_.trip());
-    petrolCalibrationStore_.reset(engine_.petrolCalibration());
+    if (!requireAction("factory-reset", lastFactoryResetAt_,
+                       kFactoryResetCooldownMs)) {
+      return;
+    }
+    if (!configStore_.factoryReset() ||
+        !tripStore_.reset(engine_.trip()) ||
+        !petrolCalibrationStore_.reset(engine_.petrolCalibration())) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"factory reset storage failure\"}");
+      return;
+    }
     server_.send(200, "application/json", "{\"ok\":true}");
     rebootAt_ = millis() + 1000;
   });
@@ -238,7 +286,9 @@ void ServicePortal::receiveConfig() {
     return;
   }
 
-  ConfigData& c = configStore_.data();
+  const ConfigData previous = configStore_.data();
+  ConfigData candidate = previous;
+  ConfigData& c = candidate;
   JsonObjectConst d = doc["display"];
   if (!d.isNull()) {
     c.brightnessDay = clampValue<int>(d["brightnessDay"] | c.brightnessDay, 10, 100);
@@ -327,7 +377,32 @@ void ServicePortal::receiveConfig() {
     if (strlen(password) >= 8) strlcpy(c.apPassword, password, sizeof(c.apPassword));
   }
 
+  const bool finiteValues =
+      isfinite(c.fixedBaroKpa) && isfinite(c.boostOffsetBar) &&
+      isfinite(c.boostMinBar) && isfinite(c.boostMaxBar) &&
+      isfinite(c.boostWarningBar) && isfinite(c.boostDangerBar) &&
+      isfinite(c.petrolCorrection) && isfinite(c.lpgCorrection) &&
+      isfinite(c.petrolAfr) && isfinite(c.petrolDensity) &&
+      isfinite(c.lpgAfr) && isfinite(c.lpgDensity) &&
+      isfinite(c.speedCorrectionKph);
+  if (!finiteValues) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"configuration contains a non-finite number\"}");
+    return;
+  }
+  if (!(c.boostMinBar < 0.0f && c.boostMinBar < c.boostMaxBar &&
+        c.boostWarningBar > 0.0f &&
+        c.boostWarningBar < c.boostDangerBar &&
+        c.boostDangerBar <= c.boostMaxBar)) {
+    server_.send(
+        422, "application/json",
+        "{\"error\":\"boost thresholds must satisfy min < 0 < warning < danger <= max\"}");
+    return;
+  }
+
+  configStore_.data() = candidate;
   if (!configStore_.save()) {
+    configStore_.data() = previous;
     server_.send(500, "text/plain", "NVS save failed");
     return;
   }
@@ -589,67 +664,100 @@ void ServicePortal::clearCanSnapshot() {
   server_.send(200, "application/json", "{\"ok\":true}");
 }
 
+void ServicePortal::failOta(const char* message, uint16_t httpStatus) {
+  if (Update.isRunning()) Update.abort();
+  otaAllowed_ = false;
+  otaInProgress_ = false;
+  otaSuccess_ = false;
+  otaHttpStatus_ = httpStatus;
+  otaError_ = message;
+}
+
 void ServicePortal::handleOtaUpload() {
   touch();
   HTTPUpload& upload = server_.upload();
 
   if (upload.status == UPLOAD_FILE_START) {
+    if (Update.isRunning()) Update.abort();
     otaAllowed_ = false;
+    otaInProgress_ = false;
     otaSuccess_ = false;
+    otaHttpStatus_ = 400;
     otaError_ = "";
+
+    if (server_.header(kActionHeader) != "ota") {
+      failOta("OTA confirmation header required", 403);
+      return;
+    }
+
+    const uint32_t now = millis();
+    if (lastOtaAttemptAt_ != 0 &&
+        now - lastOtaAttemptAt_ < kOtaCooldownMs) {
+      failOta("OTA attempt rate limited", 429);
+      return;
+    }
+    lastOtaAttemptAt_ = now;
 
     String filename = upload.filename;
     filename.toLowerCase();
     if (!filename.endsWith(".bin")) {
-      otaError_ = "Only firmware.bin is accepted";
+      failOta("Only firmware.bin is accepted", 422);
       return;
     }
-    const uint32_t now = millis();
     if (telemetry_.rawSpeedKph.valid(now) &&
         telemetry_.rawSpeedKph.value > 3.0f) {
-      otaError_ = "Vehicle is moving";
+      failOta("Vehicle is moving", 409);
       return;
     }
     if (telemetry_.ecuVoltage.valid(now) && telemetry_.ecuVoltage.value < 11.3f) {
-      otaError_ = "Supply voltage is too low";
+      failOta("Supply voltage is too low", 409);
       return;
     }
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
-      otaError_ = "No OTA partition or image is too large";
       ESP_LOGE(kTag, "OTA begin failed, code=%u", Update.getError());
+      failOta("No OTA partition or image is too large", 507);
       return;
     }
     otaAllowed_ = true;
+    otaInProgress_ = true;
     ESP_LOGI(kTag, "OTA start: %s", upload.filename.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (!otaAllowed_) return;
+    if (!otaAllowed_ || !otaInProgress_) return;
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-      otaAllowed_ = false;
-      otaError_ = "Flash write failed";
       ESP_LOGE(kTag, "OTA write failed, code=%u", Update.getError());
+      failOta("Flash write failed", 500);
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (!otaAllowed_) return;
+    if (!otaAllowed_ || !otaInProgress_) return;
     if (!Update.end(true)) {
-      otaError_ = "Image verification failed";
       ESP_LOGE(kTag, "OTA verification failed, code=%u", Update.getError());
+      failOta("Image verification failed", 422);
       return;
     }
+    otaAllowed_ = false;
+    otaInProgress_ = false;
     otaSuccess_ = true;
+    otaHttpStatus_ = 200;
     ESP_LOGI(kTag, "OTA completed: %u bytes", upload.totalSize);
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    otaAllowed_ = false;
-    otaError_ = "Upload aborted";
-    Update.abort();
+    failOta("Upload aborted", 400);
   }
 }
 
 void ServicePortal::handleOtaFinished() {
   touch();
+  // Check again in the request-completion handler: a POST with no multipart
+  // upload must not bypass confirmation or reuse a prior success state.
+  if (server_.header(kActionHeader) != "ota") {
+    failOta("OTA confirmation header required", 403);
+  }
   if (!otaSuccess_) {
-    server_.send(400, "text/plain", otaError_.length() ? otaError_ : "OTA failed");
+    if (otaHttpStatus_ == 429) server_.sendHeader("Retry-After", "30");
+    server_.send(otaHttpStatus_, "text/plain",
+                 otaError_.length() ? otaError_ : "OTA failed");
     return;
   }
+  otaSuccess_ = false;
   server_.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
   rebootAt_ = millis() + 1200;
 }

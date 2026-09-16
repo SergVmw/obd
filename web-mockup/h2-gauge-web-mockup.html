@@ -298,7 +298,7 @@
         </div>
         <div class="section">
           <h3 class="section-title">Состояние</h3>
-          <div class="firmware"><div><span>Прошивка</span><b>0.3.0</b></div><div><span>Плата</span><b>ESP32-S3 N16R8 · 240 MHz</b></div><div><span>PSRAM</span><b>8 MB OPI</b></div></div>
+          <div class="firmware"><div><span>Прошивка</span><b>0.3.1</b></div><div><span>Плата</span><b>ESP32-S3 N16R8 · 240 MHz</b></div><div><span>PSRAM</span><b>8 MB OPI</b></div></div>
         </div>
         <div class="section">
           <h3 class="section-title">Конфигурация</h3>
@@ -332,7 +332,7 @@
   <script>
     const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
     const defaults={
-      schemaVersion:3,
+      schemaVersion:5,
       display:{theme:'classic',rotation:'0°',brightnessDay:82,brightnessNight:26,startScreen:'main',mainCenter:'boost',autoReturnSec:5,colors:{text:'#f2faf7',vacuum:'#5dc9e8',boost:'#5ef0a8',danger:'#ff5f68'},pages:{fuel:true,temperature:true,diagnostics:false},peakEnabled:true},
       boost:{baroSource:'auto',arcStyle:'segmented',fixedBaroKpa:99.4,offsetBar:0,minBar:-1,maxBar:1.5,warningBar:.9,dangerBar:1.15,mapRateHz:10,smoothingMs:250},
       fuel:{source:'auto',correction:1,density:745,switchSpeedKmh:5,averageMode:'trip',saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},
@@ -348,7 +348,7 @@
     const num=id=>Number(val(id));
     const cssColor=(hex,a=1)=>{const n=parseInt(hex.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`};
     function collectConfig(){return{
-      schemaVersion:3,
+      schemaVersion:5,
       display:{theme:val('theme'),rotation:val('rotation'),brightnessDay:num('dayBrightness'),brightnessNight:num('nightBrightness'),startScreen:val('startScreen'),mainCenter:val('mainCenter'),autoReturnSec:num('autoReturn'),colors:{text:val('colorText'),vacuum:val('colorVacuum'),boost:val('colorBoost'),danger:val('colorDanger')},pages:{fuel:val('pageFuel'),temperature:val('pageTemp'),diagnostics:val('pageDiag')},peakEnabled:val('peakEnabled')},
       boost:{baroSource:val('baroSource'),arcStyle:val('arcStyle'),fixedBaroKpa:num('fixedBaro'),offsetBar:num('boostOffset'),minBar:num('boostMin'),maxBar:num('boostMax'),warningBar:num('warningBoost'),dangerBar:num('dangerBoost'),mapRateHz:parseInt(val('mapRate')),smoothingMs:num('smoothing')},
       fuel:{source:val('fuelSource'),correction:num('fuelCorrection'),density:num('fuelDensity'),switchSpeedKmh:parseInt(val('switchSpeed')),averageMode:val('averageMode'),saveTrip:val('saveTrip'),dfcoEnabled:val('dfcoEnabled'),fuelTrimEnabled:val('fuelTrimEnabled')},

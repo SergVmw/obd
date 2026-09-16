@@ -142,6 +142,11 @@ void setup() {
 
   lastTripSaveAt = millis();
   lastMemoryLogAt = millis();
+
+  // Arduino's wrapper subscribes loopTask to the ESP-IDF Task Watchdog and
+  // feeds it between loop() calls. All per-loop CAN work is explicitly bounded.
+  enableLoopWDT();
+  ESP_LOGI(kTag, "Task Watchdog enabled for loopTask");
 }
 
 void loop() {
