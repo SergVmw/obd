@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>H2 Gauge Service</title>
+<style>
+:root{color-scheme:dark;--bg:#07100f;--p:#101c1a;--p2:#0a1412;--line:#293a35;--t:#eff8f5;--m:#8ba098;--g:#5ef0a8;--a:#ffbd59;--r:#ff6971}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#123027,var(--bg) 38%);color:var(--t);font:14px system-ui,-apple-system,Segoe UI,sans-serif}.top{position:sticky;top:0;z-index:3;display:flex;justify-content:space-between;align-items:center;padding:14px max(14px,calc((100% - 900px)/2));background:#07100fe8;border-bottom:1px solid #ffffff12;backdrop-filter:blur(14px)}.brand b{font-size:17px}.brand small{display:block;color:var(--m);margin-top:2px}.online{color:var(--g);font-size:12px}.online:before{content:'●';margin-right:7px}main{max-width:900px;margin:auto;padding:18px 12px 90px}.status{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.card,.box{background:linear-gradient(180deg,#12201d,#0c1715);border:1px solid #ffffff13;border-radius:17px}.card{padding:13px}.card small{color:var(--m);display:block;font-size:10px}.card b{display:block;margin-top:6px;font-size:16px}.tabs{display:flex;gap:4px;padding:8px;overflow:auto;border-bottom:1px solid var(--line)}.tab{border:0;background:transparent;color:var(--m);padding:9px 12px;border-radius:9px;white-space:nowrap}.tab.active{background:#1a3029;color:#e8fff5}.pane{display:none;padding:18px}.pane.active{display:block}h2{margin:0 0 5px;font-size:20px}p.desc{margin:0 0 20px;color:var(--m);font-size:12px}.section{padding:17px 0;border-top:1px solid var(--line)}.section:first-of-type{border:0;padding-top:0}h3{font-size:13px;margin:0 0 13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:13px 16px}.full{grid-column:1/-1}label{display:block;color:#afc0ba;font-size:11px;margin-bottom:6px}input,select{width:100%;height:40px;background:#07110f;border:1px solid #2b3d37;border-radius:10px;padding:0 10px;color:var(--t)}input[type=checkbox]{width:auto;height:auto;accent-color:var(--g)}input[type=color]{padding:4px;cursor:pointer}.check{display:flex;align-items:center;gap:9px;background:var(--p2);padding:11px;border:1px solid var(--line);border-radius:10px}.check label{margin:0}.buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}button.btn,.file{border:1px solid #334841;background:#152520;color:#def1ea;border-radius:10px;padding:10px 13px;font-weight:650;cursor:pointer}.primary{background:var(--g)!important;color:#062016!important;border-color:var(--g)!important}.danger{color:#ff9ca2!important;border-color:#603337!important;background:#1c1112!important}.file input{display:none}.note{padding:12px;border-radius:11px;background:#0a1713;border:1px solid #294138;color:#a5b9b2;font-size:11px;line-height:1.45}.preview{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:center;padding:16px;margin-bottom:18px;background:#07110f;border:1px solid var(--line);border-radius:15px}.preview canvas{display:block;width:240px;height:240px;max-width:100%;margin:auto;border-radius:50%;background:#050908}.preview-controls{display:grid;gap:14px}.preview-value{display:flex;justify-content:space-between;color:var(--m);font-size:12px}.preview-value b{color:var(--t);font-size:14px}input[type=range]{height:auto;padding:0;accent-color:var(--g)}.progress{height:8px;background:#1d2b27;border-radius:99px;overflow:hidden;margin-top:12px}.bar{width:0;height:100%;background:var(--g);transition:.15s}.otaState{display:flex;justify-content:space-between;color:var(--m);font-size:10px;margin-top:7px}.save{position:sticky;bottom:10px;display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:11px 13px;background:#0a1513ee;border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(12px)}#msg{color:var(--m);font-size:11px}.canwrap{overflow:auto;border:1px solid var(--line);border-radius:11px;background:#07110f}.cantable{width:100%;border-collapse:collapse;white-space:nowrap;font:11px ui-monospace,SFMono-Regular,Consolas,monospace}.cantable th,.cantable td{padding:8px 9px;text-align:left;border-bottom:1px solid #ffffff0c}.cantable th{color:var(--m);font:10px system-ui}.cantable tr:last-child td{border:0}.tx{color:var(--a)}.rx{color:var(--g)}.expert{display:none}.showExpert .expert{display:block}.lpgOnly.isOff{display:none}.calstate{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.calstate>div{background:var(--p2);border:1px solid var(--line);border-radius:10px;padding:10px}.calstate small{display:block;color:var(--m);font-size:10px}.calstate b{display:block;margin-top:5px;font-size:14px}input[readonly]{color:var(--m)}@media(max-width:620px){.status,.calstate{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}.full{grid-column:auto}.pane{padding:16px 13px}.top{padding:12px 14px}.preview{grid-template-columns:1fr}.save{bottom:6px}}
+</style>
+</head>
+<body>
+<header class="top"><div class="brand"><b>H2 Gauge</b><small>ESP32-S3 N16R8 · сервис · 192.168.4.1</small></div><div class="online" id="connection">ESP32-S3</div></header>
+<main>
+<div class="status">
+ <div class="card"><small>CAN / OBD</small><b id="sCan">—</b></div>
+ <div class="card"><small>ECU</small><b id="sEcu">—</b></div>
+ <div class="card"><small>Наддув</small><b id="sBoost">—</b></div>
+ <div class="card"><small>Топливо</small><b id="sFuel">—</b></div>
+</div>
+<section class="box" id="app">
+<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button></nav>
+
+<div class="pane active" id="display"><h2>Экран</h2><p class="desc">Яркость, оформление и интерактивный предпросмотр главного экрана.</p>
+ <div class="preview">
+  <canvas id="gaugePreview" width="480" height="480" aria-label="Предпросмотр круглого индикатора"></canvas>
+  <div class="preview-controls">
+   <div class="preview-value"><span>Тестовый наддув</span><b id="previewBoostOut">+0.70 bar</b></div>
+   <input id="previewBoost" type="range" min="-1" max="1.5" step="0.05" value="0.70">
+   <div><label>Топливо в предпросмотре</label><select id="previewFuel"><option value="lpg">LPG</option><option value="petrol">95</option></select></div>
+   <div class="note">Предпросмотр сразу показывает выбранные цвета и тип шкалы. На прибор изменения попадут после сохранения и выхода из сервиса.</div>
+  </div>
+ </div>
+ <div class="section"><div class="grid">
+  <div><label>Дневная яркость, %</label><input id="brightnessDay" type="number" min="10" max="100" value="82"></div>
+  <div><label>Ночная яркость, %</label><input id="brightnessNight" type="number" min="5" max="80" value="26"></div>
+  <div><label>Ориентация</label><select id="rotation"><option value="0">0°</option><option value="1">90°</option><option value="2">180°</option><option value="3">270°</option></select></div>
+  <div><label>Язык надписей прибора</label><select id="uiLanguage"><option value="0">Русский</option><option value="1">English</option></select></div>
+  <div><label>Стартовый экран</label><select id="startPage"><option value="0">Главный</option><option value="1">Расход / поездка</option><option value="2">Температуры</option><option value="3">Диагностика OBD</option></select></div>
+  <div><label>Значение в центре главного экрана</label><select id="mainCenterValue"><option value="0">Наддув</option><option value="1">Скорость</option><option value="2">Текущий расход</option><option value="3">Средний расход текущего топлива</option></select></div>
+  <div><label>Автовозврат на главный экран, секунд</label><input id="autoReturnSec" type="number" min="0" max="120" value="5"></div>
+  <div class="check"><input id="pageFuel" type="checkbox" checked><label for="pageFuel">Экран расхода</label></div>
+  <div class="check"><input id="pageTemperature" type="checkbox" checked><label for="pageTemperature">Экран температур</label></div>
+  <div class="check"><input id="pageDiagnostics" type="checkbox"><label for="pageDiagnostics">Служебный экран OBD</label></div>
+  <div class="check"><input id="peakEnabled" type="checkbox" checked><label for="peakEnabled">Пиковый наддув</label></div>
+ </div></div>
+ <div class="section"><h3>Цвета интерфейса</h3><div class="grid">
+  <div><label>Цифры и значения</label><input id="colorText" type="color" value="#f2faf7"></div>
+  <div><label>Вакуум</label><input id="colorVacuum" type="color" value="#5dc9e8"></div>
+  <div><label>Наддув</label><input id="colorBoost" type="color" value="#5ef0a8"></div>
+  <div><label>Предупреждение</label><input id="colorWarning" type="color" value="#ffbd59"></div>
+  <div><label>Опасная зона</label><input id="colorDanger" type="color" value="#ff5f68"></div>
+ </div><div class="note" style="margin-top:13px">Цвета применятся к прибору после сохранения и выхода из сервисного режима.</div></div>
+</div>
+
+<div class="pane" id="boost"><h2>Турбонаддув</h2><p class="desc">Источник атмосферного давления, шкала и фильтрация.</p>
+ <div class="section"><div class="grid">
+  <div class="full"><label>Источник BARO</label><select id="baroSource"><option value="0">Авто: PID 33 → MAP при запуске → фиксированное</option><option value="1">Только PID 33</option><option value="2">MAP при заглушенном двигателе</option><option value="3">Фиксированное</option><option value="4">BMP280 (резерв)</option></select></div>
+  <div class="full"><label>Вид шкалы турбо</label><select id="boostArcStyle"><option value="0">Сегментная — рисочками</option><option value="1">Сплошная полоса</option></select></div>
+  <div><label>Фиксированное BARO, кПа</label><input id="fixedBaroKpa" type="number" min="70" max="110" step="0.1" value="99.4"></div>
+  <div><label>Коррекция, bar</label><input id="boostOffsetBar" type="number" min="-0.5" max="0.5" step="0.01" value="0"></div>
+  <div><label>Минимум шкалы, bar</label><input id="boostMinBar" type="number" min="-1.2" max="0" step="0.1" value="-1"></div>
+  <div><label>Максимум шкалы, bar</label><input id="boostMaxBar" type="number" min="0.5" max="2.5" step="0.1" value="1.5"></div>
+  <div><label>Жёлтая зона, bar</label><input id="boostWarningBar" type="number" min="0.2" max="2" step="0.05" value="0.9"></div>
+  <div><label>Красная зона, bar</label><input id="boostDangerBar" type="number" min="0.3" max="2.5" step="0.05" value="1.15"></div>
+  <div><label>Сглаживание, мс</label><input id="smoothingMs" type="number" min="0" max="2000" step="50" value="250"></div>
+ </div><div class="buttons"><button class="btn" id="captureBaro">Принять текущий MAP за BARO</button></div></div>
+</div>
+
+<div class="pane" id="fuel"><h2>Расход и ГБО</h2><p class="desc">Бензиновый расход работает независимо. Все газовые функции подчиняются одному глобальному выключателю.</p>
+ <div class="section"><h3>Конфигурация автомобиля</h3><div class="grid">
+  <div class="check full"><input id="lpgEnabled" type="checkbox"><label for="lpgEnabled"><b>Использовать ГБО</b> — клапан, LPG-расчёты, индикация и контроль коррекций</label></div>
+ </div><div class="note" style="margin-top:13px">Если выключено, GPIO5 не опрашивается, PID STFT/LTFT для контроля LPG не запрашиваются, газовые значения и настройки скрыты. Все функции бензина сохраняются.</div></div>
+
+ <div class="section"><h3>Расчёт бензина</h3><div class="grid">
+  <div class="full"><label>Источник расхода бензина</label><select id="fuelSource"><option value="0">Авто: PID 5E → MAF</option><option value="1">Только PID 5E</option><option value="2">Только MAF</option><option value="3">Haval CAN (ещё не реализовано)</option><option value="5">MAP/IAT/RPM (ещё не реализовано)</option></select></div>
+  <div><label>Коэффициент бензина</label><input id="petrolCorrection" type="number" min="0.5" max="1.5" step="0.001" value="1.000"></div>
+  <div><label>Переход на л/100 км, км/ч</label><input id="switchSpeedKph" type="number" min="1" max="30" value="5"></div>
+  <div class="check"><input id="saveTrip" type="checkbox" checked><label for="saveTrip">Сохранять поездку</label></div>
+  <div class="check"><input id="dfcoEnabled" type="checkbox" checked><label for="dfcoEnabled">DFCO: нулевой расход при закрытом дросселе</label></div>
+ </div><div class="note" style="margin-top:13px">PID 5E используется напрямую, при его отсутствии расход вычисляется по MAF. Коэффициент бензина применяется к текущему расходу, литрам и среднему расходу.</div></div>
+
+ <div class="section"><h3>Точная калибровка бензина по полному баку</h3>
+  <div class="calstate"><div><small>Состояние</small><b id="petrolCalState">Не начата</b></div><div><small>Рассчитано</small><b id="petrolCalCalculated">0.00 л</b></div><div><small>Путь на бензине</small><b id="petrolCalDistance">0.0 км</b></div><div><small>Текущий K</small><b id="petrolCalCorrection">1.000</b></div></div>
+  <div class="grid" style="margin-top:13px"><div><label>Фактически заправлено до полного, л</label><input id="petrolActual" type="number" min="1" max="150" step="0.01" placeholder="например 42.35"></div><div><label>Последний результат</label><input id="petrolCalLast" readonly value="—"></div></div>
+  <div class="buttons"><button class="btn" id="startPetrolCal">Начать новый интервал</button><button class="btn primary" id="applyPetrolCal">Заправлено до полного — рассчитать K</button></div>
+  <div class="note" style="margin-top:13px">После первой полной заправки нажмите «Начать новый интервал». При следующей полной заправке введите количество литров из чека. Новый коэффициент: K = фактически заправлено / сырой расчёт. Счётчик калибровки отдельный и не сбрасывает обычную поездку. После применения следующий интервал начинается автоматически.</div>
+ </div>
+
+ <div class="lpgOnly">
+  <div class="section"><h3>Расчёт LPG</h3><div class="grid">
+   <div><label>Коэффициент LPG</label><input id="lpgCorrection" type="number" min="0.5" max="2" step="0.001" value="1.000"></div>
+   <div><label>AFR LPG</label><input id="lpgAfr" type="number" min="10" max="20" step="0.1" value="15.5"></div>
+   <div><label>Плотность LPG, г/л</label><input id="lpgDensity" type="number" min="400" max="700" step="1" value="540"></div>
+   <div class="check"><input id="fuelTrimEnabled" type="checkbox" checked><label for="fuelTrimEnabled">Контроль STFT + LTFT на LPG</label></div>
+  </div><div class="note" style="margin-top:13px">Предупреждение калибровки ГБО появляется, если сумма PID 06/07 дольше 5 секунд выходит за ±10%.</div></div>
+  <div class="section"><h3>Сигнал клапана LPG</h3><div class="grid">
+   <div class="check"><input id="lpgActiveLow" type="checkbox" checked><label for="lpgActiveLow">Активный уровень LOW</label></div>
+   <div><label>Фильтрация, мс</label><input id="lpgDebounceMs" type="number" min="100" max="3000" step="100" value="800"></div>
+   <div><label>Задержка выключения, мс</label><input id="lpgOffDelayMs" type="number" min="0" max="5000" step="100" value="1000"></div>
+  </div><div class="note" style="margin-top:13px">GPIO5 требует внешнюю подтяжку 10 кОм к 3.3 В и защищённый вход через PC817/EL817. 12 В напрямую подключать нельзя.</div></div>
+  <div class="section"><h3>Ручная проверка коэффициента LPG</h3><div class="grid"><div><label>Прибор рассчитал, л</label><input id="lpgCalculated" type="number" value="38.2" step="0.1"></div><div><label>Фактически заправлено, л</label><input id="lpgActual" type="number" value="42.1" step="0.1"></div></div><div class="buttons"><button class="btn" id="calcLpg">Рассчитать коэффициент LPG</button></div></div>
+ </div>
+ <div class="section"><div class="buttons"><button class="btn danger" id="resetTrip">Сбросить поездку</button></div></div>
+</div>
+
+<div class="pane" id="control"><h2>Управление</h2><p class="desc">Одна кнопка: короткое нажатие — экран, длинное — действие, очень длинное — сервис.</p>
+ <div class="section"><div class="grid">
+  <div><label>Длинное нажатие, мс</label><input id="longPressMs" type="number" min="800" max="4000" step="100" value="1800"></div>
+  <div><label>Вход в сервис, мс</label><input id="serviceHoldMs" type="number" min="3000" max="10000" step="500" value="5000"></div>
+  <div><label>Тайм-аут сервиса, минут</label><input id="serviceTimeoutMin" type="number" min="3" max="60" value="15"></div>
+  <div class="check"><input id="lockLongWhenMoving" type="checkbox" checked><label for="lockLongWhenMoving">Блокировать длинные действия в движении</label></div>
+ </div></div>
+</div>
+
+<div class="pane" id="obd"><h2>OBD / CAN</h2><p class="desc">ISO 15765-4, 11-bit, 500 кбит/с, стандартные Mode 01 запросы и безопасная диагностика шины.</p>
+ <div class="section"><div class="grid">
+  <div><label>Тайм-аут OBD, мс</label><input id="obdTimeoutMs" type="number" min="50" max="1000" value="120"></div>
+  <div><label>Макс. запросов в секунду</label><input id="maxRequestsPerSecond" type="number" min="5" max="40" value="30"></div>
+  <div><label>Коррекция скорости, км/ч</label><input id="speedCorrectionKph" type="number" min="-20" max="20" step="0.5" value="0"></div>
+ </div><div class="note" style="margin-top:13px">Коррекция применяется как «скорость PID 0D + значение». Например, −5 уменьшает показание на 5 км/ч. Она используется на экране, в пути и при расчёте л/100 км. Заводское значение 0. Mode 22 отключён до подтверждения DID Haval.</div></div>
+ <div class="section"><h3>CAN Monitor · агрегированный REST-снимок</h3><p class="desc">До 32 комбинаций ID/направление; сохраняются последний payload и счётчик. Сырые кадры не накапливаются в очереди.</p>
+  <div class="buttons"><button class="btn" id="canRefresh">Обновить снимок</button><button class="btn" id="canAuto">Авто: выкл.</button><button class="btn danger" id="canClear">Очистить</button></div>
+  <div class="note" id="canMeta" style="margin:12px 0">Снимок ещё не загружен.</div>
+  <div class="canwrap"><table class="cantable"><thead><tr><th>DIR</th><th>ID</th><th>DLC</th><th>DATA</th><th>COUNT</th><th>AGE</th></tr></thead><tbody id="canRows"><tr><td colspan="6">Нет данных</td></tr></tbody></table></div>
+ </div>
+</div>
+
+<div class="pane" id="system"><h2>Система</h2><p class="desc">Сервисная сеть, резервное копирование и локальное OTA.</p>
+ <div class="section"><div class="grid">
+  <div><label>Имя устройства</label><input id="deviceName" maxlength="23" value="H2 Gauge"></div>
+  <div><label>Имя точки доступа</label><input id="apName" maxlength="31" value="H2-Gauge"></div>
+  <div class="full"><label>Пароль точки доступа</label><input id="apPassword" type="password" minlength="8" maxlength="31" value="h2gauge18"></div>
+ </div></div>
+ <div class="section"><h3>Обновление прошивки</h3><div class="note">Выберите app-образ <b>firmware.bin</b>. Не используйте bootloader.bin, partitions.bin или merged.bin.</div><div class="buttons"><label class="file">Выбрать .bin<input id="firmware" type="file" accept=".bin"></label><button class="btn primary" id="install" disabled>Установить</button></div><div class="progress"><div class="bar" id="bar"></div></div><div class="otaState"><span id="otaText">Файл не выбран</span><span id="pct">0%</span></div></div>
+ <div class="section"><div class="buttons"><button class="btn" id="defaults">Загрузить заводские значения</button><button class="btn" id="reboot">Перезагрузить</button><button class="btn danger" id="factory">Полный заводской сброс</button></div></div>
+</div>
+</section>
+<div class="save"><span id="msg">Конфигурация загружена</span><button class="btn primary" id="save">Сохранить настройки</button></div>
+</main>
+<script>
+const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).value, c=id=>$(id).checked;
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')});
+async function api(path,opt){const r=await fetch(path,opt);if(!r.ok)throw Error(await r.text());return r.headers.get('content-type')?.includes('json')?r.json():r.text()}
+function set(id,value){const e=$(id);if(!e||value===undefined)return;e.type==='checkbox'?e.checked=!!value:e.value=value}
+const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,rotation:0,startPage:0,mainCenterValue:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.5,boostWarningBar:.9,boostDangerBar:1.15,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1,lpgAfr:15.5,lpgDensity:540,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:30,speedCorrectionKph:0},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18'}};
+function syncLpgUi(){const on=c('lpgEnabled');document.querySelectorAll('.lpgOnly').forEach(e=>e.classList.toggle('isOff',!on));const opt=$('previewFuel')?.querySelector('option[value=lpg]');if(opt)opt.disabled=!on;if(!on&&$('previewFuel'))$('previewFuel').value='petrol';drawGaugePreview()}
+function apply(o){const d=o.display||{},b=o.boost||{},f=o.fuel||{},l=o.lpg||{},x=o.controls||{},s=o.service||{},ob=o.obd||{};
+Object.entries(d).forEach(([k,z])=>set(k,z));Object.entries(b).forEach(([k,z])=>set(k,z));Object.entries(f).forEach(([k,z])=>set(k,z));Object.entries(l).forEach(([k,z])=>set(k,z));Object.entries(x).forEach(([k,z])=>set(k,z));Object.entries(s).forEach(([k,z])=>set(k,z));Object.entries(ob).forEach(([k,z])=>set(k,z));syncLpgUi()}
+function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),lpgAfr:n('lpgAfr'),lpgDensity:n('lpgDensity'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond'),speedCorrectionKph:n('speedCorrectionKph')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword')}}}
+function drawGaugePreview(){
+ const cv=$('gaugePreview');if(!cv)return;const x=cv.getContext('2d');x.setTransform(2,0,0,2,0,0);x.clearRect(0,0,240,240);
+ let mn=n('boostMinBar'),mx=n('boostMaxBar');if(!Number.isFinite(mn))mn=-1;if(!Number.isFinite(mx)||mx<=mn)mx=1.5;
+ const slider=$('previewBoost');slider.min=mn;slider.max=mx;let value=Math.max(mn,Math.min(mx,Number(slider.value)||0));slider.value=value;
+ const warning=Math.max(0,Math.min(mx,n('boostWarningBar')||.9)),danger=Math.max(warning,Math.min(mx,n('boostDangerBar')||1.15));
+ const text=v('colorText')||'#f2faf7',vac=v('colorVacuum')||'#5dc9e8',boost=v('colorBoost')||'#5ef0a8',amber=v('colorWarning')||'#ffbd59',red=v('colorDanger')||'#ff5f68';
+ const angle=p=>(135+(p-mn)/(mx-mn)*270)*Math.PI/180,color=p=>p<0?vac:p>=danger?red:p>=warning?amber:boost;
+ x.save();x.beginPath();x.arc(120,120,120,0,Math.PI*2);x.clip();const bg=x.createRadialGradient(95,70,4,120,120,125);bg.addColorStop(0,'#13201e');bg.addColorStop(.55,'#070d0c');bg.addColorStop(1,'#020504');x.fillStyle=bg;x.fillRect(0,0,240,240);for(let yy=0;yy<240;yy+=4){const shift=(yy/4%4)*4-16,hi=yy/4%4===0;for(let xx=shift;xx<240;xx+=16){x.fillStyle='rgba(42,48,46,.42)';x.fillRect(xx,yy,7,3);if(hi){x.fillStyle='rgba(82,92,89,.30)';x.fillRect(xx,yy,7,1)}x.fillStyle='rgba(3,7,6,.48)';x.fillRect(xx+8,yy,7,3)}}
+ const arc=(a,b,c,w=8)=>{if(b<=a)return;x.beginPath();x.arc(120,120,112,a,b);x.strokeStyle=c;x.lineWidth=w;x.lineCap='butt';x.stroke()};
+ if(n('boostArcStyle')===1){arc(angle(mn),angle(mx),'#21302c');const zone=(a,b,c)=>arc(angle(a),angle(Math.min(value,b)),c);const zero=Math.max(mn,Math.min(mx,0));zone(mn,zero,vac);zone(zero,warning,boost);zone(warning,danger,amber);zone(danger,mx,red)}else{for(let i=0;i<=270;i+=2){const p=mn+(mx-mn)*i/270,a=(135+i)*Math.PI/180;x.beginPath();x.moveTo(120+Math.cos(a)*108,120+Math.sin(a)*108);x.lineTo(120+Math.cos(a)*116,120+Math.sin(a)*116);x.strokeStyle=p<=value?color(p):'#21302c';x.lineWidth=1;x.stroke()}}
+ for(let i=0;i<=10;i++){const a=(135+i*27)*Math.PI/180,r=i%2?102:99;x.beginPath();x.moveTo(120+Math.cos(a)*r,120+Math.sin(a)*r);x.lineTo(120+Math.cos(a)*106,120+Math.sin(a)*106);x.strokeStyle='#75857f';x.lineWidth=1;x.stroke()}
+ const gas=v('previewFuel')!=='petrol',ru=n('uiLanguage')===0,center=n('mainCenterValue');let centerText=(value>=0?'+':'')+value.toFixed(2),centerUnit=ru?'БАР':'BAR';if(center===1){centerText='72';centerUnit=ru?'КМ/Ч':'KM/H'}else if(center===2){centerText='9.6';centerUnit=ru?'Л/100':'L/100'}else if(center===3){centerText=gas?'8.4':'8.1';centerUnit=ru?'СРЕДНИЙ Л/100':'AVERAGE L/100'}
+ x.textAlign='center';x.fillStyle='#7f938c';x.font='12px system-ui';x.fillText('13.9 V',120,40);x.fillStyle=text;x.font='700 39px system-ui';x.fillText(centerText,120,116);x.fillStyle='#7f938c';x.font='700 11px system-ui';x.fillText(centerUnit,120,135);x.fillStyle=text;x.font='700 18px system-ui';x.fillText('9.6',68,174);x.fillText(gas?'8.4':'8.1',172,174);x.fillStyle='#7f938c';x.font='9px system-ui';x.fillText(ru?'ТЕКУЩИЙ':'CURRENT',68,191);x.fillText(ru?'СРЕДНИЙ':'AVERAGE',172,191);
+ const fc=gas?boost:amber;x.fillStyle='#101c1a';x.strokeStyle=fc;x.lineWidth=1;x.beginPath();if(x.roundRect)x.roundRect(73,202,39,18,8);else x.rect(73,202,39,18);x.fill();x.stroke();x.fillStyle=fc;x.font='700 9px system-ui';x.fillText(gas?'LPG':'95',92,215);x.fillStyle=boost;x.beginPath();x.arc(131,211,3,0,Math.PI*2);x.fill();x.textAlign='left';x.fillStyle='#7f938c';x.font='10px system-ui';x.fillText('OBD',139,215);x.restore();$('previewBoostOut').textContent=(value>=0?'+':'')+value.toFixed(2)+' bar'
+}
+async function load(){try{const saved=await api('/api/config');apply(saved);$('msg').textContent='Сохранённая конфигурация ESP32 загружена'}catch(e){$('msg').textContent='Нет ответа ESP32 — показаны заводские настройки: '+e.message}}
+$('save').onclick=async()=>{try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config())});$('msg').textContent='Сохранено. Изменения применятся после выхода из сервиса.'}catch(e){$('msg').textContent='Ошибка: '+e.message}};
+$('captureBaro').onclick=()=>api('/api/baro/capture',{method:'POST'}).then(()=>$('msg').textContent='Текущее MAP принято').catch(e=>$('msg').textContent=e.message);
+$('resetTrip').onclick=()=>confirm('Сбросить обычную поездку? Отдельный бензиновый интервал калибровки сохранится.')&&api('/api/trip/reset',{method:'POST'}).then(()=>$('msg').textContent='Поездка сброшена; калибровочный интервал не изменён');
+$('calcLpg').onclick=()=>{const calc=n('lpgCalculated'),actual=n('lpgActual');if(calc>0&&actual>0){set('lpgCorrection',(n('lpgCorrection')*actual/calc).toFixed(3));$('msg').textContent='Новый коэффициент LPG рассчитан. Нажмите «Сохранить».'}};
+let petrolCalActive=false;
+async function loadPetrolCalibration(){try{const s=await api('/api/fuel/petrol-calibration');petrolCalActive=!!s.active;$('petrolCalState').textContent=s.active?'Идёт интервал':'Остановлена';$('petrolCalCalculated').textContent=Number(s.calculatedLiters||0).toFixed(2)+' л';$('petrolCalDistance').textContent=Number(s.distanceKm||0).toFixed(1)+' км';$('petrolCalCorrection').textContent=Number(s.currentCorrection||1).toFixed(3);$('applyPetrolCal').disabled=!s.active;$('petrolCalLast').value=s.calibrationCount?`${Number(s.lastCalculatedLiters).toFixed(2)} → ${Number(s.lastActualLiters).toFixed(2)} л; K ${Number(s.lastOldCorrection).toFixed(3)} → ${Number(s.lastNewCorrection).toFixed(3)}`:'—'}catch(e){$('petrolCalState').textContent='Нет данных'}}
+$('startPetrolCal').onclick=async()=>{if(petrolCalActive&&!confirm('Текущий калибровочный интервал будет начат заново. Продолжить?'))return;if(!petrolCalActive&&!confirm('Бак сейчас заправлен до полного? Начать отдельный интервал бензиновой калибровки?'))return;try{await api('/api/fuel/petrol-calibration/start',{method:'POST'});$('msg').textContent='Бензиновый калибровочный интервал начат';await loadPetrolCalibration()}catch(e){$('msg').textContent='Ошибка: '+e.message}};
+$('applyPetrolCal').onclick=async()=>{const actual=n('petrolActual');if(!(actual>=1&&actual<=150)){ $('msg').textContent='Введите фактическую заправку от 1 до 150 л';return}if(!confirm(`Применить полную заправку ${actual.toFixed(2)} л, завершить текущий интервал и начать следующий?`))return;try{const r=await api('/api/fuel/petrol-calibration/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actualLiters:actual})});set('petrolCorrection',Number(r.newCorrection).toFixed(3));$('msg').textContent=`Коэффициент бензина изменён: ${Number(r.oldCorrection).toFixed(3)} → ${Number(r.newCorrection).toFixed(3)}`;await loadPetrolCalibration()}catch(e){$('msg').textContent='Калибровка: '+e.message}};
+$('lpgEnabled').addEventListener('change',syncLpgUi);
+async function status(){try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';$('sFuel').textContent=s.fuelTrimWarning?'Калибровка ГБО!':(s.dfcoActive?'DFCO':(s.fuelMode||'—'));$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version}catch(e){$('connection').textContent='Нет ответа'}}
+async function canSnapshot(){try{const s=await api('/api/can/snapshot');const rows=(s.frames||[]).sort((a,b)=>a.ageMs-b.ageMs);$('canRows').innerHTML=rows.length?rows.map(f=>`<tr><td class="${f.direction==='TX'?'tx':'rx'}">${f.direction}</td><td>${f.id}${f.extended?' EXT':''}${f.remote?' RTR':''}</td><td>${f.dlc}</td><td>${f.data||'—'}</td><td>${f.count}</td><td>${f.ageMs} ms</td></tr>`).join(''):'<tr><td colspan="6">Нет данных</td></tr>';$('canMeta').textContent=`Всего кадров: ${s.totalFrames} · строк: ${rows.length}/${s.capacity} · вытеснений: ${s.evictions}`}catch(e){$('canMeta').textContent='CAN snapshot: '+e.message}}
+let canTimer=null;$('canRefresh').onclick=canSnapshot;$('canAuto').onclick=()=>{if(canTimer){clearInterval(canTimer);canTimer=null;$('canAuto').textContent='Авто: выкл.'}else{canSnapshot();canTimer=setInterval(canSnapshot,1000);$('canAuto').textContent='Авто: 1 с'}};$('canClear').onclick=()=>api('/api/can/clear',{method:'POST'}).then(canSnapshot).catch(e=>$('canMeta').textContent=e.message);
+$('defaults').onclick=()=>{apply(DEFAULT_CONFIG);$('msg').textContent='Заводские значения подставлены. Нажмите «Сохранить настройки».'};$('reboot').onclick=()=>api('/api/reboot',{method:'POST'});$('factory').onclick=()=>confirm('Удалить все настройки?')&&api('/api/factory-reset',{method:'POST'}).then(()=>location.reload());
+let fw=null;$('firmware').onchange=e=>{fw=e.target.files[0];$('install').disabled=!fw;$('otaText').textContent=fw?fw.name+' · '+(fw.size/1048576).toFixed(2)+' МБ':'Файл не выбран'};
+$('install').onclick=()=>{if(!fw||!confirm('Установить '+fw.name+'? Не выключайте питание.'))return;const fd=new FormData;fd.append('firmware',fw);const x=new XMLHttpRequest;x.open('POST','/api/ota');x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('bar').style.width=p+'%';$('pct').textContent=p+'%';$('otaText').textContent='Загрузка в резервный раздел…'}};x.onload=()=>{$('otaText').textContent=x.status===200?'Готово. Перезапуск…':'Ошибка: '+x.responseText};x.onerror=()=>$('otaText').textContent='Соединение потеряно';x.send(fd)};
+document.querySelectorAll('#display input,#display select,#boost input,#boost select').forEach(e=>e.addEventListener('input',drawGaugePreview));apply(DEFAULT_CONFIG);load();status();loadPetrolCalibration();setInterval(status,1200);setInterval(loadPetrolCalibration,3000);
+</script>
+</body></html>
