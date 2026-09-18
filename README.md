@@ -14,9 +14,9 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.2
+## Текущая версия 0.3.3
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC и проверка фактического размера памяти. Версия 0.3.2 использует встроенные anti-aliased Golos Text, постоянные PSRAM text layers и RGB565-кэш карбонового фона; при нехватке PSRAM сохраняется безопасный GFX/8-bit fallback. Также включены Task Watchdog, ограниченный CAN RX budget, транзакционная валидация настроек, защищённые destructive API и NVS schema 5 без bit-packing.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC и проверка фактического размера памяти. Версия 0.3.3 сохраняет anti-aliased Golos Text, постоянные PSRAM text layers и RGB565-кэш карбонового фона из 0.3.2 и исправляет выбор `.bin` в OTA: вместо скрытого элемента используется видимый нативный file picker, совместимый с обычными мобильными браузерами. Также включены безопасные fallback, Task Watchdog, CAN RX budget, транзакционная конфигурация и NVS schema 5.
 
 ## Реализовано
 
@@ -180,17 +180,17 @@ pio run -e esp32s3_n16r8 --target upload
 
 Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.2
+## Release 0.3.3
 
 ```text
-releases/h2-gauge-v0.3.2-esp32s3-n16r8.bin
-SHA-256: defa6581f52b7851b3de7604f5160920b5fd4dadfbb727566334b2b70841a8d1
+releases/h2-gauge-v0.3.3-esp32s3-n16r8.bin
+SHA-256: 90087cc470165f064b672a5a2732d04d09362bae0e9053faa64af1ec7cea7a84
 
-releases/h2-gauge-v0.3.2-esp32s3-n16r8-factory.bin
-SHA-256: 14e18e14ccfc4ea10ad74b00b958c95f8c4b97bb0f862981c96e69279825ed4d
+releases/h2-gauge-v0.3.3-esp32s3-n16r8-factory.bin
+SHA-256: c38d7e82266a113104d3d310368b2e0f0f5617faef730c54830940508a29151b
 ```
 
-Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.2.md`](releases/README-v0.3.2.md).
+Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.3.md`](releases/README-v0.3.3.md).
 
 ## Flash и PSRAM
 
@@ -252,7 +252,7 @@ Golos Text взят из официального upstream commit `cf2e27222937d
 
 ## Пока не реализовано или не проверено
 
-- физическая проверка прошивки 0.3.2 на приобретённой ESP32-S3;
+- физическая проверка прошивки 0.3.3 на приобретённой ESP32-S3;
 - автомобильная проверка CAN Haval;
 - BRC K-Line/KWP2000;
 - подтверждённые Haval Mode 22 DID;

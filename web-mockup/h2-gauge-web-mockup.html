@@ -59,7 +59,7 @@
     .ota-box{margin-top:13px;padding:13px;border:1px solid #283934;background:#091310;border-radius:13px}.ota-file{display:flex;justify-content:space-between;gap:12px;align-items:center;color:#b8cbc5;font-size:11px}.ota-file span:last-child{color:var(--muted);white-space:nowrap}.progress{height:7px;margin-top:12px;background:#1b2824;border-radius:999px;overflow:hidden}.progress-bar{width:0;height:100%;background:linear-gradient(90deg,#38d98d,#75f2b5);border-radius:inherit;transition:width .18s}.ota-state{display:flex;justify-content:space-between;margin-top:7px;color:var(--muted);font-size:9px}.btn:disabled{opacity:.42;cursor:not-allowed}
     .actions{position:sticky;bottom:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-top:1px solid #283833;background:rgba(9,18,16,.94);backdrop-filter:blur(15px)}.actions-left{color:#81958f;font-size:10px}.actions-right{display:flex;gap:8px}
     .toast{position:fixed;left:50%;bottom:24px;z-index:100;transform:translate(-50%,20px);background:#e5fff2;color:#082117;padding:11px 16px;border-radius:12px;font-size:12px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;box-shadow:0 14px 40px rgba(0,0,0,.4)}.toast.show{opacity:1;transform:translate(-50%,0)}
-    .file-label{display:inline-flex;align-items:center}.file-label input{display:none}
+    .file-label{display:inline-flex;align-items:center}.file-label input{display:none}.firmware-picker{display:block;flex:1 1 100%;min-height:48px;border:1px solid #31433e;background:#091311;color:#9db1aa;border-radius:10px;padding:7px}.firmware-picker::file-selector-button{margin-right:10px;border:1px solid #426057;background:#14221f;color:#d3e3de;padding:9px 12px;border-radius:8px;font-weight:680}
     @media(max-width:900px){.shell{grid-template-columns:1fr;max-width:690px}.preview-panel{position:relative;top:auto}.device-wrap{width:270px;height:270px}.preview-panel{padding:18px}.settings-panel{min-height:auto}.topbar{padding:12px 16px}.brand-sub{display:none}}
     @media(max-width:560px){body{font-size:13px}.shell{padding:14px 10px 90px;gap:13px}.panel{border-radius:18px}.preview-panel{padding:14px}.device-wrap{transform:scale(.94);margin:-2px auto 4px}.tabs{padding:9px 8px}.tab{padding:8px 10px}.tab-pane{padding:19px 15px}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.color-grid{grid-template-columns:repeat(2,1fr)}.screen-list{grid-template-columns:1fr}.section-head{display:block}.section-head .switch-row{margin-top:13px}.firmware{grid-template-columns:1fr}.actions{padding:11px}.actions-left{display:none}.actions-right{width:100%}.actions-right .btn{flex:1;padding:10px 6px}.status{padding:7px 9px}.brand-title{font-size:14px}}
   </style>
@@ -302,7 +302,7 @@
         </div>
         <div class="section">
           <h3 class="section-title">Состояние</h3>
-          <div class="firmware"><div><span>Прошивка</span><b>0.3.2</b></div><div><span>Плата</span><b>ESP32-S3 N16R8 · 240 MHz</b></div><div><span>PSRAM</span><b>8 MB OPI</b></div></div>
+          <div class="firmware"><div><span>Прошивка</span><b>0.3.3</b></div><div><span>Плата</span><b>ESP32-S3 N16R8 · 240 MHz</b></div><div><span>PSRAM</span><b>8 MB OPI</b></div></div>
         </div>
         <div class="section">
           <h3 class="section-title">Конфигурация</h3>
@@ -316,7 +316,7 @@
             <div class="progress"><div class="progress-bar" id="otaProgress"></div></div>
             <div class="ota-state"><span id="otaState">Ожидание файла .bin</span><span id="otaPercent">0%</span></div>
           </div>
-          <div class="btn-row"><label class="btn file-label">Выбрать файл .bin<input id="firmwareFile" type="file" accept=".bin,application/octet-stream"></label><button class="btn primary" id="uploadFirmware" disabled>Установить обновление</button></div>
+          <div class="btn-row"><input id="firmwareFile" class="firmware-picker" type="file" aria-label="Выбрать app-образ .bin"><button class="btn primary" id="uploadFirmware" disabled>Установить обновление</button></div>
         </div>
         <div class="section">
           <h3 class="section-title">Опасная зона</h3>
@@ -424,8 +424,10 @@
     let selectedFirmware=null,otaTimer;
     $('#firmwareFile').addEventListener('change',e=>{
       selectedFirmware=e.target.files[0]||null;clearInterval(otaTimer);$('#otaProgress').style.width='0%';$('#otaPercent').textContent='0%';
+      if(selectedFirmware&&!selectedFirmware.name.toLowerCase().endsWith('.bin')){e.target.value='';selectedFirmware=null;$('#otaState').textContent='Выберите файл с расширением .bin'}
+      if(selectedFirmware&&(selectedFirmware.size<4096||selectedFirmware.size>4194304)){e.target.value='';selectedFirmware=null;$('#otaState').textContent='Размер app-образа должен быть от 4 КБ до 4 МБ'}
       if(selectedFirmware){$('#otaFileName').textContent=selectedFirmware.name;$('#otaFileSize').textContent=(selectedFirmware.size/1024/1024).toFixed(2)+' МБ';$('#otaState').textContent='Готово к загрузке';$('#uploadFirmware').disabled=false}
-      else{$('#otaFileName').textContent='Файл не выбран';$('#otaFileSize').textContent='—';$('#otaState').textContent='Ожидание файла .bin';$('#uploadFirmware').disabled=true}
+      else{$('#otaFileName').textContent='Файл не выбран';$('#otaFileSize').textContent='—';$('#uploadFirmware').disabled=true}
     });
     $('#uploadFirmware').addEventListener('click',()=>{
       if(!selectedFirmware)return;let p=0;$('#uploadFirmware').disabled=true;$('#otaState').textContent='Загрузка в резервный раздел…';
