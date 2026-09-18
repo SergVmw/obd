@@ -1,6 +1,6 @@
-# H2 Gauge 0.3.1 — актуальные проектные решения
+# H2 Gauge 0.3.2 — актуальные проектные решения
 
-**Дата:** 2026-09-16  
+**Дата:** 2026-09-18  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
 **Состояние:** код и release собраны; требуется проверка на физической плате и автомобиле.
 
@@ -112,7 +112,9 @@ RGB565: 240 × 240 × 2 = 115200 bytes
 
 Он размещается в PSRAM. При отсутствии PSRAM используется аварийный 8-bit framebuffer 57 600 байт, а в log выводится ошибка.
 
-Текущий встроенный GFX-шрифт поддерживает нужный набор кириллицы. Переход на полноценные smooth Cyrillic fonts остаётся отдельной задачей.
+Экранная типографика 0.3.2 построена на pinned Golos Text commit `cf2e27222937d97c2d858fff0499bcc667a64e9d` по лицензии SIL OFL 1.1. В PROGMEM находятся три VLW subset с 8-bit alpha: SemiBold 13 px (`16 015` байт), SemiBold 19 px (`28 218` байт) и Bold 38 px для цифр (`7 800` байт). Три font-specific RGB565 text layer постоянно загружают по одному smooth font, поэтому штатный кадр не вызывает `loadFont()`/`unloadFont()` и не создаёт churn метрик в heap.
+
+Каждый text layer перед надписью получает точную полосу текущего framebuffer; callback TFT_eSPI читает фактический пиксель слоя и корректно смешивает полупрозрачные края с карбоном или цветом панели. После рендера полоса копируется обратно. При отсутствии PSRAM или неудачном создании любого слоя используется Golos SemiBold 14 px 1-bit GFX fallback без отключения интерфейса.
 
 ## 6. Кнопка и sleep
 
@@ -264,26 +266,54 @@ Core dump 64 KiB
 LittleFS 8064 KiB
 ```
 
-Проверенная сборка:
+Проверенная чистая release-сборка:
 
 ```text
-RAM: 48 580 / 327 680 bytes
-app Flash payload: 948 965 / 4 194 304 bytes
+RAM: 50 124 / 327 680 bytes
+app Flash payload: 1 046 529 / 4 194 304 bytes
 ```
 
 Release:
 
 ```text
-h2-gauge-v0.3.1-esp32s3-n16r8.bin
-SHA-256 82bb182a3cc62b9298401292ff03ae4ded27acb4256959292dfe0a0d64301ac2
+h2-gauge-v0.3.2-esp32s3-n16r8.bin
+SHA-256 defa6581f52b7851b3de7604f5160920b5fd4dadfbb727566334b2b70841a8d1
 
-h2-gauge-v0.3.1-esp32s3-n16r8-factory.bin
-SHA-256 3795a61fdc800906fe22e0654337df3a1d22bc99a44b88880591f7a388ce0b8d
+h2-gauge-v0.3.2-esp32s3-n16r8-factory.bin
+SHA-256 14e18e14ccfc4ea10ad74b00b958c95f8c4b97bb0f862981c96e69279825ed4d
 ```
 
 Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0.
 
-Финальная проверка 0.3.1 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: release build успешен, API `enableLoopWDT()`, `WebServer::collectHeaders()` и `Update.isRunning()` совместимы. Дополнительно проверены JSON, синтаксис встроенного JavaScript, точное совпадение gzip с `web/index.html`, локальные Markdown-ссылки, SHA-256 обоих образов, valid ESP image hash и расположение app payload в factory image по offset `0x10000`. Аппаратные проверки на автомобиле этой проверкой не заменяются.
+Финальная проверка 0.3.2 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна, API `enableLoopWDT()`, `WebServer::collectHeaders()` и `Update.isRunning()` совместимы. Отдельный validator подтвердил pinned TTF hashes, структуру VLW, 8-bit alpha, порядок codepoints и покрытие webfont; двойной запуск генератора дал идентичные SHA-256. Дополнительно проверены JSON, синтаксис встроенного JavaScript, точное совпадение gzip с `web/index.html`, локальные Markdown-ссылки, SHA-256 обоих образов, valid ESP image hash и расположение app payload в factory image по offset `0x10000`. Аппаратные проверки на автомобиле этой проверкой не заменяются.
+
+### Реализованный PSRAM-кэш и render benchmark
+
+Статус: реализовано и проверено сборкой 2026-09-18; физический runtime-тест на GC9A01 ещё обязателен.
+
+После успешного создания основного 16-bit framebuffer создаётся второй RGB565 sprite 240×240 в PSRAM. Карбоновый фон строится в нём один раз, а в начале каждого кадра восстанавливается точным `memcpy()` 115 200 байт через подтверждённый TFT_eSPI 2.5.43 API `getPointer()`. Поэтому 960 итераций построения узора, `fillSprite()` и около 100 тысяч графических перезаписей больше не выполняются каждый штатный кадр. Если allocation кэша не удался, остаётся прежний безопасный вызов `drawCarbonBackground()`.
+
+Основные pixel buffers в штатном smooth-режиме:
+
+```text
+main RGB565 framebuffer     115 200 bytes
+carbon RGB565 cache         115 200 bytes
+text layers 240×24/32/46     48 960 bytes
+-----------------------------------------
+total pixel buffers         279 360 bytes PSRAM
+```
+
+Это не включает небольшие массивы метрик трёх загруженных smooth fonts. На N16R8 запас относительно 8 МБ PSRAM остаётся большим. Все sprite удаляются в `releaseFramebuffer()` перед deep sleep.
+
+Агрегированная телеметрия печатается раз в 300 кадров, а не каждый кадр: average/max полного render, average восстановления фона, состояние background cache и smooth text layers, а также свободная PSRAM. Такой интервал не создаёт постоянной нагрузки serial log. Частоту кадров и эффект SPI-передачи нужно подтвердить на плате; успешная компиляция не является аппаратным benchmark.
+
+Пример строки:
+
+```text
+UI benchmark 300 frames: render avg/max ... us, bg restore avg ... us, cache=yes, smooth=yes, free PSRAM=...
+```
+
+Для TFT_eSPI 2.5.43 используется `getPointer()`, а не неподтверждённый `getBuffer()`. Основной и фоновый sprite имеют одинаковую 16-битную глубину, поэтому внутреннее byte-swapped RGB565 представление копируется без преобразования. Smooth-font callback также работает только внутри текущего text layer и не обращается к TFT по SPI.
 
 ## 12. Обязательная физическая проверка
 

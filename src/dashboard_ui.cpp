@@ -1,6 +1,7 @@
 #include "dashboard_ui.h"
 
 #include <math.h>
+#include <string.h>
 #include <esp_log.h>
 #include "pins.h"
 #include "startup_logo.h"
@@ -17,6 +18,21 @@ constexpr uint16_t kMuted = 0x7C10;
 constexpr uint16_t kWhite = 0xEFFF;
 constexpr uint16_t kGreen = 0x5F75;
 constexpr uint16_t kCyan = 0x5E5C;
+constexpr int16_t kDisplaySize = 240;
+constexpr int16_t kSmallTextHeight = 24;
+constexpr int16_t kMediumTextHeight = 32;
+constexpr int16_t kLargeTextHeight = 46;
+constexpr size_t kFramebufferBytes =
+    static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t);
+
+// TFT_eSPI smooth fonts ask a callback for the existing pixel under a
+// partially transparent glyph. Rendering is single-threaded in loopTask, so a
+// temporary active layer gives anti-aliasing the real carbon/panel background.
+TFT_eSprite* sSmoothBlendLayer = nullptr;
+
+uint16_t smoothBackgroundPixel(uint16_t x, uint16_t y) {
+  return sSmoothBlendLayer ? sSmoothBlendLayer->readPixel(x, y) : kBackground;
+}
 
 float clampFloat(float value, float lo, float hi) {
   if (value < lo) return lo;
@@ -33,9 +49,10 @@ const char* translated(const ConfigData& config, const char* russian,
   return isRussian(config) ? russian : english;
 }
 
-const GFXfont* labelFont(const ConfigData& config, bool bold = false) {
-  if (isRussian(config)) return &H2Cyrillic14;
-  return bold ? FSSB9 : FSS9;
+const GFXfont* labelFont(const ConfigData&, bool = false) {
+  // Normal N16R8 rendering uses anti-aliased Golos layers. This compact Golos
+  // GFX font is retained only for allocation/PSRAM failure fallback.
+  return H2_FALLBACK_LABEL_FONT;
 }
 
 void pointOnCircle(float degrees, float radius, int16_t& x, int16_t& y) {
@@ -70,11 +87,24 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
     // N16R8 provides 8 MB octal PSRAM, so use a full RGB565 framebuffer.
     // Keep an 8-bit fallback to make a wiring/configuration error visible on
     // screen even if PSRAM initialization fails.
-    const bool usePsram = psramFound();
-    const uint8_t colorDepth = usePsram ? 16 : 8;
+    bool usePsram = psramFound();
+    uint8_t colorDepth = usePsram ? 16 : 8;
     sprite_.setAttribute(PSRAM_ENABLE, usePsram ? 1 : 0);
     sprite_.setColorDepth(colorDepth);
-    framebufferReady_ = sprite_.createSprite(240, 240) != nullptr;
+    framebufferReady_ =
+        sprite_.createSprite(kDisplaySize, kDisplaySize) != nullptr;
+    if (!framebufferReady_ && usePsram) {
+      ESP_LOGW(kTag,
+               "16-bit PSRAM framebuffer allocation failed; trying 8-bit "
+               "internal-RAM fallback");
+      sprite_.deleteSprite();
+      usePsram = false;
+      colorDepth = 8;
+      sprite_.setAttribute(PSRAM_ENABLE, 0);
+      sprite_.setColorDepth(colorDepth);
+      framebufferReady_ =
+          sprite_.createSprite(kDisplaySize, kDisplaySize) != nullptr;
+    }
     if (!framebufferReady_) {
       ESP_LOGE(kTag,
                "%u-bit framebuffer allocation failed, heap=%u PSRAM=%u",
@@ -82,9 +112,34 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode) {
     } else {
       ESP_LOGI(kTag, "%u-bit framebuffer ready, heap=%u PSRAM free=%u",
                colorDepth, ESP.getFreeHeap(), ESP.getFreePsram());
-      if (!usePsram) {
-        ESP_LOGW(kTag, "PSRAM not detected; using the 8-bit fallback");
+      if (usePsram) {
+        backgroundCache_.setAttribute(PSRAM_ENABLE, 1);
+        backgroundCache_.setColorDepth(16);
+        backgroundCacheReady_ =
+            backgroundCache_.createSprite(kDisplaySize, kDisplaySize) != nullptr;
+        if (backgroundCacheReady_) {
+          const uint32_t startedUs = micros();
+          drawCarbonBackground(backgroundCache_);
+          ESP_LOGI(kTag,
+                   "PSRAM background cache ready: %u bytes, build=%lu us",
+                   static_cast<unsigned>(kFramebufferBytes),
+                   static_cast<unsigned long>(micros() - startedUs));
+        } else {
+          ESP_LOGW(kTag,
+                   "Background cache allocation failed; drawing each frame");
+        }
+
+        smoothFontsReady_ = createSmoothTextLayers();
+        if (!smoothFontsReady_) {
+          ESP_LOGW(kTag,
+                   "Smooth Golos layers unavailable; using 1-bit fallback");
+        }
+      } else {
+        ESP_LOGW(kTag,
+                 "Using 8-bit framebuffer and Golos GFX font fallback");
       }
+      ESP_LOGI(kTag, "UI buffers ready, heap=%u PSRAM free=%u",
+               ESP.getFreeHeap(), ESP.getFreePsram());
     }
   }
 }
@@ -126,23 +181,176 @@ void DashboardUi::drawStartupLogo() {
   tft_.setSwapBytes(false);
 }
 
-void DashboardUi::drawCarbonBackground() {
-  sprite_.fillSprite(kBackground);
+bool DashboardUi::createSmoothTextLayers() {
+  const auto createLayer = [](TFT_eSprite& layer, int16_t height,
+                              const uint8_t* font) {
+    layer.setAttribute(PSRAM_ENABLE, 1);
+    layer.setColorDepth(16);
+    if (layer.createSprite(kDisplaySize, height) == nullptr) return false;
+    layer.setTextWrap(false, false);
+    layer.setCallback(smoothBackgroundPixel);
+    layer.loadFont(font);
+    return layer.fontLoaded;
+  };
+
+  if (!createLayer(textSmall_, kSmallTextHeight, H2GolosSmall13) ||
+      !createLayer(textMedium_, kMediumTextHeight, H2GolosMedium19) ||
+      !createLayer(textLarge_, kLargeTextHeight, H2GolosDigits38)) {
+    releaseSmoothTextLayers();
+    return false;
+  }
+
+  ESP_LOGI(kTag,
+           "Anti-aliased Golos ready: small=%u medium=%u digits=%u bytes",
+           static_cast<unsigned>(H2GolosSmall13Size),
+           static_cast<unsigned>(H2GolosMedium19Size),
+           static_cast<unsigned>(H2GolosDigits38Size));
+  return true;
+}
+
+void DashboardUi::releaseSmoothTextLayers() {
+  sSmoothBlendLayer = nullptr;
+  textSmall_.unloadFont();
+  textMedium_.unloadFont();
+  textLarge_.unloadFont();
+  textSmall_.deleteSprite();
+  textMedium_.deleteSprite();
+  textLarge_.deleteSprite();
+  smoothFontsReady_ = false;
+}
+
+void DashboardUi::drawCarbonBackground(TFT_eSprite& target) {
+  target.fillSprite(kBackground);
 
   // Compact 4x16 px twill. Rows shift by four pixels to create the
   // characteristic diagonal carbon weave without a large bitmap in RAM/Flash.
-  for (int16_t y = 0; y < 240; y += 4) {
+  for (int16_t y = 0; y < kDisplaySize; y += 4) {
     const int16_t shift = ((y / 4) & 0x03) * 4 - 16;
     const bool highlightRow = ((y / 4) & 0x03) == 0;
-    for (int16_t x = shift; x < 240; x += 16) {
-      sprite_.fillRect(x, y, 7, 3, kCarbonThread);
-      if (highlightRow) sprite_.drawFastHLine(x, y, 7, kCarbonEdge);
-      sprite_.fillRect(x + 8, y, 7, 3, kPanel);
+    for (int16_t x = shift; x < kDisplaySize; x += 16) {
+      target.fillRect(x, y, 7, 3, kCarbonThread);
+      if (highlightRow) target.drawFastHLine(x, y, 7, kCarbonEdge);
+      target.fillRect(x + 8, y, 7, 3, kPanel);
     }
   }
 }
 
+void DashboardUi::restoreBackground() {
+  void* destination = sprite_.getPointer();
+  void* source = backgroundCache_.getPointer();
+  if (backgroundCacheReady_ && destination != nullptr && source != nullptr &&
+      sprite_.getColorDepth() == 16 &&
+      backgroundCache_.getColorDepth() == 16) {
+    memcpy(destination, source, kFramebufferBytes);
+    return;
+  }
+  drawCarbonBackground(sprite_);
+}
+
+int16_t DashboardUi::drawText(const char* text, int16_t x, int16_t y,
+                              uint8_t datum, uint16_t color, FontRole role,
+                              const GFXfont* fallbackFont) {
+  TFT_eSprite* layer = nullptr;
+  int16_t layerHeight = 0;
+  if (role == FontRole::Small) {
+    layer = &textSmall_;
+    layerHeight = kSmallTextHeight;
+  } else if (role == FontRole::Medium) {
+    layer = &textMedium_;
+    layerHeight = kMediumTextHeight;
+  } else {
+    layer = &textLarge_;
+    layerHeight = kLargeTextHeight;
+  }
+
+  auto* framebuffer = static_cast<uint16_t*>(sprite_.getPointer());
+  auto* layerBuffer =
+      layer ? static_cast<uint16_t*>(layer->getPointer()) : nullptr;
+  if (!smoothFontsReady_ || framebuffer == nullptr || layerBuffer == nullptr ||
+      sprite_.getColorDepth() != 16 || layer->getColorDepth() != 16) {
+    sprite_.setTextDatum(datum);
+    sprite_.setTextColor(color);
+    sprite_.setFreeFont(fallbackFont);
+    return sprite_.drawString(text, x, y);
+  }
+
+  int16_t top = y - layerHeight / 2;
+  int16_t localY = layerHeight / 2;
+  if (datum == TL_DATUM || datum == TC_DATUM || datum == TR_DATUM) {
+    top = y;
+    localY = 0;
+  } else if (datum == BL_DATUM || datum == BC_DATUM || datum == BR_DATUM) {
+    top = y - layerHeight;
+    localY = layerHeight;
+  }
+
+  int16_t sourceY = top;
+  int16_t destinationY = 0;
+  int16_t rows = layerHeight;
+  if (sourceY < 0) {
+    destinationY = -sourceY;
+    rows -= destinationY;
+    sourceY = 0;
+    layer->fillSprite(kBackground);
+  }
+  if (sourceY + rows > kDisplaySize) {
+    rows = kDisplaySize - sourceY;
+    layer->fillSprite(kBackground);
+  }
+  if (rows <= 0) return 0;
+
+  constexpr size_t kRowBytes = kDisplaySize * sizeof(uint16_t);
+  for (int16_t row = 0; row < rows; ++row) {
+    memcpy(layerBuffer + static_cast<size_t>(destinationY + row) * kDisplaySize,
+           framebuffer + static_cast<size_t>(sourceY + row) * kDisplaySize,
+           kRowBytes);
+  }
+
+  layer->setTextDatum(datum);
+  layer->setTextColor(color);
+  sSmoothBlendLayer = layer;
+  const int16_t width = layer->drawString(text, x, localY);
+  sSmoothBlendLayer = nullptr;
+
+  for (int16_t row = 0; row < rows; ++row) {
+    memcpy(framebuffer + static_cast<size_t>(sourceY + row) * kDisplaySize,
+           layerBuffer + static_cast<size_t>(destinationY + row) * kDisplaySize,
+           kRowBytes);
+  }
+  return width;
+}
+
+int16_t DashboardUi::drawDirectText(const char* text, int16_t x, int16_t y,
+                                    uint8_t datum, uint16_t color,
+                                    FontRole role,
+                                    const GFXfont* fallbackFont) {
+  const uint8_t* font = role == FontRole::Small
+                            ? H2GolosSmall13
+                            : (role == FontRole::Medium ? H2GolosMedium19
+                                                       : H2GolosDigits38);
+  if (psramFound()) {
+    tft_.loadFont(font);
+    if (tft_.fontLoaded) {
+      tft_.setTextDatum(datum);
+      tft_.setTextColor(color, kBackground);
+      const int16_t width = tft_.drawString(text, x, y);
+      tft_.unloadFont();
+      return width;
+    }
+  }
+
+  tft_.setTextDatum(datum);
+  tft_.setTextColor(color, kBackground);
+  tft_.setFreeFont(fallbackFont);
+  return tft_.drawString(text, x, y);
+}
+
 void DashboardUi::releaseFramebuffer() {
+  releaseSmoothTextLayers();
+  if (backgroundCacheReady_) {
+    backgroundCache_.deleteSprite();
+    backgroundCacheReady_ = false;
+  }
   if (framebufferReady_) {
     sprite_.deleteSprite();
     framebufferReady_ = false;
@@ -161,13 +369,16 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
                          const ConfigData& config) {
   if (!framebufferReady_ || now - lastRenderAt_ < 100) return;
   lastRenderAt_ = now;
+  const uint32_t renderStartedUs = micros();
 
   if (page_ != 0 && config.autoReturnSec > 0 &&
       now - lastInteractionAt_ > config.autoReturnSec * 1000UL) {
     page_ = 0;
   }
 
-  drawCarbonBackground();
+  const uint32_t restoreStartedUs = micros();
+  restoreBackground();
+  restoreMicrosTotal_ += micros() - restoreStartedUs;
   switch (page_) {
     case 1:
       drawFuel(data, engine, config, now);
@@ -183,6 +394,27 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
       break;
   }
   sprite_.pushSprite(0, 0);
+
+  const uint32_t renderUs = micros() - renderStartedUs;
+  renderMicrosTotal_ += renderUs;
+  if (renderUs > renderMicrosMax_) renderMicrosMax_ = renderUs;
+  ++renderedFrames_;
+  if (renderedFrames_ >= 300) {
+    ESP_LOGI(kTag,
+             "300 frames: render avg=%llu us max=%lu us, background avg=%lu "
+             "us, cache=%s smooth=%s PSRAM free=%u",
+             static_cast<unsigned long long>(renderMicrosTotal_ /
+                                             renderedFrames_),
+             static_cast<unsigned long>(renderMicrosMax_),
+             static_cast<unsigned long>(restoreMicrosTotal_ /
+                                        renderedFrames_),
+             backgroundCacheReady_ ? "yes" : "no",
+             smoothFontsReady_ ? "yes" : "no", ESP.getFreePsram());
+    renderMicrosTotal_ = 0;
+    renderMicrosMax_ = 0;
+    restoreMicrosTotal_ = 0;
+    renderedFrames_ = 0;
+  }
 }
 
 bool DashboardUi::pageEnabled(uint8_t page, const ConfigData& config) const {
@@ -291,15 +523,13 @@ void DashboardUi::drawMain(const TelemetryData& data,
   drawGaugeArc(data.filteredBoostBar, config);
 
   char buffer[24];
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(FSS9);
   if (data.ecuVoltage.valid(now)) {
     snprintf(buffer, sizeof(buffer), "%.1f V", data.ecuVoltage.value);
   } else {
     strlcpy(buffer, "--.- V", sizeof(buffer));
   }
-  sprite_.drawString(buffer, 120, 36);
+  drawText(buffer, 120, 36, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config));
 
   const char* centerUnit = translated(config, "БАР", "BAR");
   bool centerValid = true;
@@ -337,13 +567,10 @@ void DashboardUi::drawMain(const TelemetryData& data,
   }
   if (!centerValid) strlcpy(buffer, "--.-", sizeof(buffer));
 
-  sprite_.setTextColor(config.colorText);
-  sprite_.setFreeFont(FSSB24);
-  sprite_.drawString(buffer, 120, 102);
-
-  sprite_.setFreeFont(labelFont(config, true));
-  sprite_.setTextColor(kMuted);
-  sprite_.drawString(centerUnit, 120, 132);
+  drawText(buffer, 120, 102, MC_DATUM, config.colorText, FontRole::Large,
+           FSSB24);
+  drawText(centerUnit, 120, 132, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config, true));
 
   char current[16];
   char average[16];
@@ -368,13 +595,9 @@ void DashboardUi::drawMain(const TelemetryData& data,
 void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,
                                 const char* label, const ConfigData& config,
                                 uint16_t color) {
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(color);
-  sprite_.setFreeFont(FSSB12);
-  sprite_.drawString(value, x, y);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(labelFont(config));
-  sprite_.drawString(label, x, y + 19);
+  drawText(value, x, y, MC_DATUM, color, FontRole::Medium, FSSB12);
+  drawText(label, x, y + 19, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config));
 }
 
 void DashboardUi::drawStatusRow(const TelemetryData& data,
@@ -382,12 +605,10 @@ void DashboardUi::drawStatusRow(const TelemetryData& data,
   if (data.fuelTrimWarning) {
     sprite_.fillRoundRect(31, 201, 178, 20, 8, kPanel);
     sprite_.drawRoundRect(31, 201, 178, 20, 8, config.colorWarning);
-    sprite_.setTextDatum(MC_DATUM);
-    sprite_.setTextColor(config.colorWarning, kPanel);
-    sprite_.setFreeFont(labelFont(config, true));
-    sprite_.drawString(translated(config, "КАЛИБРОВКА ГБО!",
-                                  "CHECK LPG CALIBRATION"),
-                       120, 211);
+    drawText(translated(config, "КАЛИБРОВКА ГБО!",
+                        "CHECK LPG CALIBRATION"),
+             120, 211, MC_DATUM, config.colorWarning, FontRole::Small,
+             labelFont(config, true));
     return;
   }
 
@@ -406,20 +627,15 @@ void DashboardUi::drawStatusRow(const TelemetryData& data,
     fuel = "OFF";
   }
 
-  sprite_.setTextDatum(MC_DATUM);
   if (config.lpgBadge) {
     sprite_.fillRoundRect(73, 202, 39, 18, 8, kPanel);
     sprite_.drawRoundRect(73, 202, 39, 18, 8, fuelColor);
-    sprite_.setTextColor(fuelColor, kPanel);
-    sprite_.setFreeFont(FSSB9);
-    sprite_.drawString(fuel, 92, 211);
+    drawText(fuel, 92, 211, MC_DATUM, fuelColor, FontRole::Small, FSSB9);
   }
 
   sprite_.fillCircle(config.lpgBadge ? 131 : 105, 211, 3, obdColor);
-  sprite_.setTextDatum(ML_DATUM);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(FSS9);
-  sprite_.drawString("OBD", config.lpgBadge ? 139 : 113, 211);
+  drawText("OBD", config.lpgBadge ? 139 : 113, 211, ML_DATUM, kMuted,
+           FontRole::Small, FSS9);
 }
 
 void DashboardUi::drawFuel(const TelemetryData& data,
@@ -429,22 +645,20 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   snprintf(value, sizeof(value),
            isRussian(config) ? "ПУТЬ %.1f КМ" : "TRIP %.1f KM",
            engine.trip().totalDistanceKm);
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(labelFont(config, true));
-  sprite_.drawString(value, 120, 28);
+  drawText(value, 120, 28, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config, true));
 
-  sprite_.setTextColor(config.colorText);
-  sprite_.setFreeFont(FSSB24);
-  if (data.fuelValueValid) snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
-  else strlcpy(value, "--.-", sizeof(value));
-  sprite_.drawString(value, 120, 82);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(labelFont(config));
-  sprite_.drawString(data.consumptionIsPerHour
-                         ? translated(config, "Л/Ч", "L/H")
-                         : translated(config, "Л/100 КМ", "L/100 KM"),
-                     120, 114);
+  if (data.fuelValueValid) {
+    snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
+  } else {
+    strlcpy(value, "--.-", sizeof(value));
+  }
+  drawText(value, 120, 82, MC_DATUM, config.colorText, FontRole::Large,
+           FSSB24);
+  drawText(data.consumptionIsPerHour
+               ? translated(config, "Л/Ч", "L/H")
+               : translated(config, "Л/100 КМ", "L/100 KM"),
+           120, 114, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
 
   snprintf(value, sizeof(value), "%.2f L", engine.petrolLiters(config));
   if (config.lpgEnabled) {
@@ -465,10 +679,8 @@ void DashboardUi::drawFuel(const TelemetryData& data,
 
 void DashboardUi::drawTemperatures(const TelemetryData& data,
                                    const ConfigData& config, uint32_t now) {
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(labelFont(config, true));
-  sprite_.drawString(translated(config, "ДВИГАТЕЛЬ", "ENGINE"), 120, 25);
+  drawText(translated(config, "ДВИГАТЕЛЬ", "ENGINE"), 120, 25, MC_DATUM,
+           kMuted, FontRole::Medium, labelFont(config, true));
 
   char value[24];
   if (data.coolantC.valid(now)) snprintf(value, sizeof(value), "%.0f C", data.coolantC.value);
@@ -496,68 +708,67 @@ void DashboardUi::drawTemperatures(const TelemetryData& data,
 
 void DashboardUi::drawDiagnostics(const TelemetryData& data,
                                   const ConfigData& config, uint32_t now) {
-  sprite_.setTextDatum(MC_DATUM);
-  sprite_.setTextColor(kMuted);
-  sprite_.setFreeFont(labelFont(config, true));
-  sprite_.drawString(translated(config, "СЕРВИС OBD", "OBD SERVICE"), 120, 25);
+  drawText(translated(config, "СЕРВИС OBD", "OBD SERVICE"), 120, 25,
+           MC_DATUM, kMuted, FontRole::Medium, labelFont(config, true));
 
   char line[64];
-  sprite_.setTextDatum(ML_DATUM);
-  sprite_.setFreeFont(labelFont(config));
-  sprite_.setTextColor(data.obdConnected(now) ? config.colorBoost
-                                               : config.colorDanger);
-  sprite_.drawString(data.obdConnected(now)
-                         ? translated(config, "CAN ПОДКЛЮЧЕН", "CAN CONNECTED")
-                         : translated(config, "CAN НЕТ СВЯЗИ", "CAN OFFLINE"),
-                     35, 63);
-  sprite_.setTextColor(config.colorText);
-  snprintf(line, sizeof(line), isRussian(config) ? "ЭБУ: 0x%03X" : "ECU: 0x%03X",
+  const uint16_t stateColor =
+      data.obdConnected(now) ? config.colorBoost : config.colorDanger;
+  drawText(data.obdConnected(now)
+               ? translated(config, "CAN ПОДКЛЮЧЕН", "CAN CONNECTED")
+               : translated(config, "CAN НЕТ СВЯЗИ", "CAN OFFLINE"),
+           35, 63, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
+
+  snprintf(line, sizeof(line),
+           isRussian(config) ? "ЭБУ: 0x%03X" : "ECU: 0x%03X",
            data.ecuResponseId);
-  sprite_.drawString(line, 35, 91);
-  snprintf(line, sizeof(line), isRussian(config) ? "ОТВЕТЫ: %lu" : "Responses: %lu",
+  drawText(line, 35, 91, ML_DATUM, config.colorText, FontRole::Small,
+           labelFont(config));
+  snprintf(line, sizeof(line),
+           isRussian(config) ? "ОТВЕТЫ: %lu" : "Responses: %lu",
            static_cast<unsigned long>(data.obdResponseCount));
-  sprite_.drawString(line, 35, 119);
-  snprintf(line, sizeof(line), isRussian(config) ? "ТАЙМАУТЫ: %lu" : "Timeouts: %lu",
+  drawText(line, 35, 119, ML_DATUM, config.colorText, FontRole::Small,
+           labelFont(config));
+  snprintf(line, sizeof(line),
+           isRussian(config) ? "ТАЙМАУТЫ: %lu" : "Timeouts: %lu",
            static_cast<unsigned long>(data.obdTimeoutCount));
-  sprite_.drawString(line, 35, 147);
-  snprintf(line, sizeof(line), isRussian(config) ? "ОШИБКИ CAN: %lu" : "CAN errors: %lu",
+  drawText(line, 35, 147, ML_DATUM, config.colorText, FontRole::Small,
+           labelFont(config));
+  snprintf(line, sizeof(line),
+           isRussian(config) ? "ОШИБКИ CAN: %lu" : "CAN errors: %lu",
            static_cast<unsigned long>(data.canErrorCount));
-  sprite_.drawString(line, 35, 175);
-  sprite_.setTextColor(kMuted);
-  sprite_.drawString(translated(config, "ТОЛЬКО ЧТЕНИЕ", "Read-only Mode 01"),
-                     35, 205);
+  drawText(line, 35, 175, ML_DATUM, config.colorText, FontRole::Small,
+           labelFont(config));
+  drawText(translated(config, "ТОЛЬКО ЧТЕНИЕ", "Read-only Mode 01"), 35,
+           205, ML_DATUM, kMuted, FontRole::Small, labelFont(config));
 }
 
 void DashboardUi::showService(const String& ssid, const String& ip,
                               const ConfigData& config) {
   releaseFramebuffer();
   tft_.fillScreen(kBackground);
-  tft_.setTextDatum(MC_DATUM);
-  tft_.setTextColor(kGreen, kBackground);
-  tft_.setFreeFont(isRussian(config) ? &H2Cyrillic14 : FSSB18);
-  tft_.drawString(translated(config, "СЕРВИС", "SERVICE"), 120, 68);
-  tft_.setTextColor(kWhite, kBackground);
-  tft_.setFreeFont(FSSB9);
-  tft_.drawString(ssid, 120, 112);
-  tft_.setTextColor(kCyan, kBackground);
-  tft_.drawString(ip, 120, 139);
-  tft_.setTextColor(kMuted, kBackground);
-  tft_.setFreeFont(labelFont(config));
-  tft_.drawString(translated(config, "КНОПКА: ВЫХОД",
-                             "Hold button to exit"),
-                  120, 183);
+  drawDirectText(translated(config, "СЕРВИС", "SERVICE"), 120, 68,
+                 MC_DATUM, kGreen, FontRole::Medium, FSSB18);
+  drawDirectText(ssid.c_str(), 120, 112, MC_DATUM, kWhite, FontRole::Small,
+                 FSSB9);
+  drawDirectText(ip.c_str(), 120, 139, MC_DATUM, kCyan, FontRole::Small,
+                 FSSB9);
+  drawDirectText(translated(config, "КНОПКА: ВЫХОД",
+                            "Hold button to exit"),
+                 120, 183, MC_DATUM, kMuted, FontRole::Small,
+                 labelFont(config));
 }
 
 void DashboardUi::showMessage(const char* title, const char* line1,
                               const ConfigData& config, const char* line2) {
   releaseFramebuffer();
   tft_.fillScreen(kBackground);
-  tft_.setTextDatum(MC_DATUM);
-  tft_.setTextColor(kWhite, kBackground);
-  tft_.setFreeFont(isRussian(config) ? &H2Cyrillic14 : FSSB18);
-  tft_.drawString(title, 120, 80);
-  tft_.setTextColor(kMuted, kBackground);
-  tft_.setFreeFont(labelFont(config));
-  tft_.drawString(line1, 120, 130);
-  if (line2) tft_.drawString(line2, 120, 155);
+  drawDirectText(title, 120, 80, MC_DATUM, kWhite, FontRole::Medium,
+                 FSSB18);
+  drawDirectText(line1, 120, 130, MC_DATUM, kMuted, FontRole::Small,
+                 labelFont(config));
+  if (line2) {
+    drawDirectText(line2, 120, 155, MC_DATUM, kMuted, FontRole::Small,
+                   labelFont(config));
+  }
 }

@@ -14,9 +14,9 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.1
+## Текущая версия 0.3.2
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC, проверка физического размера Flash/PSRAM при старте и RGB565 framebuffer в PSRAM. Версия 0.3.1 добавляет Task Watchdog, ограниченный CAN RX budget, транзакционную валидацию настроек, защищённые destructive API, корректное завершение неудачного OTA и явные поля NVS schema 5 без bit-packing.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC и проверка фактического размера памяти. Версия 0.3.2 использует встроенные anti-aliased Golos Text, постоянные PSRAM text layers и RGB565-кэш карбонового фона; при нехватке PSRAM сохраняется безопасный GFX/8-bit fallback. Также включены Task Watchdog, ограниченный CAN RX budget, транзакционная валидация настроек, защищённые destructive API и NVS schema 5 без bit-packing.
 
 ## Реализовано
 
@@ -36,7 +36,10 @@
 - отключённый расширяемый Mode 22/ISO-TP framework без неподтверждённых Haval DID;
 - REST CAN Monitor;
 - четыре страницы GC9A01;
-- 16-bit RGB565 framebuffer в PSRAM и 8-bit аварийный fallback;
+- Golos Text: три встроенных 8-bit anti-aliased VLW subset и Golos GFX fallback;
+- три постоянных font-specific PSRAM text layer с alpha blending по реальному фону;
+- 16-bit RGB565 framebuffer и carbon background cache в PSRAM, 8-bit аварийный fallback;
+- агрегированный serial benchmark рендера каждые 300 кадров;
 - NVS schema 5;
 - Wi‑Fi captive portal и локальное app OTA.
 
@@ -177,17 +180,17 @@ pio run -e esp32s3_n16r8 --target upload
 
 Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.1
+## Release 0.3.2
 
 ```text
-releases/h2-gauge-v0.3.1-esp32s3-n16r8.bin
-SHA-256: 82bb182a3cc62b9298401292ff03ae4ded27acb4256959292dfe0a0d64301ac2
+releases/h2-gauge-v0.3.2-esp32s3-n16r8.bin
+SHA-256: defa6581f52b7851b3de7604f5160920b5fd4dadfbb727566334b2b70841a8d1
 
-releases/h2-gauge-v0.3.1-esp32s3-n16r8-factory.bin
-SHA-256: 3795a61fdc800906fe22e0654337df3a1d22bc99a44b88880591f7a388ce0b8d
+releases/h2-gauge-v0.3.2-esp32s3-n16r8-factory.bin
+SHA-256: 14e18e14ccfc4ea10ad74b00b958c95f8c4b97bb0f862981c96e69279825ed4d
 ```
 
-Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.1.md`](releases/README-v0.3.1.md).
+Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.2.md`](releases/README-v0.3.2.md).
 
 ## Flash и PSRAM
 
@@ -233,16 +236,23 @@ URL: http://192.168.4.1
 
 ## Обновление встроенного web UI
 
-После изменения `web/index.html`:
+Воспроизводимая генерация экранных Golos fonts, offline webfonts и встроенного web UI:
 
 ```bash
+python3 tools/generate_ui_fonts.py
+python3 tools/check_ui_fonts.py
+python3 tools/embed_web_fonts.py
 python3 tools/embed_web.py
 pio run -e esp32s3_n16r8
 ```
 
+## Шрифт и лицензия
+
+Golos Text взят из официального upstream commit `cf2e27222937d97c2d858fff0499bcc667a64e9d`. Исходные TTF и созданные subset распространяются по SIL Open Font License 1.1; полный текст находится в [`docs/GOLOS_FONT_LICENSE.txt`](docs/GOLOS_FONT_LICENSE.txt).
+
 ## Пока не реализовано или не проверено
 
-- физическая проверка прошивки 0.3.1 на приобретённой ESP32-S3;
+- физическая проверка прошивки 0.3.2 на приобретённой ESP32-S3;
 - автомобильная проверка CAN Haval;
 - BRC K-Line/KWP2000;
 - подтверждённые Haval Mode 22 DID;
@@ -250,7 +260,7 @@ pio run -e esp32s3_n16r8
 - speed-density fallback;
 - рабочий read-only Wi‑Fi во время движения;
 - Bluetooth LE telemetry;
-- полноценная замена текущих GFX-font на smooth Cyrillic fonts;
+- аппаратное измерение фактической частоты кадров и проверка blending Golos на GC9A01;
 - day/night automation;
 - сертифицированная автомобильная плата питания.
 

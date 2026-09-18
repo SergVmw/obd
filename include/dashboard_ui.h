@@ -7,7 +7,9 @@
 
 class DashboardUi {
  public:
-  DashboardUi() : sprite_(&tft_) {}
+  DashboardUi()
+      : sprite_(&tft_), backgroundCache_(&tft_), textSmall_(&tft_),
+        textMedium_(&tft_), textLarge_(&tft_) {}
 
   void begin(const ConfigData& config, bool normalMode);
   void render(uint32_t now, const TelemetryData& data,
@@ -24,6 +26,8 @@ class DashboardUi {
   void prepareForSleep();
 
  private:
+  enum class FontRole : uint8_t { Small, Medium, Large };
+
   void drawMain(const TelemetryData& data, const TelemetryEngine& engine,
                 const ConfigData& config, uint32_t now);
   void drawFuel(const TelemetryData& data, const TelemetryEngine& engine,
@@ -33,7 +37,16 @@ class DashboardUi {
   void drawDiagnostics(const TelemetryData& data, const ConfigData& config,
                        uint32_t now);
   void drawStartupLogo();
-  void drawCarbonBackground();
+  void drawCarbonBackground(TFT_eSprite& target);
+  void restoreBackground();
+  bool createSmoothTextLayers();
+  void releaseSmoothTextLayers();
+  int16_t drawText(const char* text, int16_t x, int16_t y, uint8_t datum,
+                   uint16_t color, FontRole role,
+                   const GFXfont* fallbackFont);
+  int16_t drawDirectText(const char* text, int16_t x, int16_t y,
+                         uint8_t datum, uint16_t color, FontRole role,
+                         const GFXfont* fallbackFont);
   void drawGaugeArc(float value, const ConfigData& config);
   void drawStatusRow(const TelemetryData& data, const ConfigData& config,
                      uint32_t now);
@@ -45,9 +58,19 @@ class DashboardUi {
 
   TFT_eSPI tft_;
   TFT_eSprite sprite_;
+  TFT_eSprite backgroundCache_;
+  TFT_eSprite textSmall_;
+  TFT_eSprite textMedium_;
+  TFT_eSprite textLarge_;
   bool framebufferReady_ = false;
+  bool backgroundCacheReady_ = false;
+  bool smoothFontsReady_ = false;
   uint8_t page_ = 0;
   uint32_t lastRenderAt_ = 0;
   uint32_t lastInteractionAt_ = 0;
+  uint64_t renderMicrosTotal_ = 0;
+  uint32_t renderMicrosMax_ = 0;
+  uint32_t restoreMicrosTotal_ = 0;
+  uint32_t renderedFrames_ = 0;
   float peakBoost_ = -10.0f;
 };
