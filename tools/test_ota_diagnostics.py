@@ -9,8 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="h2g-ota-tests-") as tmp:
     executable = Path(tmp) / "ota_diagnostics_tests"
     command = [
-        "g++", "-std=c++14", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+        "g++", "-std=c++14", "-O1", "-U_FORTIFY_SOURCE",
+        "-D_FORTIFY_SOURCE=3", "-g",
+        "-Wall", "-Wextra", "-Werror",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+        "-fno-pie", "-no-pie",
         "-I", str(ROOT / "tests/host"), "-I", str(ROOT / "include"),
         str(ROOT / "tests/host/ota_diagnostics_tests.cpp"),
         str(ROOT / "src/ota_diagnostics.cpp"),

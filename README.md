@@ -22,7 +22,7 @@ APP1-форензика второго reset доказала ошибку raw-�
 
 **20 сентября 2026 исправление подтверждено на приборе:** обычный app `.bin` 0.3.7 прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. Подробности сохранены в [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md). Config schema остаётся **6**; NVS-настройки, trip, топливная и световая калибровки сохраняются. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
 
-История релиза: [`CHANGELOG.md`](CHANGELOG.md).
+История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
 ## Реализовано
 
@@ -171,9 +171,10 @@ emitter PC817 → GND
 
 ## Сборка
 
-Требуется PlatformIO:
+Установить зафиксированные build/validation зависимости и собрать:
 
 ```bash
+python -m pip install -r requirements-dev.txt
 pio run -e esp32s3_n16r8
 ```
 

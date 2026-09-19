@@ -30,5 +30,8 @@
 - 11 OTA journal/migration-групп с ASan/UBSan.
 - Static transport, manifest, fonts, embedded UI, checksums и factory-layout.
 - Browser fixture для slot cards, OTA phases, brightness и responsive layouts.
+- CI зафиксирован на Ubuntu 24.04, PlatformIO 6.1.18 и проверенных версиях
+  библиотек; host-заглушка `strlcpy()` совместима с fortified glibc 2.38+.
 
 Подробный OTA postmortem: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md).
+Анализ CI: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
