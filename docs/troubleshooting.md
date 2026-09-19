@@ -187,7 +187,9 @@ POST /api/can/clear
 - `version` — фактически запущенный релиз H2 Gauge;
 - running partition — откуда код выполняется сейчас;
 - boot partition — что выбрано загрузчиком;
-- last result — `applied`, `rolled_back`, `unexpected_slot` или `pending`;
+- last result — `applied`, `rolled_back`, `interrupted_upload`, `interrupted_finalize`, `finalize_failed`, `boot_selection_failed`, `unexpected_slot` или `pending`;
+- last phase — `receiving`, `verifying`, `image_verified` или `boot_selected`;
+- `receivedSize/imageSize` — последний сохранённый transport progress;
 - reset reason и running image state;
 - `diagnosticsStorageHealthy`;
 - `ota.slots[]` — версии обоих slots и flags `running`, `bootSelected`, `nextUpdate`.
@@ -195,14 +197,23 @@ POST /api/can/clear
 Интерпретация:
 
 - `applied`, running=target и новая `version` — OTA применён;
-- `rolled_back` — загрузчик вернулся в source slot; сохраните полный JSON статуса до новой попытки;
+- `interrupted_upload` + `receiving` — reset/обрыв произошёл внутри передачи до `RAW_END`; сравните `receivedSize` и `imageSize`;
+- `interrupted_finalize` + `verifying` — reset произошёл во время финальной проверки image, до подтверждённого выбора boot-раздела;
+- `interrupted_finalize` + `image_verified` — image уже проверен, но выбор/read-back boot-раздела не завершился;
+- `finalize_failed` — `esp_ota_end()` вернул ошибку; смотрите сохранённые `errorCode/errorName`;
+- `boot_selection_failed` — выбор или read-back boot-раздела явно завершился ошибкой, а не rollback; смотрите `errorCode/errorName`;
+- `rolled_back` + `boot_selected` — target действительно был выбран, но загрузчик вернулся в source slot; сохраните полный JSON до новой попытки;
 - `unexpected_slot` — запущен не source и не target; не повторяйте OTA вслепую;
 - `pending` после обычного старта — попытка ещё не классифицирована или NVS checkpoint не завершился;
 - boot не совпадает с target до reboot — native updater не должен был вернуть HTTP 200;
 - `APP0/APP1: неизвестно` — descriptor читается, но это неизвестная старая сборка без H2 manifest; это не означает номер Arduino framework;
 - `APP0/APP1: пусто` — валидный app descriptor не прочитан, проверьте полный JSON до любых действий.
 
-Исторически первая загрузка 0.3.6 с устройства 0.3.5 выполнялась старым updater. Если устройство всё ещё находится в таком состоянии, используйте app-only USB bootstrap из [`../releases/README-v0.3.7.md`](../releases/README-v0.3.7.md): без `erase_flash` и factory image. Это сохраняет NVS, trip и калибровки; дальнейшие обновления выполняются штатно.
+Первая реальная попытка 0.3.6→старый кандидат 0.3.7 дошла до полной передачи, но reset произошёл до durable checkpoint: running/boot остались APP0 и last OTA не было. Это не следует называть rollback. Старый файл размером 1 077 616 байт с SHA `b5cea758…48ad` отозван и повторно не используется.
+
+Вторая попытка из моста 0.3.6.1 доказала отдельный framework defect: APP1 содержал 751 полный блок по 1 436 байт, а последние 1 260 байт остались `FF`. Парсер ожидал ещё 176 байт за `Content-Length` пять секунд и попал под 5-секундный TWDT до последнего `RAW_WRITE`.
+
+Инцидент закрыт 2026-09-20: из одноразового моста 0.3.6.2 обычный app 0.3.7 успешно прошёл web OTA, server verification и автоматический reboot в APP1; running/boot APP1, image state `valid`. Мост и аппаратные дампы удалены из чистого проекта. Для устройств с 0.3.7 и последующих версий используется только штатный app `.bin`; подробности — в [`OTA_POSTMORTEM_2026-09-19.md`](OTA_POSTMORTEM_2026-09-19.md).
 
 Не загружайте в web OTA bootloader, partitions, filesystem или `-factory.bin`. Не пытайтесь «лечить» активацию ручным RESET, многократным входом в сервис, стиранием Flash или заводским сбросом.
 

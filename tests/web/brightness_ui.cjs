@@ -10,13 +10,20 @@ const vm = require('node:vm');
   const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8');
   let saved = vm.runInNewContext('(' + html.match(/const DEFAULT_CONFIG=(.*);\n/)[1] + ')');
   let posts = 0, resetHeader = '', otaHeader = '', otaBytes = 0, offline = false;
+  let otaLast = { result: 'applied', phase: 'boot_selected', resetReason: 'software', attempt: 1,
+    sourceAddress: 0x410000, targetAddress: 0x10000, imageSize: 1080640,
+    receivedSize: 1080640, descriptorVersion: 'fixture' };
   let sample = {
     rawAdc: 1830, filteredAdc: 1800, percent: 54, targetPercent: 54, pwmDuty: 138,
     nightAdc: 600, dayAdc: 3000, thresholdSource: 'configured', level: 'adaptive',
     delayRemainingMs: 0, pending: 'none', calibrationReady: false,
     observedMinAdc: 1790, observedMaxAdc: 1810, adcClipped: false, storageHealthy: true,
   };
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.H2G_CHROMIUM_EXECUTABLE) {
+    launchOptions.executablePath = process.env.H2G_CHROMIUM_EXECUTABLE;
+  }
+  const browser = await chromium.launch(launchOptions);
   try {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const errors = [];
@@ -44,8 +51,7 @@ const vm = require('node:vm');
                 versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
                 running: false, bootSelected: false, nextUpdate: true, state: 'valid' },
             ],
-            last: { result: 'applied', attempt: 1, sourceAddress: 0x410000,
-              targetAddress: 0x10000, imageSize: 1066640, descriptorVersion: 'fixture' } },
+            last: otaLast }, 
           brightness: { ...sample, mode: saved.display.brightnessMode,
             manualNight: saved.display.manualNight, calibrationLearning: saved.display.brightnessMode === 0 && saved.display.lightAutoCalibrate } });
       }
@@ -77,6 +83,22 @@ const vm = require('node:vm');
     assert.equal(await page.locator('#otaBoot').textContent(), 'app0');
     assert.equal(await page.locator('#otaLast').textContent(), 'Применено');
     assert.match(await page.locator('#otaRuntime').textContent(), /Следующее обновление: app1@0x410000/);
+    otaLast = { ...otaLast, result: 'interrupted_upload', phase: 'receiving',
+      receivedSize: 1048576, imageSize: 1080640, resetReason: 'task_wdt' };
+    await page.evaluate(() => status());
+    assert.equal(await page.locator('#otaLast').textContent(), 'Загрузка прервана');
+    assert.match(await page.locator('#otaRuntime').textContent(), /1048576 из 1080640 байт/);
+    otaLast = { ...otaLast, result: 'interrupted_finalize', phase: 'image_verified', resetReason: 'task_wdt' };
+    await page.evaluate(() => status());
+    assert.equal(await page.locator('#otaLast').textContent(), 'Финализация прервана');
+    assert.match(await page.locator('#otaRuntime').textContent(), /образ был проверен.*выбор boot-раздела не завершился/);
+    assert.match(await page.locator('#otaRuntime').textContent(), /task_wdt/);
+    otaLast = { ...otaLast, result: 'boot_selection_failed', phase: 'image_verified',
+      resetReason: 'not_recorded', errorName: 'ESP_ERR_FLASH_OP_FAIL', errorCode: 261 };
+    await page.evaluate(() => status());
+    assert.equal(await page.locator('#otaLast').textContent(), 'Ошибка выбора boot');
+    assert.match(await page.locator('#otaRuntime').textContent(), /ESP_ERR_FLASH_OP_FAIL/);
+    otaLast = { ...otaLast, result: 'applied', phase: 'boot_selected', resetReason: 'software', errorName: 'none', errorCode: 0 };
     assert.equal(await page.locator('#brightnessMode').inputValue(), '2');
     assert.equal(await page.locator('#autoBrightnessFields').isVisible(), false);
     assert.equal(await page.locator('#manualBrightnessRow').isVisible(), false);
@@ -162,6 +184,6 @@ const vm = require('node:vm');
       await page.screenshot({ path: process.env.H2G_UI_SCREENSHOT });
     }
     assert.deepEqual(errors, []);
-    console.log('PASS browser: brightness/live data, per-slot build cards, verified OTA reboot UI, validation/reset, stale-state clearing, 360–1280 px layouts');
+    console.log('PASS browser: brightness/live data, slot cards, interrupted-upload progress, verified OTA UI, validation/reset, stale-state clearing, 360–1280 px layouts');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

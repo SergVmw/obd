@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Validate the per-slot H2 build record embedded in an ESP32-S3 app image."""
 from pathlib import Path
+import argparse
 import re
 import struct
-import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-IMAGE = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".pio/build/esp32s3_n16r8/firmware.bin"
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "image", nargs="?",
+    default=str(ROOT / ".pio/build/esp32s3_n16r8/firmware.bin"),
+)
+parser.add_argument("--expected-version")
+args = parser.parse_args()
+IMAGE = Path(args.image)
 version_text = (ROOT / "include/version.h").read_text(encoding="utf-8")
-expected_version = re.search(r'H2G_FW_VERSION\s+"([^"]+)"', version_text).group(1)
+source_version = re.search(r'H2G_FW_VERSION\s+"([^"]+)"', version_text).group(1)
+expected_version = args.expected_version or source_version
 expected_target = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', version_text).group(1)
 slots_source = (ROOT / "src/firmware_slots.cpp").read_text(encoding="utf-8")
 legacy_body = re.search(r"kV036ElfSha256\[32\]\s*=\s*\{([^}]+)\}", slots_source, re.S).group(1)
@@ -46,4 +54,7 @@ while True:
 
 assert len(valid) == 1, valid
 assert valid[0][1:] == (expected_version, expected_target), valid
-print(f"Firmware manifest: {expected_version} / {expected_target} at app offset 0x{valid[0][0]:x}; ESP32-S3 image OK")
+print(
+    f"Firmware manifest: {expected_version} / {expected_target} "
+    f"at app offset 0x{valid[0][0]:x}; ESP32-S3 image OK"
+)

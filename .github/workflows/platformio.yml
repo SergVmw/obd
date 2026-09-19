@@ -19,19 +19,25 @@ jobs:
       - name: Install PlatformIO Core
         run: python -m pip install "platformio>=6.1,<7"
 
-      - name: Test brightness, button gestures and NVS migration
-        run: python tools/test_brightness.py
+      - name: Run host regression suites
+        run: |
+          python tools/test_brightness.py
+          python tools/test_ota_diagnostics.py
 
-      - name: Check embedded UI and OTA invariants
+      - name: Check embedded UI, fonts and OTA invariants
         run: |
           python tools/check_brightness_integration.py
           python tools/check_ota_transport.py
+          python tools/check_ui_fonts.py
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
 
-      - name: Check per-slot firmware manifest
-        run: python tools/check_firmware_manifest.py
+      - name: Check build and committed release artifacts
+        run: |
+          python tools/check_firmware_manifest.py
+          python tools/check_firmware_manifest.py releases/h2-gauge-v0.3.7-esp32s3-n16r8.bin --expected-version 0.3.7
+          (cd releases && sha256sum -c SHA256SUMS-v0.3.7.txt)
 
       - name: Upload ESP32-S3 build artifacts
         uses: actions/upload-artifact@v4

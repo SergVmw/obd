@@ -1,4 +1,5 @@
 #pragma once
-#define ESP_LOGW(tag, ...) ((void)(tag))
-#define ESP_LOGE(tag, ...) ((void)(tag))
-#define ESP_LOGI(tag, ...) ((void)(tag))
+#include <cstdio>
+#define ESP_LOGW(tag, fmt, ...) do { (void)(tag); if (false) std::fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
+#define ESP_LOGE(tag, fmt, ...) do { (void)(tag); if (false) std::fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
+#define ESP_LOGI(tag, fmt, ...) do { (void)(tag); if (false) std::fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)

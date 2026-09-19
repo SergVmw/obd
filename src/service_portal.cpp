@@ -7,6 +7,9 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <math.h>
 #include <string.h>
 #include "version.h"
@@ -21,6 +24,71 @@ constexpr size_t kMinOtaImageBytes = 4096;
 constexpr size_t kMaxOtaImageBytes = 4U * 1024U * 1024U;
 constexpr uint32_t kFactoryResetCooldownMs = 10000;
 constexpr uint32_t kOtaCooldownMs = 30000;
+constexpr uint32_t kNativeOtaJobTimeoutMs = 30000;
+
+enum class NativeOtaJob : uint8_t { EndImage, SelectBoot };
+
+struct NativeOtaJobContext {
+  NativeOtaJob job = NativeOtaJob::EndImage;
+  esp_ota_handle_t handle = 0;
+  const esp_partition_t* partition = nullptr;
+  SemaphoreHandle_t done = nullptr;
+  esp_err_t result = ESP_FAIL;
+};
+
+struct NativeOtaJobResult {
+  bool started = false;
+  esp_err_t result = ESP_FAIL;
+};
+
+void nativeOtaJobTask(void* parameter) {
+  auto* context = static_cast<NativeOtaJobContext*>(parameter);
+  context->result = context->job == NativeOtaJob::EndImage
+                        ? esp_ota_end(context->handle)
+                        : esp_ota_set_boot_partition(context->partition);
+  xSemaphoreGive(context->done);
+  vTaskDelete(nullptr);
+}
+
+NativeOtaJobResult runNativeOtaJob(NativeOtaJob job,
+                                   esp_ota_handle_t handle,
+                                   const esp_partition_t* partition) {
+  NativeOtaJobContext context;
+  context.job = job;
+  context.handle = handle;
+  context.partition = partition;
+  context.done = xSemaphoreCreateBinary();
+  if (!context.done) return {};
+
+  if (xTaskCreate(nativeOtaJobTask, "h2-ota-final", 6144, &context,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    vSemaphoreDelete(context.done);
+    return {};
+  }
+
+  NativeOtaJobResult output;
+  output.started = true;
+  // Image hashing and boot-partition validation are bounded native operations,
+  // but can exceed the 5 s loopTask TWDT on some flash/power combinations.
+  // Keep loopTask alive while a short worker performs the blocking IDF call;
+  // the watchdog remains enabled and all OTA results are still checked here.
+  // A native call that does not return in 30 s causes a controlled restart;
+  // its already-persisted phase then explains exactly where it stopped.
+  const uint32_t startedAt = millis();
+  while (xSemaphoreTake(context.done, pdMS_TO_TICKS(100)) != pdTRUE) {
+    feedLoopWDT();
+    if (millis() - startedAt >= kNativeOtaJobTimeoutMs) {
+      ESP_LOGE(kTag, "Native OTA finalization exceeded %lu ms; restarting",
+               static_cast<unsigned long>(kNativeOtaJobTimeoutMs));
+      delay(20);
+      esp_restart();
+    }
+  }
+  feedLoopWDT();
+  output.result = context.result;
+  vSemaphoreDelete(context.done);
+  return output;
+}
 
 template <typename T>
 T clampValue(T value, T low, T high) {
@@ -581,10 +649,22 @@ void ServicePortal::sendStatus() {
   ota["diagnosticsStorageHealthy"] = otaDiagnostics_.storageHealthy();
   JsonObject lastOta = ota["last"].to<JsonObject>();
   lastOta["result"] = otaDiagnostics_.resultName();
+  lastOta["phase"] = otaDiagnostics_.phaseName();
   lastOta["attempt"] = otaDiagnostics_.attempt();
   lastOta["sourceAddress"] = otaDiagnostics_.sourceAddress();
   lastOta["targetAddress"] = otaDiagnostics_.targetAddress();
   lastOta["imageSize"] = otaDiagnostics_.imageSize();
+  lastOta["receivedSize"] = otaDiagnostics_.receivedSize();
+  lastOta["resetReason"] =
+      otaDiagnostics_.resetReason() != 0xFF
+          ? resetReasonName(
+                static_cast<esp_reset_reason_t>(otaDiagnostics_.resetReason()))
+          : "not_recorded";
+  lastOta["errorCode"] = otaDiagnostics_.errorCode();
+  lastOta["errorName"] = otaDiagnostics_.errorCode()
+                             ? esp_err_to_name(static_cast<esp_err_t>(
+                                   otaDiagnostics_.errorCode()))
+                             : "none";
   lastOta["descriptorVersion"] = otaDiagnostics_.descriptorVersion();
 
   JsonArray slots = ota["slots"].to<JsonArray>();
@@ -955,8 +1035,9 @@ void ServicePortal::handleOtaBody() {
 void ServicePortal::handleOtaRaw() {
   HTTPRaw& raw = server_.raw();
   // Raw parsing remains inside one handleClient() call, so reset loopTask's
-  // watchdog on every 1436-byte callback. WiFiClient::readBytes() has a bounded
-  // timeout; a stalled phone upload aborts instead of hanging indefinitely.
+  // watchdog on every callback. The source-contained WebServer patch requests
+  // exactly min(1436, Content-Length - totalSize) bytes and applies a 2 s raw
+  // timeout; it never waits for nonexistent bytes after the final body chunk.
   feedLoopWDT();
 
   if (raw.status == RAW_START) {
@@ -1053,6 +1134,15 @@ void ServicePortal::handleOtaRaw() {
     otaExpectedSize_ = contentLength;
     otaAllowed_ = true;
     otaInProgress_ = true;
+    // Commit the attempt before Parsing.cpp starts its synchronous body loop.
+    // A reset or clean abort during transport is therefore reported as an
+    // interrupted upload rather than as an unexplained empty journal.
+    otaDiagnosticsRecorded_ = otaDiagnostics_.recordReceiving(
+        otaSourcePartition_, otaTargetPartition_, otaExpectedSize_);
+    if (!otaDiagnosticsRecorded_) {
+      ESP_LOGW(kTag, "Could not persist raw OTA receive checkpoint");
+    }
+    feedLoopWDT();
     ESP_LOGI(kTag,
              "Raw OTA start: %s, %u bytes, %s@0x%06lx -> %s@0x%06lx",
              filename.c_str(), static_cast<unsigned>(contentLength),
@@ -1102,6 +1192,11 @@ void ServicePortal::handleOtaRaw() {
       ESP_LOGI(kTag, "Raw OTA progress: %u/%u bytes",
                static_cast<unsigned>(otaReceivedSize_),
                static_cast<unsigned>(otaExpectedSize_));
+      if (!otaDiagnostics_.recordProgress(otaReceivedSize_,
+                                          otaDescriptorVersion_)) {
+        otaDiagnosticsRecorded_ = false;
+        ESP_LOGW(kTag, "Could not persist raw OTA progress checkpoint");
+      }
     }
     feedLoopWDT();
   } else if (raw.status == RAW_END) {
@@ -1113,20 +1208,39 @@ void ServicePortal::handleOtaRaw() {
       return;
     }
 
-    const esp_err_t ended = esp_ota_end(otaHandle_);
-    otaHandleOpen_ = false;
-    if (ended != ESP_OK) {
+    // Advance the journal from receiving to verifying before either native
+    // operation. recordVerifying() continues the same attempt number.
+    otaDiagnosticsRecorded_ = otaDiagnostics_.recordVerifying(
+        otaSourcePartition_, otaTargetPartition_, otaExpectedSize_,
+        otaDescriptorVersion_);
+
+    const NativeOtaJobResult endJob =
+        runNativeOtaJob(NativeOtaJob::EndImage, otaHandle_, nullptr);
+    if (endJob.started) otaHandleOpen_ = false;  // esp_ota_end consumes it.
+    if (!endJob.started || endJob.result != ESP_OK) {
+      const esp_err_t error =
+          endJob.started ? endJob.result : ESP_ERR_NO_MEM;
+      otaDiagnosticsRecorded_ =
+          otaDiagnostics_.recordFinalizeFailed(error) &&
+          otaDiagnosticsRecorded_;
       ESP_LOGE(kTag, "esp_ota_end validation failed: %s",
-               esp_err_to_name(ended));
+               esp_err_to_name(error));
       failOta("ESP image checksum/hash verification failed", 422);
       return;
     }
+    otaDiagnosticsRecorded_ =
+        otaDiagnostics_.recordImageVerified() && otaDiagnosticsRecorded_;
 
-    const esp_err_t selected =
-        esp_ota_set_boot_partition(otaTargetPartition_);
-    if (selected != ESP_OK) {
+    const NativeOtaJobResult selectJob =
+        runNativeOtaJob(NativeOtaJob::SelectBoot, 0, otaTargetPartition_);
+    if (!selectJob.started || selectJob.result != ESP_OK) {
+      const esp_err_t error =
+          selectJob.started ? selectJob.result : ESP_ERR_NO_MEM;
+      otaDiagnosticsRecorded_ =
+          otaDiagnostics_.recordBootSelectionFailed(error) &&
+          otaDiagnosticsRecorded_;
       ESP_LOGE(kTag, "esp_ota_set_boot_partition failed: %s",
-               esp_err_to_name(selected));
+               esp_err_to_name(error));
       failOta("Image is valid but boot partition selection failed", 500);
       return;
     }
@@ -1137,8 +1251,15 @@ void ServicePortal::handleOtaRaw() {
       ESP_LOGE(kTag, "Boot selector mismatch: expected 0x%06lx, got 0x%06lx",
                static_cast<unsigned long>(otaTargetPartition_->address),
                static_cast<unsigned long>(configured ? configured->address : 0));
+      otaDiagnosticsRecorded_ =
+          otaDiagnostics_.recordBootSelectionFailed(ESP_ERR_INVALID_STATE) &&
+          otaDiagnosticsRecorded_;
       // Do not leave a silently selected image after returning HTTP failure.
-      esp_ota_set_boot_partition(otaSourcePartition_);
+      const NativeOtaJobResult restoreJob =
+          runNativeOtaJob(NativeOtaJob::SelectBoot, 0, otaSourcePartition_);
+      if (!restoreJob.started || restoreJob.result != ESP_OK) {
+        ESP_LOGE(kTag, "Could not restore source boot partition after mismatch");
+      }
       failOta("Boot partition read-back did not match the OTA target", 500);
       return;
     }

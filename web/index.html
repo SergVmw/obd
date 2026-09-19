@@ -252,11 +252,15 @@ function otaStatus(version,ota){
  if(!ota){clearSlot('app0');clearSlot('app1');$('otaRunning').textContent=$('otaBoot').textContent=$('otaLast').textContent='—';$('otaRuntime').textContent='Нет актуального состояния загрузчика.';return}
  const slotByName=Object.fromEntries((ota.slots||[]).map(s=>[String(s.partition).toLowerCase(),s]));
  for(const name of ['app0','app1']){const key=name[0].toUpperCase()+name.slice(1),s=slotByName[name],card=$(`slot${key}Card`);card.classList.toggle('running',!!s?.running);if(!s){$(`slot${key}Version`).textContent='—';$(`slot${key}Meta`).textContent='Раздел отсутствует';continue}$(`slot${key}Version`).textContent=s.versionKnown?s.version:(s.descriptorReadable?'неизвестно':'пусто');const tags=[];if(s.running)tags.push('запущен');if(s.bootSelected&&!s.running)tags.push('выбран boot');if(s.nextUpdate)tags.push('следующий OTA');if(s.state&&s.state!=='undefined')tags.push(s.state);$(`slot${key}Meta`).textContent=tags.join(' · ')||'не активен'}
- const result={none:'Нет записей',pending:'Ожидает запуска',applied:'Применено',rolled_back:'Откат',unexpected_slot:'Другой раздел'};
+ const result={none:'Нет записей',pending:'Обновление выполняется',applied:'Применено',rolled_back:'Откат',unexpected_slot:'Другой раздел',interrupted_upload:'Загрузка прервана',interrupted_finalize:'Финализация прервана',finalize_failed:'Ошибка проверки образа',boot_selection_failed:'Ошибка выбора boot'};
  $('otaRunning').textContent=ota.runningPartition||'—';$('otaBoot').textContent=ota.bootPartition||'—';$('otaLast').textContent=result[ota.last?.result]||ota.last?.result||'—';
  const hex=x=>'0x'+Number(x||0).toString(16).toUpperCase();
  let text=`Сейчас ${ota.runningPartition}@${hex(ota.runningAddress)}; загрузчик выбрал ${ota.bootPartition}@${hex(ota.bootAddress)}. Следующее обновление: ${ota.nextPartition}@${hex(ota.nextAddress)}. Состояние образа: ${ota.runningState}; причина запуска: ${ota.resetReason}.`;
  if(ota.last?.result==='rolled_back')text+=' Последняя OTA была автоматически возвращена на исходный раздел.';
+ if(ota.last?.result==='interrupted_upload')text+=` Предыдущая передача тела остановилась после ${ota.last.receivedSize??0} из ${ota.last.imageSize??0} байт.`;
+ if(ota.last?.result==='interrupted_finalize')text+=ota.last?.phase==='image_verified'?' Предыдущий образ был проверен, но выбор boot-раздела не завершился.':' Предыдущее обновление оборвалось при финальной проверке образа.';
+ if(ota.last?.result==='finalize_failed'||ota.last?.result==='boot_selection_failed')text+=` ESP-IDF: ${ota.last.errorName||'ошибка'} (${ota.last.errorCode??'—'}).`;
+ if(ota.last?.resetReason&&ota.last.resetReason!=='not_recorded')text+=` Причина запуска, завершившего эту попытку: ${ota.last.resetReason}.`;
  if(!ota.diagnosticsStorageHealthy)text+=' Запись OTA-диагностики в NVS не подтверждена.';
  $('otaRuntime').textContent=text;
 }

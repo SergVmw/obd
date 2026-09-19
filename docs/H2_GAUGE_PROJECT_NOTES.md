@@ -2,7 +2,7 @@
 
 **Дата:** 2026-09-19  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** код и release собраны и проверены программно; требуется проверка OTA и остальных функций на физической плате и автомобиле.
+**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. Остальные автомобильные функции по-прежнему требуют проверки на физической плате и автомобиле.
 
 ## 1. Назначение
 
@@ -205,7 +205,11 @@ Factory reset требует `X-H2G-Action: factory-reset` и имеет cooldow
 
 В 0.3.6 OTA полностью переведён с Arduino `Update` на прямые `esp_ota_begin/write/end`. До первой записи проверяются ESP application header, descriptor и chip ID ESP32-S3; затем обязательны точное равенство Content-Length/received/written, финальная проверка образа, `esp_ota_set_boot_partition(target)` и read-back через `esp_ota_get_boot_partition()`. HTTP 200 выдаётся только после совпадения выбранного адреса с целевым. После завершённого ответа сервис сам перезагружает устройство.
 
-`OtaDiagnostics` хранит в отдельном namespace `h2ota` checksummed 64-байтную запись source/target/size/attempt/result. На старте pending-образ явно подтверждается через `esp_ota_mark_app_valid_cancel_rollback()`, а попытка классифицируется как applied, rolled_back или unexpected_slot. `/api/status` и UI показывают running/boot/next slots, image state, reset reason и последний результат без serial monitor. Эта запись не меняет namespace конфигурации, trip, топливной или световой калибровки.
+Первая реальная попытка этой реализации дошла в браузере до 100%, но устройство reset до server confirmation: running и boot остались `app0@0x10000`, 0.3.6, а pending record отсутствовал. Браузерные 100% не доказывают `RAW_END`, поэтому это не был подтверждённый rollback. Точный reset reason той попытки неизвестен: доступный позже `power_on` относился уже к текущему запуску. После неё потенциально блокирующие `esp_ota_end()`/`esp_ota_set_boot_partition()` были вынесены из подписанного на TWDT `loopTask`, а durable journal перенесён перед финализацию. Позднейшая APP1-форензика второго отказа доказала, что выполнение фактически останавливалось ещё внутри последнего raw-read.
+
+В исправленной 0.3.7 эти ESP-IDF вызовы исполняются коротким FreeRTOS worker. `loopTask` ждёт worker через отдельный semaphore с 100-мс интервалом и продолжает вызывать `feedLoopWDT()`; TWDT остаётся включённым. Ожидание ограничено 30 секундами: аномально не вернувшийся native call приводит к контролируемому software restart с уже сохранённой phase. Результаты обоих вызовов, boot read-back и все прежние проверки обязательны. Откат source selection после read-back mismatch также проходит через worker.
+
+`OtaDiagnostics` хранит в отдельном namespace `h2ota` checksummed 64-байтную запись source/target/size/received/attempt/result/phase. Формат v3 читает прежние v1/v2 records. До входа raw parser в синхронный body-loop сохраняется `receiving`; каждые 256 КиБ обновляется принятый размер. Перед `esp_ota_end()` фаза становится `verifying`, после успешной проверки image — `image_verified`, после выбора и read-back boot-раздела — `boot_selected`. На старте target означает applied, source+`boot_selected` — настоящий rolled_back, source+`receiving` — `interrupted_upload`, а source на промежуточной финальной фазе — `interrupted_finalize`. Native ошибки сохраняются как `finalize_failed`/`boot_selection_failed` с `esp_err_t`; reset reason попытки также остаётся в record. Pending-образ подтверждается через `esp_ota_mark_app_valid_cancel_rollback()`. `/api/status` и UI показывают phase, received/image size, running/boot/next, image state и reset reason без serial monitor. Запись не меняет namespace конфигурации, trip, топливной или световой калибровки.
 
 0.3.7 добавляет независимую H2 build identity. В DROM каждого нового app находится 56-байтный packed manifest с двумя magic, версией формата, размером, `H2G_FW_VERSION`, target и trailer. `FirmwareSlots` один раз при входе в сервис читает первые DROM-сегменты `app0/app1`, проверяет manifest и кэширует результат. Это не сканируется при каждом 1,2-секундном status poll. Ранее выпущенный 0.3.6 определяется по точному `app_elf_sha256`; неизвестный старый/повреждённый image честно показывается как «неизвестно» или «пусто». Версии обоих slots видны на GC9A01 service screen, в постоянных верхних web-карточках и в `ota.slots[]` API вместе с running/boot/next flags.
 
@@ -278,24 +282,24 @@ LittleFS 8064 KiB
 Проверенная чистая release-сборка:
 
 ```text
-RAM: 52 876 / 327 680 bytes (16.1%)
-app Flash payload: 1 077 197 / 4 194 304 bytes (25.7%)
-app .bin: 1 077 616 bytes
+RAM: 52 892 / 327 680 bytes (16.1%)
+app Flash payload: 1 080 229 / 4 194 304 bytes (25.8%)
+app .bin: 1 080 640 bytes
 ```
 
 Release:
 
 ```text
 h2-gauge-v0.3.7-esp32s3-n16r8.bin
-SHA-256 b5cea758be22a7480e2b6e4cc85d61ebcad72972ec94676a7e6c24c32cd648ad
+SHA-256 dc3b7d3b844481dde00db41c97deedc6204884d87c86ee156f6835b5d5ec652e
 
 h2-gauge-v0.3.7-esp32s3-n16r8-factory.bin
-SHA-256 a22a840ff44e37e24fc756aec73cc239fc417d96d803c6b1c6e8d8f89cef111a
+SHA-256 06b841a847fc427ddcb39923ce7a400505d99f688fcdeabf5de94cb07215654a
 ```
 
 Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0; он намеренно содержит начальную OTA data и не используется для сохранения NVS.
 
-Финальная программная проверка 0.3.7 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна. OTA-validator подтверждает raw body, прямые `esp_ota_*`, exact-length, set/read-back boot partition, startup confirmation, per-slot manifests и постоянный результат. ESP32-S3 app имеет шесть сегментов, корректный checksum `d2` и validation hash `e2e437806c595479f2e952daf883dcc72af17bc81654d5fd6fc98b0a7186ce70`; manifest `0.3.7 / esp32s3-n16r8` найден внутри первого DROM-сегмента. Font-validator, 25 host-групп и browser fixture с per-slot карточками/verified OTA workflow на 360…1280 px прошли. Embedded HTML 108 385 байт совпадает с 57 371-байтным gzip. Проверены SHA-256 release-файлов и точное расположение app payload в factory image по offset `0x10000`. Реальный 0.3.6→0.3.7 OTA остаётся обязательной аппаратной проверкой.
+Релиз 0.3.7 проверен PlatformIO 6.1.18, `espressif32@6.8.1` и Arduino-ESP32 2.0.17: clean-сборка успешна без warnings/errors, dependency graph выбирает project-local `H2PatchedWebServer`. OTA-validator подтверждает exact remaining-length raw read, 2-секундный timeout настоящего parser client, FreeRTOS worker/semaphore для финальных операций, включённый TWDT, journal v3, set/read-back boot partition, startup confirmation и per-slot manifests. Прошли 25 прежних host-групп и 11 OTA-diagnostics групп с ASan/UBSan, включая `interrupted_upload`, сохранённый receive progress и миграцию v2→v3. Embedded HTML 109 525 байт совпадает с 57 724-байтным gzip. Packaged app побайтно равен build output; проверены SHA-256, factory offsets/FF gaps и app payload по `0x10000`. Новый app имеет неполный 768-байтный final raw fragment, то есть тест не скрыт padding-ом. Аппаратная проверка мост 0.3.6.2→обычный OTA 0.3.7→автоматический запуск APP1 успешно завершена 2026-09-20.
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -329,13 +333,35 @@ UI benchmark 300 frames: render avg/max ... us, bg restore avg ... us, cache=yes
 
 В Arduino-ESP32 2.0.17 multipart обрабатывается синхронно внутри одного `WebServer::handleClient()`: `_parseForm()` читает тело побайтово, а `_uploadReadByte()` способен ждать подключённого клиента в неограниченном цикле. Поскольку `enableLoopWDT()` подписывает `loopTask`, а Arduino кормит его только между вызовами `loop()`, передача дольше штатного 5-секундного TWDT вызывала panic и перезагрузку посреди OTA. Поэтому multipart не возвращается и watchdog не отключается.
 
-Web UI отправляет сам файл как `application/octet-stream`, имя передаётся в `X-H2G-Filename`, подтверждение — в `X-H2G-Action`. Raw callback WebServer вызывается на каждом блоке 1436 байт и выполняет `feedLoopWDT()` до/после записи. В отличие от `_uploadReadByte()`, raw-путь использует `WiFiClient::readBytes()` с bounded timeout: потеря передачи приводит к abort/HTTP 408, а не к WDT panic. В service mode вызывается `WiFi.setSleep(false)`.
+Web UI отправляет сам файл как `application/octet-stream`, имя передаётся в `X-H2G-Filename`, подтверждение — в `X-H2G-Action`. Raw callback WebServer вызывается блоками до 1 436 байт и выполняет `feedLoopWDT()` до/после записи. Project-local parser ограничивает каждый read точным остатком `Content-Length` и задаёт настоящему parser client timeout 2 секунды — меньше 5-секундного TWDT. Потеря передачи поэтому приводит к abort/HTTP error, а не к ожиданию байтов за body или WDT panic. В service mode вызывается `WiFi.setSleep(false)`.
 
 0.3.6 устраняет отдельный класс ошибки, когда upload доходил до подтверждённого успеха и автоматической перезагрузки, но устройство снова запускало прежний слот. Arduino `Update` больше не участвует. Сервер сам выбирает следующий неактивный OTA subtype, проверяет его размер, вызывает `esp_ota_begin`, передаёт все байты через `esp_ota_write` и завершает `esp_ota_end`. Перед первой записью нужны ESP magic, допустимое число сегментов, chip ID 9 (ESP32-S3) и `ESP_APP_DESC_MAGIC_WORD`; factory/bootloader/partition images поэтому не принимаются. Ожидаемая, полученная и записанная длины обязаны совпасть.
 
 После успешной проверки сервер вызывает `esp_ota_set_boot_partition(target)`, немедленно читает результат через `esp_ota_get_boot_partition()` и сравнивает физический адрес. Несовпадение даёт HTTP 500 и попытку восстановить source selection. Только после совпадения ответ содержит `verified:true`, `bootVerified:true` и `rebooting:true`; достижение браузером 100% передачи само по себе успехом не считается. Ответ завершается до отложенного software reset, ручной RESET не требуется.
 
 До reboot в `h2ota` фиксируются source/target и размер. На новом старте pending-образ подтверждается до обычной работы, затем запись получает post-reboot результат. UI показывает фактические слоты и reset reason. Поле низкоуровневой диагностики называется `descriptorVersion`: в prebuilt Arduino-ESP32 2.0.17 это framework descriptor `esp-idf: v4.4.7 38eeba213a`, а не релиз H2 Gauge. Авторитетная текущая версия находится в `/api/status.version`, а версии содержимого slots — в проверенном H2 manifest/legacy-hash полях `ota.slots[]`; framework descriptor намеренно не выдаётся за номер релиза.
+
+#### Реальный отказ последнего RAW_WRITE и окончательное исправление 0.3.7
+
+19 сентября 2026 первая аппаратная попытка старого кандидата 0.3.7 (1 077 616 байт, SHA `b5cea758…48ad`) из исходной 0.3.6 закончилась reset до server confirmation. Чтобы убрать риск зависания `esp_ota_end()`/boot selection, были введены worker-задача, кормление TWDT и журнал фаз. Этот код попал в app-only мост 0.3.6.1 и следующий кандидат 0.3.7 (1 079 696 байт, SHA `b04c8d93…86bb`).
+
+Вторая аппаратная попытка из моста 0.3.6.1 также дошла в браузере до 100%, после чего прибор автоматически reset и снова запустил APP0/0.3.6.1 без OTA journal. Браузерные 100% означали передачу body клиентом, но не доказывали последний parser callback на ESP.
+
+Read-only дамп APP1 дал окончательную локализацию. Первые 1 078 436 байт (`0x1074A4`) побайтно совпали с ожидаемым app; последние 1 260 байт были `FF`. Арифметика `1 079 696 = 751 × 1 436 + 1 260` доказывает 751 успешный полный `RAW_WRITE` и отсутствие последнего 1 260-байтного callback. `otadata` сохранил `ota_seq=1`, то есть APP0; `RAW_END`, worker finalization и выбор APP1 не выполнялись.
+
+Причина находится в raw parsing Arduino-ESP32 2.0.17: каждая итерация вызывала `client.readBytes(..., HTTP_RAW_BUFLEN)` для 1 436 байт без ограничения остатком `Content-Length`. Финальный read получил 1 260 байт и стал ждать ещё 176 несуществующих. После обычного запроса `WebServer::handleClient()` оставляет в повторно используемом `_currentClient` timeout 5 секунд: `WiFiClient::setTimeout(5)` в этой версии принимает секунды, а присваивание нового socket state не сбрасывает базовый `Stream::_timeout`. Пять секунд невозможного read совпали с 5-секундным TWDT `loopTask`; reset случился до возврата уже прочитанного хвоста в callback.
+
+`WebServer::client()` возвращает `WiFiClient` по значению. Поэтому вызов timeout из `RAW_START` через `server_.client()` изменил бы только временную копию и не является исправлением.
+
+В `lib/H2PatchedWebServer` vendored библиотека tag 2.0.17. Parser теперь запрашивает `min(HTTP_RAW_BUFLEN, _clientContentLength - totalSize)`, читает только доступные socket-байты, кормит TWDT внутри receive-loop и ограничивает отсутствие прогресса двумя секундами. Тот же timeout устанавливается непосредственно на reference настоящего parser client. `platformio.ini` игнорирует package library `WebServer`, dependency graph подтверждает `H2PatchedWebServer 2.0.0-h2.1`. Глобальный PlatformIO package не модифицируется. Watchdog остаётся включённым.
+
+Journal повышен до v3. `recordReceiving()` выполняется после `esp_ota_begin()`, но до синхронного body-loop; каждые 256 КиБ записывается progress. На следующем boot source+`receiving` становится `interrupted_upload`. Затем тот же attempt без повторного увеличения номера проходит `verifying`, `image_verified`, `boot_selected`. Старые v1/v2 records читаются с миграцией phase semantics.
+
+Мост 0.3.6.1 был отозван, потому что содержал неисправный parser. Новый app-only мост 0.3.6.2 (1 080 640 байт, SHA `345e4add…61d2`) включил parser fix и journal v3 и был один раз записан в APP0 по `0x10000`, без erase/NVS/otadata. Затем 0.3.7 того же размера (SHA `dc3b7d3b…652e`) успешно прошла обычным web OTA в APP1. Равенство `1 080 640 = 752 × 1 436 + 768` показывает, что аппаратно проверен именно неполный final fragment, а не подогнанный размер.
+
+Полный postmortem и аппаратный результат:
+[`OTA_POSTMORTEM_2026-09-19.md`](OTA_POSTMORTEM_2026-09-19.md). Одноразовые
+recovery-образы и дампы после подтверждения удалены из чистого проекта.
 
 ## 11a. Адаптивная яркость — решение 2026-09-19
 
@@ -362,6 +388,6 @@ POST конфигурации проверяет целочисленные ди
 9. Проверить реальные PID `0B`, `10`, `33`, `42`, `5E` и ECU response ID.
 10. Измерить ток, падение 5 В, температуру закрытого корпуса и поведение под солнцем.
 11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
-12. Выполнить реальный 0.3.6→0.3.7 OTA: до загрузки зафиксировать running/next slot, дождаться автоматического reboot без RESET, затем подтвердить version 0.3.7, смену running slot, result `applied` и карточки 0.3.6/0.3.7 на GC9A01 и web. При медленной передаче TWDT не должен срабатывать.
+12. **Выполнено 2026-09-20:** app-only мост 0.3.6.2 в APP0 → штатный web OTA обычного app 0.3.7 → server verification → автоматический reboot без RESET. Подтверждены current 0.3.7, APP0 0.3.6.2, APP1 0.3.7, running=boot APP1 и image state `valid`; последний 768-байтный raw fragment прошёл без TWDT.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

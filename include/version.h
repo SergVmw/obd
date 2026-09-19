@@ -1,5 +1,9 @@
 #pragma once
 
-#define H2G_FW_VERSION "0.3.1"
-#define H2G_CONFIG_SCHEMA 5
+#ifdef H2G_FW_VERSION_OVERRIDE
+#define H2G_FW_VERSION H2G_FW_VERSION_OVERRIDE
+#else
+#define H2G_FW_VERSION "0.3.7"
+#endif
+#define H2G_CONFIG_SCHEMA 6
 #define H2G_BUILD_TARGET "esp32s3-n16r8"

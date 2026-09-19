@@ -1,8 +1,41 @@
+# PlatformIO / build output
 .pio/
 .platformio/
-.cache/
+build/
+dist/
+*.elf
+*.map
+*.o
+*.a
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+
+# Node / browser tests
+node_modules/
+playwright-report/
+test-results/
+
+# Editors and operating systems
 .vscode/
 .idea/
-*.log
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
+
+# Local diagnostics, logs and secrets
+.cache/
+*.log
+*.tmp
+.env
+.env.*
+ota-forensics-*/
+*private*.bin
+
+# Locally assembled source archives
+H2-Gauge-*-git-ready.zip
