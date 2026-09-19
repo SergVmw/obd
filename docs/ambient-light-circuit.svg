@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+<title id="title">H2 Gauge — принципиальная схема входа освещённости GPIO6</title>
+<desc id="desc">Фоторезистор между 3.3 В и узлом LIGHT_DIV; резистор R307 22 кОм от узла к земле; R308 1 кОм последовательно к GPIO6; C306 100 нФ от GPIO6 к земле.</desc>
+<defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#356565"/></marker></defs>
+<rect width="960" height="720" fill="#fff"/>
+<g font-family="Arial, sans-serif" fill="#16312d">
+<text x="48" y="55" font-size="25" font-weight="700">H2 Gauge · датчик освещённости</text>
+<text x="48" y="85" font-size="15" fill="#59716b">Принципиальная схема · ESP32-S3 DevKitC-1 N16R8 · 0.3.6</text>
+</g>
+<g fill="none" stroke="#173e36" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter">
+<!-- 3.3 V supply and LDR symbol -->
+<path d="M220 142 V194 M200 142 H240"/>
+<circle cx="220" cy="236" r="53" stroke-width="1.6"/>
+<rect x="207" y="194" width="26" height="84" fill="#fff"/>
+<path d="M220 278 V355"/>
+<path d="M315 180 L266 215 M324 202 L275 237" stroke="#356565" stroke-width="2" marker-end="url(#arrow)"/>
+<!-- Divider and ADC series resistor -->
+<path d="M220 355 H366 M440 355 H790"/>
+<rect x="366" y="342" width="74" height="26" fill="#fff"/>
+<path d="M220 355 V418 M220 494 V565"/>
+<rect x="207" y="418" width="26" height="76" fill="#fff"/>
+<!-- ADC filter capacitor -->
+<path d="M624 355 V448 M599 448 H649 M599 463 H649 M624 463 V565"/>
+<!-- Ground symbols -->
+<path d="M200 565 H240 M206 574 H234 M212 583 H228 M604 565 H644 M610 574 H638 M616 583 H632"/>
+<circle cx="220" cy="355" r="4" fill="#173e36"/>
+<circle cx="624" cy="355" r="4" fill="#173e36"/>
+<circle cx="795" cy="355" r="5" fill="#fff"/>
+</g>
+<g font-family="Arial, sans-serif" fill="#16312d" font-size="17">
+<text x="220" y="121" text-anchor="middle" font-weight="700">+3V3</text>
+<text x="91" y="230" font-weight="700">LDR301</text>
+<text x="91" y="253" font-size="14">фоторезистор</text>
+<text x="333" y="195" fill="#356565" font-size="14">Свет</text>
+<text x="255" y="321" font-size="14" fill="#59716b">LIGHT_DIV</text>
+<text x="402" y="311" text-anchor="middle" font-weight="700">R308</text>
+<text x="402" y="398" text-anchor="middle">1 кОм</text>
+<text x="113" y="446" font-weight="700">R307</text>
+<text x="113" y="470">22 кОм</text>
+<text x="666" y="447" font-weight="700">C306</text>
+<text x="666" y="471">100 нФ</text>
+<text x="814" y="349" font-weight="700">GPIO6</text>
+<text x="814" y="373" font-size="14">ADC1_CH5</text>
+<text x="814" y="397" font-size="14">ESP32-S3</text>
+<text x="220" y="611" text-anchor="middle" font-size="15">GND</text>
+<text x="624" y="611" text-anchor="middle" font-size="15">GND</text>
+<text x="48" y="658" font-size="16">Светлее → сопротивление LDR меньше → напряжение / ADC выше.</text>
+<text x="48" y="685" font-size="14" fill="#59716b">Только локальные 3.3 В. Общая земля. R308 и C306 — возле ESP32-S3. Не подключать 5/12 В.</text>
+</g>
+</svg>

@@ -14,9 +14,11 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.3
+## Текущая версия 0.3.6
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Настроены 16-МБ partition table, QIO Flash/OPI PSRAM, native USB CDC и проверка фактического размера памяти. Версия 0.3.3 сохраняет anti-aliased Golos Text, постоянные PSRAM text layers и RGB565-кэш карбонового фона из 0.3.2 и исправляет выбор `.bin` в OTA: вместо скрытого элемента используется видимый нативный file picker, совместимый с обычными мобильными браузерами. Также включены безопасные fallback, Task Watchdog, CAN RX budget, транзакционная конфигурация и NVS schema 5.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.6** исправляет активацию OTA-образа после успешной передачи: прошивка использует прямые операции ESP-IDF `esp_ota_*`, проверяет заголовок приложения, целевой чип, точную длину и hash образа, явно выбирает неактивный OTA-слот и читает выбор загрузчика обратно до ответа об успехе. После ответа устройство автоматически перезагружается; ручной RESET не нужен. После старта pending-образ подтверждается, а слоты, reset reason и результат предыдущего OTA доступны в сервисе без serial log.
+
+Адаптивная подсветка 0.3.5 по LDR на ADC1 GPIO6 сохранена: Авто / Ручное / Всегда день / Всегда ночь, фильтрация, раздельные задержки, обучение диапазона и live-данные. Четыре быстрых нажатия в ручном режиме переключают День/Ночь с сохранением. Config schema **6** не изменена; обновление сохраняет NVS-настройки, trip, топливную и световую калибровки. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
 
 ## Реализовано
 
@@ -40,8 +42,13 @@
 - три постоянных font-specific PSRAM text layer с alpha blending по реальному фону;
 - 16-bit RGB565 framebuffer и carbon background cache в PSRAM, 8-bit аварийный fallback;
 - агрегированный serial benchmark рендера каждые 300 кадров;
-- NVS schema 5;
-- Wi‑Fi captive portal и локальное app OTA.
+- адаптивный LDR-контроллер яркости, PWM GPIO7, автоматическое обучение диапазона;
+- ручной День/Ночь четырьмя нажатиями с сохранением в NVS;
+- NVS config schema 6 с миграцией schema 5;
+- Wi‑Fi captive portal и watchdog-safe raw app OTA без multipart;
+- нативная ESP-IDF OTA-запись с exact-length/hash validation, явным выбором и read-back целевого boot-слота;
+- подтверждение pending-образа и постоянная post-reboot OTA-диагностика через API/UI;
+- Wi‑Fi power save отключается на время service mode.
 
 ## Распиновка ESP32-S3
 
@@ -49,6 +56,7 @@
 |---|---:|
 | Кнопка MODE/WAKE | GPIO4 |
 | LPG sense после PC817 | GPIO5 |
+| LDR / ADC1_CH5 | GPIO6 |
 | TFT BL PWM | GPIO7 |
 | TFT CS | GPIO10 |
 | TFT DC | GPIO11 |
@@ -75,11 +83,13 @@
 | CS | GPIO10 |
 | DC | GPIO11 |
 | RST | GPIO12 |
-| BL | GPIO7 через подтверждённый транзисторный ключ |
+| BL | GPIO7 → подтверждённый logic-вход BLK встроенного транзистора |
 | VCC | 3.3 В |
 | GND | GND |
 
-Между GPIO12/RST и GND установить 10 кОм. На стенде BL/BLK можно оставить на постоянных 3.3 В, а GPIO7 не подключать. PWM разрешён только после установки ключа или подтверждения штатного logic-входа BLK.
+Между GPIO12/RST и GND установить 10 кОм. На текущем дисплее BLK уже соединён с GPIO7, на модуле есть транзистор. Подтвердите низкотоковый logic-вход и active-HIGH полярность тестом 20% ↔ 80%; ток LED через GPIO не пропускать. Дополнительный ключ при подтверждённом встроенном logic-входе не нужен.
+
+LDR: `3.3 В → LDR → узел → 22 кОм → GND`; узел через `1 кОм` на GPIO6, `100 нФ` GPIO6–GND. [Принципиальная схема](docs/ambient-light-circuit.svg).
 
 ## SN65HVD230
 
@@ -104,7 +114,7 @@
 GPIO4 ── кнопка ── GND
 ```
 
-GPIO4 является RTC-capable pin и используется для пробуждения из deep sleep. При длинном проводе рекомендуется внешняя подтяжка 10 кОм к 3.3 В.
+GPIO4 является RTC-capable pin и используется для пробуждения из deep sleep. При длинном проводе рекомендуется внешняя подтяжка 10 кОм к 3.3 В. В режиме яркости «Ручное» четыре быстрых нажатия переключают День/Ночь без перелистывания; выбор сохраняется. Одиночные 1–3 нажатия в этом режиме ждут паузу 400 мс, long/service hold сохраняют прежние функции.
 
 ## LPG input
 
@@ -180,17 +190,19 @@ pio run -e esp32s3_n16r8 --target upload
 
 Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.3
+## Release 0.3.6
 
 ```text
-releases/h2-gauge-v0.3.3-esp32s3-n16r8.bin
-SHA-256: 90087cc470165f064b672a5a2732d04d09362bae0e9053faa64af1ec7cea7a84
+releases/h2-gauge-v0.3.6-esp32s3-n16r8.bin
+Размер: 1 072 992 байт
+SHA-256: 646babc02e7b7624a7d168c3dc03bfcc6d8b452ebdbeb411dd341aeee015f7f9
 
-releases/h2-gauge-v0.3.3-esp32s3-n16r8-factory.bin
-SHA-256: c38d7e82266a113104d3d310368b2e0f0f5617faef730c54830940508a29151b
+releases/h2-gauge-v0.3.6-esp32s3-n16r8-factory.bin
+Размер: 1 138 528 байт
+SHA-256: 3cfdf8b23d39693d38d35d351454a7953109bd98d3b6cfaeee975c4ac3753954
 ```
 
-Первый файл — app image для веб-OTA. Второй — merged factory image для чистой записи с offset `0x0`. Инструкция: [`releases/README-v0.3.3.md`](releases/README-v0.3.3.md).
+Первый файл — обычный app image для веб-OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для OTA и стирает сохранённые данные. Инструкция, включая безопасный одноразовый USB-переход с неисправного updater 0.3.5 без `erase_flash`: [`releases/README-v0.3.6.md`](releases/README-v0.3.6.md).
 
 ## Flash и PSRAM
 
@@ -213,7 +225,7 @@ PSRAM: 8 MB
 - LittleFS: 8064 КиБ;
 - NVS и OTA metadata в начале Flash.
 
-Веб-OTA принимает только app image `firmware.bin`. Не загружать через него bootloader, partitions или merged image.
+Веб-OTA принимает только обычный app image `.bin`. Не загружать через него bootloader, partitions, factory/merged image или образ файловой системы. Нормальное обновление: выбрать app `.bin` → дождаться серверной проверки и выбора boot-слота → прибор сам перезагрузится. Достижение 100% передачи ещё не считается успехом; интерфейс ждёт `verified:true` и `bootVerified:true`. Текущий, выбранный и следующий слоты, состояние образа, причина reset и результат прошлой попытки показываются в «Система → OTA».
 
 ## Сервисный режим
 
@@ -241,8 +253,11 @@ URL: http://192.168.4.1
 ```bash
 python3 tools/generate_ui_fonts.py
 python3 tools/check_ui_fonts.py
+python3 tools/test_brightness.py
 python3 tools/embed_web_fonts.py
 python3 tools/embed_web.py
+python3 tools/check_brightness_integration.py
+python3 tools/check_ota_transport.py
 pio run -e esp32s3_n16r8
 ```
 
@@ -252,7 +267,7 @@ Golos Text взят из официального upstream commit `cf2e27222937d
 
 ## Пока не реализовано или не проверено
 
-- физическая проверка прошивки 0.3.3 на приобретённой ESP32-S3;
+- физическая проверка прошивки 0.3.6 и реальный переход OTA 0.3.5 → 0.3.6 на ESP32-S3;
 - автомобильная проверка CAN Haval;
 - BRC K-Line/KWP2000;
 - подтверждённые Haval Mode 22 DID;
@@ -261,7 +276,7 @@ Golos Text взят из официального upstream commit `cf2e27222937d
 - рабочий read-only Wi‑Fi во время движения;
 - Bluetooth LE telemetry;
 - аппаратное измерение фактической частоты кадров и проверка blending Golos на GC9A01;
-- day/night automation;
+- аппаратная проверка BLK, ADC GPIO6, автокалибровки и четырёх нажатий;
 - сертифицированная автомобильная плата питания.
 
 ## Важные ограничения
@@ -274,6 +289,8 @@ Golos Text взят из официального upstream commit `cf2e27222937d
 
 ## Документация
 
+- [`docs/BRIGHTNESS_GUIDE.md`](docs/BRIGHTNESS_GUIDE.md) — яркость, LDR, автокалибровка и проверка;
+- [`docs/ambient-light-circuit.svg`](docs/ambient-light-circuit.svg) — принципиальная схема ADC-входа;
 - [`docs/wiring.md`](docs/wiring.md) — полное подключение и межблочный кабель;
 - [`docs/h2-gauge-schematic-notes.md`](docs/h2-gauge-schematic-notes.md) — pin-to-pin netlist и расчёты;
 - [`docs/WEB_INTERFACE_GUIDE.md`](docs/WEB_INTERFACE_GUIDE.md) — все настройки веб-интерфейса;

@@ -1,14 +1,24 @@
 #include "service_portal.h"
 
 #include <ArduinoJson.h>
+#include <esp_app_format.h>
+#include <esp_err.h>
+#include <esp_image_format.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <math.h>
+#include <string.h>
 #include "version.h"
 #include "web_ui_gz.h"
 
 namespace {
 constexpr const char* kTag = "WEB";
 constexpr const char* kActionHeader = "X-H2G-Action";
+constexpr const char* kFilenameHeader = "X-H2G-Filename";
+constexpr const char* kContentTypeHeader = "Content-Type";
+constexpr size_t kMinOtaImageBytes = 4096;
+constexpr size_t kMaxOtaImageBytes = 4U * 1024U * 1024U;
 constexpr uint32_t kFactoryResetCooldownMs = 10000;
 constexpr uint32_t kOtaCooldownMs = 30000;
 
@@ -47,6 +57,23 @@ bool readColor565(JsonVariantConst value, uint16_t& destination) {
                                       ((green & 0xFC) << 3) | (blue >> 3));
   return true;
 }
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power_on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt_wdt";
+    case ESP_RST_TASK_WDT: return "task_wdt";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep_sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    case ESP_RST_UNKNOWN:
+    default: return "unknown";
+  }
+}
 }  // namespace
 
 bool ServicePortal::begin() {
@@ -57,6 +84,8 @@ bool ServicePortal::begin() {
   ssid_ = String(config.apName) + suffixText;
 
   WiFi.mode(WIFI_AP);
+  // Service mode prioritizes a stable local OTA stream over power saving.
+  WiFi.setSleep(false);
   const char* password = strlen(config.apPassword) >= 8
                              ? config.apPassword
                              : "h2gauge18";
@@ -109,6 +138,7 @@ void ServicePortal::loop() {
 
   const uint32_t now = millis();
   if (rebootAt_ != 0 && static_cast<int32_t>(now - rebootAt_) >= 0) {
+    brightness_.checkpoint();
     delay(50);
     ESP.restart();
   }
@@ -117,13 +147,15 @@ void ServicePortal::loop() {
       configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
   if (timeoutMs > 0 && now - lastActivityAt_ > timeoutMs) {
     ESP_LOGI(kTag, "Service timeout; rebooting");
+    brightness_.checkpoint();
     ESP.restart();
   }
 }
 
 void ServicePortal::setupRoutes() {
-  static const char* kCollectedHeaders[] = {kActionHeader};
-  server_.collectHeaders(kCollectedHeaders, 1);
+  static const char* kCollectedHeaders[] = {
+      kActionHeader, kFilenameHeader, kContentTypeHeader};
+  server_.collectHeaders(kCollectedHeaders, 3);
 
   server_.on("/", HTTP_GET, [this]() { sendIndex(); });
   server_.on("/generate_204", HTTP_GET, [this]() { sendIndex(); });
@@ -132,6 +164,16 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
   server_.on("/api/config", HTTP_POST, [this]() { receiveConfig(); });
   server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
+  server_.on("/api/brightness/calibration/reset", HTTP_POST, [this]() {
+    touch();
+    if (!requireAction("light-calibration-reset", lastLightResetAt_, 10000)) return;
+    if (!brightness_.resetCalibration(millis())) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"light calibration reset storage failure\"}");
+      return;
+    }
+    server_.send(200, "application/json", "{\"ok\":true}");
+  });
   server_.on("/api/can/snapshot", HTTP_GET,
              [this]() { sendCanSnapshot(); });
   server_.on("/api/can/clear", HTTP_POST,
@@ -170,6 +212,7 @@ void ServicePortal::setupRoutes() {
       return;
     }
     if (!configStore_.factoryReset() ||
+        !brightness_.resetCalibration(millis()) ||
         !tripStore_.reset(engine_.trip()) ||
         !petrolCalibrationStore_.reset(engine_.petrolCalibration())) {
       server_.send(500, "application/json",
@@ -180,9 +223,14 @@ void ServicePortal::setupRoutes() {
     rebootAt_ = millis() + 1000;
   });
 
+  // The body is sent as application/octet-stream, not multipart/form-data.
+  // Arduino-ESP32 2.0.17 parses multipart in one blocking byte-by-byte loop;
+  // a slow AP upload can therefore starve loopTask's 5 s Task Watchdog.
+  // Raw mode invokes handleOtaBody() once per 1436-byte chunk, where the WDT
+  // is fed explicitly. A stalled raw read times out instead of waiting forever.
   server_.on("/api/ota", HTTP_POST,
              [this]() { handleOtaFinished(); },
-             [this]() { handleOtaUpload(); });
+             [this]() { handleOtaBody(); });
 
   server_.onNotFound([this]() {
     touch();
@@ -207,6 +255,13 @@ void ServicePortal::sendConfig() {
   JsonObject display = doc["display"].to<JsonObject>();
   display["brightnessDay"] = c.brightnessDay;
   display["brightnessNight"] = c.brightnessNight;
+  display["brightnessMode"] = static_cast<uint8_t>(c.brightness.mode);
+  display["manualNight"] = c.brightness.manualNight;
+  display["lightAutoCalibrate"] = c.brightness.autoCalibrate;
+  display["lightNightAdc"] = c.brightness.nightAdc;
+  display["lightDayAdc"] = c.brightness.dayAdc;
+  display["lightDimDelayMs"] = c.brightness.dimDelayMs;
+  display["lightBrightenDelayMs"] = c.brightness.brightenDelayMs;
   display["rotation"] = c.rotation;
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
@@ -267,7 +322,7 @@ void ServicePortal::sendConfig() {
   service["apPassword"] = c.apPassword;
 
   String output;
-  output.reserve(1600);
+  output.reserve(2000);
   serializeJson(doc, output);
   server_.send(200, "application/json", output);
 }
@@ -291,6 +346,40 @@ void ServicePortal::receiveConfig() {
   ConfigData& c = candidate;
   JsonObjectConst d = doc["display"];
   if (!d.isNull()) {
+    // Reject malformed brightness values before narrowing to uint8/uint16.
+    // Never wrap a large ADC/delay or silently accept a fractional enum.
+    struct IntegerField { const char* name; int low; int high; };
+    const IntegerField fields[] = {
+        {"brightnessDay", 10, 100}, {"brightnessNight", 5, 80},
+        {"brightnessMode", 0, 3}, {"lightNightAdc", 0, 4095},
+        {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
+        {"lightBrightenDelayMs", 0, 30000}};
+    for (const IntegerField& field : fields) {
+      const JsonVariantConst value = d[field.name];
+      if (!value.isUnbound() &&
+          (!value.is<int>() || value.as<int>() < field.low ||
+           value.as<int>() > field.high)) {
+        server_.send(422, "application/json",
+                     "{\"error\":\"brightness values must be integers within allowed ranges\"}");
+        return;
+      }
+    }
+    for (const char* name : {"manualNight", "lightAutoCalibrate"}) {
+      const JsonVariantConst value = d[name];
+      if (!value.isUnbound() && !value.is<bool>()) {
+        server_.send(422, "application/json",
+                     "{\"error\":\"brightness flags must be booleans\"}");
+        return;
+      }
+    }
+    c.brightness.mode = static_cast<BrightnessMode>(
+        d["brightnessMode"] | static_cast<int>(c.brightness.mode));
+    c.brightness.manualNight = d["manualNight"] | c.brightness.manualNight;
+    c.brightness.autoCalibrate = d["lightAutoCalibrate"] | c.brightness.autoCalibrate;
+    c.brightness.nightAdc = d["lightNightAdc"] | c.brightness.nightAdc;
+    c.brightness.dayAdc = d["lightDayAdc"] | c.brightness.dayAdc;
+    c.brightness.dimDelayMs = d["lightDimDelayMs"] | c.brightness.dimDelayMs;
+    c.brightness.brightenDelayMs = d["lightBrightenDelayMs"] | c.brightness.brightenDelayMs;
     c.brightnessDay = clampValue<int>(d["brightnessDay"] | c.brightnessDay, 10, 100);
     c.brightnessNight = clampValue<int>(d["brightnessNight"] | c.brightnessNight, 5, 80);
     c.rotation = clampValue<int>(d["rotation"] | c.rotation, 0, 3);
@@ -400,13 +489,20 @@ void ServicePortal::receiveConfig() {
     return;
   }
 
+  if (!BrightnessLogic::validSettings(c.brightness, c.brightnessDay,
+                                       c.brightnessNight)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"brightness requires night <= day and ADC day - night >= 200\"}");
+    return;
+  }
+
   configStore_.data() = candidate;
   if (!configStore_.save()) {
     configStore_.data() = previous;
     server_.send(500, "text/plain", "NVS save failed");
     return;
   }
-  server_.send(200, "application/json", "{\"ok\":true,\"rebootRecommended\":true}");
+  server_.send(200, "application/json", "{\"ok\":true,\"brightnessAppliedLive\":true,\"rebootRecommended\":true}");
 }
 
 const char* ServicePortal::fuelModeName(FuelMode mode) {
@@ -461,9 +557,81 @@ void ServicePortal::sendStatus() {
   doc["timeouts"] = telemetry_.obdTimeoutCount;
   doc["freeHeap"] = ESP.getFreeHeap();
 
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
+  const esp_partition_t* nextPartition = esp_ota_get_next_update_partition(nullptr);
+  esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+  const bool hasRunningState = runningPartition &&
+      esp_ota_get_state_partition(runningPartition, &runningState) == ESP_OK;
+  JsonObject ota = doc["ota"].to<JsonObject>();
+  ota["runningPartition"] = OtaDiagnostics::partitionLabel(runningPartition);
+  ota["runningAddress"] = runningPartition ? runningPartition->address : 0;
+  ota["bootPartition"] = OtaDiagnostics::partitionLabel(bootPartition);
+  ota["bootAddress"] = bootPartition ? bootPartition->address : 0;
+  ota["nextPartition"] = OtaDiagnostics::partitionLabel(nextPartition);
+  ota["nextAddress"] = nextPartition ? nextPartition->address : 0;
+  ota["runningState"] = hasRunningState
+                             ? OtaDiagnostics::imageStateName(runningState)
+                             : "unavailable";
+  ota["resetReason"] = resetReasonName(esp_reset_reason());
+  ota["diagnosticsStorageHealthy"] = otaDiagnostics_.storageHealthy();
+  JsonObject lastOta = ota["last"].to<JsonObject>();
+  lastOta["result"] = otaDiagnostics_.resultName();
+  lastOta["attempt"] = otaDiagnostics_.attempt();
+  lastOta["sourceAddress"] = otaDiagnostics_.sourceAddress();
+  lastOta["targetAddress"] = otaDiagnostics_.targetAddress();
+  lastOta["imageSize"] = otaDiagnostics_.imageSize();
+  lastOta["descriptorVersion"] = otaDiagnostics_.descriptorVersion();
+
+  const BrightnessLogic& light = brightness_.state();
+  const LightCalibration& range = light.calibration();
+  const ConfigData& c = configStore_.data();
+  JsonObject bl = doc["brightness"].to<JsonObject>();
+  bl["mode"] = static_cast<uint8_t>(c.brightness.mode);
+  bl["manualNight"] = c.brightness.manualNight;
+  if (light.hasSample()) {
+    bl["rawAdc"] = light.rawAdc();
+    bl["filteredAdc"] = light.filteredAdc();
+  } else {
+    bl["rawAdc"] = nullptr;
+    bl["filteredAdc"] = nullptr;
+  }
+  bl["percent"] = light.currentPercent();
+  bl["targetPercent"] = light.targetPercent();
+  bl["pwmDuty"] = light.pwmDuty();
+  bl["nightAdc"] = light.nightThreshold();
+  bl["dayAdc"] = light.dayThreshold();
+  bl["thresholdSource"] = light.learnedThresholdsActive() ? "learned" : "configured";
+  const char* level = "adaptive";
+  if (c.brightness.mode == BrightnessMode::AlwaysDay) level = "day";
+  else if (c.brightness.mode == BrightnessMode::AlwaysNight) level = "night";
+  else if (c.brightness.mode == BrightnessMode::Manual) {
+    level = c.brightness.manualNight ? "night" : "day";
+  } else if (c.brightnessDay == c.brightnessNight) level = "fixed";
+  else if (light.targetPercent() <= c.brightnessNight) level = "night";
+  else if (light.targetPercent() >= c.brightnessDay) level = "day";
+  bl["level"] = level;
+  bl["delayRemainingMs"] = light.delayRemainingMs(now);
+  bl["pending"] = light.delayRemainingMs(now) == 0 ? "none" :
+                  light.pendingDirection() > 0 ? "brighten" : "dim";
+  bl["calibrationReady"] = light.calibrationReady();
+  bl["calibrationLearning"] = c.brightness.autoCalibrate &&
+                              c.brightness.mode == BrightnessMode::Auto;
+  if (range.hasSamples) {
+    bl["observedMinAdc"] = range.minAdc;
+    bl["observedMaxAdc"] = range.maxAdc;
+  } else {
+    bl["observedMinAdc"] = nullptr;
+    bl["observedMaxAdc"] = nullptr;
+  }
+  bl["adcClipped"] = light.hasSample() &&
+                       (light.rawAdc() <= 8 || light.rawAdc() >= 4087);
+  bl["storageHealthy"] = brightness_.storageHealthy();
+
   String output;
-  output.reserve(1024);
+  output.reserve(3072);
   serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);
 }
 
@@ -664,29 +832,145 @@ void ServicePortal::clearCanSnapshot() {
   server_.send(200, "application/json", "{\"ok\":true}");
 }
 
+bool ServicePortal::validateOtaHeader() {
+  constexpr size_t kProbeSize = sizeof(esp_image_header_t) +
+                                sizeof(esp_image_segment_header_t) +
+                                sizeof(esp_app_desc_t);
+  if (otaInitialSize_ < kProbeSize) return false;
+
+  const auto* image =
+      reinterpret_cast<const esp_image_header_t*>(otaInitialBuffer_);
+  if (image->magic != ESP_IMAGE_HEADER_MAGIC || image->segment_count == 0 ||
+      image->segment_count > 16) {
+    otaError_ = "Invalid ESP application header";
+    return false;
+  }
+  // ESP32-S3 is chip id 9 in the ESP image format. Rejecting a different chip
+  // here prevents a valid ESP32/ESP32-C3 image from reaching the boot selector.
+  constexpr uint16_t kEsp32S3ChipId = 9;
+  if (image->chip_id != kEsp32S3ChipId) {
+    otaError_ = "Firmware image is not for ESP32-S3";
+    return false;
+  }
+
+  const auto* description = reinterpret_cast<const esp_app_desc_t*>(
+      otaInitialBuffer_ + sizeof(esp_image_header_t) +
+      sizeof(esp_image_segment_header_t));
+  if (description->magic_word != ESP_APP_DESC_MAGIC_WORD) {
+    otaError_ = "App descriptor missing; factory/bootloader images are forbidden";
+    return false;
+  }
+  // Arduino-ESP32 2.0.17 ships a framework-generated descriptor (typically
+  // "esp-idf: ..."), not the H2 Gauge release number. Keep it only as a
+  // low-level image diagnostic and label it accordingly in the API.
+  memcpy(otaDescriptorVersion_, description->version,
+         sizeof(description->version));
+  otaDescriptorVersion_[sizeof(otaDescriptorVersion_) - 1] = '\0';
+  otaHeaderValidated_ = true;
+  return true;
+}
+
+bool ServicePortal::writeOtaBytes(const uint8_t* data, size_t size) {
+  if (!otaHandleOpen_ || !data || size == 0) return size == 0;
+  const esp_err_t result = esp_ota_write(otaHandle_, data, size);
+  if (result != ESP_OK) {
+    ESP_LOGE(kTag, "esp_ota_write failed at %u: %s",
+             static_cast<unsigned>(otaWrittenSize_), esp_err_to_name(result));
+    return false;
+  }
+  otaWrittenSize_ += size;
+  return true;
+}
+
 void ServicePortal::failOta(const char* message, uint16_t httpStatus) {
-  if (Update.isRunning()) Update.abort();
+  if (otaHandleOpen_) {
+    const esp_err_t aborted = esp_ota_abort(otaHandle_);
+    if (aborted != ESP_OK) {
+      ESP_LOGW(kTag, "esp_ota_abort: %s", esp_err_to_name(aborted));
+    }
+  }
+  otaHandleOpen_ = false;
   otaAllowed_ = false;
   otaInProgress_ = false;
   otaSuccess_ = false;
+  otaBootVerified_ = false;
+  otaExpectedSize_ = 0;
   otaHttpStatus_ = httpStatus;
   otaError_ = message;
 }
 
-void ServicePortal::handleOtaUpload() {
+void ServicePortal::handleOtaBody() {
   touch();
-  HTTPUpload& upload = server_.upload();
+  feedLoopWDT();
 
-  if (upload.status == UPLOAD_FILE_START) {
-    if (Update.isRunning()) Update.abort();
+  const String contentType = server_.header(kContentTypeHeader);
+  if (contentType.startsWith("multipart/")) {
+    // Retired protocol. Stop immediately instead of entering the unbounded
+    // _uploadReadByte() wait in WebServer 2.0.17. The current UI only sends raw
+    // application/octet-stream bodies.
+    HTTPUpload& upload = server_.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      failOta("Multipart OTA is unsupported; reload the service page", 415);
+      server_.client().stop();
+    }
+    return;
+  }
+
+  handleOtaRaw();
+}
+
+void ServicePortal::handleOtaRaw() {
+  HTTPRaw& raw = server_.raw();
+  // Raw parsing remains inside one handleClient() call, so reset loopTask's
+  // watchdog on every 1436-byte callback. WiFiClient::readBytes() has a bounded
+  // timeout; a stalled phone upload aborts instead of hanging indefinitely.
+  feedLoopWDT();
+
+  if (raw.status == RAW_START) {
+    if (otaHandleOpen_) esp_ota_abort(otaHandle_);
     otaAllowed_ = false;
     otaInProgress_ = false;
     otaSuccess_ = false;
+    otaHandleOpen_ = false;
+    otaHeaderValidated_ = false;
+    otaBootVerified_ = false;
+    otaDiagnosticsRecorded_ = false;
+    otaSourcePartition_ = nullptr;
+    otaTargetPartition_ = nullptr;
+    otaExpectedSize_ = 0;
+    otaReceivedSize_ = 0;
+    otaWrittenSize_ = 0;
+    otaInitialSize_ = 0;
+    otaDescriptorVersion_[0] = '\0';
     otaHttpStatus_ = 400;
     otaError_ = "";
 
     if (server_.header(kActionHeader) != "ota") {
       failOta("OTA confirmation header required", 403);
+      return;
+    }
+    if (!server_.header(kContentTypeHeader).startsWith(
+            "application/octet-stream")) {
+      failOta("Raw application/octet-stream body required", 415);
+      return;
+    }
+
+    const size_t contentLength = server_.clientContentLength();
+    if (contentLength < kMinOtaImageBytes ||
+        contentLength > kMaxOtaImageBytes) {
+      failOta("OTA image size must be between 4 KiB and 4 MiB", 413);
+      return;
+    }
+
+    String filename = WebServer::urlDecode(server_.header(kFilenameHeader));
+    String lowerFilename = filename;
+    lowerFilename.toLowerCase();
+    if (!lowerFilename.endsWith(".bin") ||
+        lowerFilename.indexOf("factory") >= 0 ||
+        lowerFilename.indexOf("bootloader") >= 0 ||
+        lowerFilename.indexOf("partition") >= 0) {
+      failOta("Only an app .bin image is accepted; factory/bootloader/partitions are forbidden",
+              422);
       return;
     }
 
@@ -698,66 +982,187 @@ void ServicePortal::handleOtaUpload() {
     }
     lastOtaAttemptAt_ = now;
 
-    String filename = upload.filename;
-    filename.toLowerCase();
-    if (!filename.endsWith(".bin")) {
-      failOta("Only firmware.bin is accepted", 422);
-      return;
-    }
     if (telemetry_.rawSpeedKph.valid(now) &&
         telemetry_.rawSpeedKph.value > 3.0f) {
       failOta("Vehicle is moving", 409);
       return;
     }
-    if (telemetry_.ecuVoltage.valid(now) && telemetry_.ecuVoltage.value < 11.3f) {
+    if (telemetry_.ecuVoltage.valid(now) &&
+        telemetry_.ecuVoltage.value < 11.3f) {
       failOta("Supply voltage is too low", 409);
       return;
     }
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
-      ESP_LOGE(kTag, "OTA begin failed, code=%u", Update.getError());
-      failOta("No OTA partition or image is too large", 507);
+
+    otaSourcePartition_ = esp_ota_get_running_partition();
+    otaTargetPartition_ = esp_ota_get_next_update_partition(nullptr);
+    if (!otaSourcePartition_ || !otaTargetPartition_ ||
+        otaTargetPartition_->address == otaSourcePartition_->address ||
+        otaTargetPartition_->type != ESP_PARTITION_TYPE_APP ||
+        (otaTargetPartition_->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
+         otaTargetPartition_->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) ||
+        contentLength > otaTargetPartition_->size) {
+      failOta("No compatible inactive OTA partition or image is too large", 507);
       return;
     }
+
+    const esp_err_t begun =
+        esp_ota_begin(otaTargetPartition_, contentLength, &otaHandle_);
+    if (begun != ESP_OK) {
+      ESP_LOGE(kTag, "esp_ota_begin %s@0x%06lx failed: %s",
+               otaTargetPartition_->label,
+               static_cast<unsigned long>(otaTargetPartition_->address),
+               esp_err_to_name(begun));
+      failOta("ESP-IDF could not open the inactive OTA partition", 507);
+      return;
+    }
+
+    otaHandleOpen_ = true;
+    otaExpectedSize_ = contentLength;
     otaAllowed_ = true;
     otaInProgress_ = true;
-    ESP_LOGI(kTag, "OTA start: %s", upload.filename.c_str());
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    ESP_LOGI(kTag,
+             "Raw OTA start: %s, %u bytes, %s@0x%06lx -> %s@0x%06lx",
+             filename.c_str(), static_cast<unsigned>(contentLength),
+             otaSourcePartition_->label,
+             static_cast<unsigned long>(otaSourcePartition_->address),
+             otaTargetPartition_->label,
+             static_cast<unsigned long>(otaTargetPartition_->address));
+  } else if (raw.status == RAW_WRITE) {
     if (!otaAllowed_ || !otaInProgress_) return;
-    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-      ESP_LOGE(kTag, "OTA write failed, code=%u", Update.getError());
-      failOta("Flash write failed", 500);
-    }
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (!otaAllowed_ || !otaInProgress_) return;
-    if (!Update.end(true)) {
-      ESP_LOGE(kTag, "OTA verification failed, code=%u", Update.getError());
-      failOta("Image verification failed", 422);
+    const size_t receivedBefore = otaReceivedSize_;
+    otaReceivedSize_ += raw.currentSize;
+    if (otaReceivedSize_ > otaExpectedSize_) {
+      failOta("Received more bytes than Content-Length", 422);
       return;
     }
+
+    if (!otaHeaderValidated_) {
+      if (otaInitialSize_ + raw.currentSize > sizeof(otaInitialBuffer_)) {
+        failOta("Application header did not fit validation buffer", 422);
+        return;
+      }
+      memcpy(otaInitialBuffer_ + otaInitialSize_, raw.buf, raw.currentSize);
+      otaInitialSize_ += raw.currentSize;
+      constexpr size_t kProbeSize = sizeof(esp_image_header_t) +
+                                    sizeof(esp_image_segment_header_t) +
+                                    sizeof(esp_app_desc_t);
+      if (otaInitialSize_ >= kProbeSize) {
+        if (!validateOtaHeader()) {
+          const String error = otaError_;
+          failOta(error.c_str(), 422);
+          return;
+        }
+        if (!writeOtaBytes(otaInitialBuffer_, otaInitialSize_)) {
+          failOta("Flash write failed", 500);
+          return;
+        }
+        otaInitialSize_ = 0;
+      }
+    } else if (!writeOtaBytes(raw.buf, raw.currentSize)) {
+      failOta("Flash write failed", 500);
+      return;
+    }
+
+    constexpr size_t kProgressLogStep = 256U * 1024U;
+    if (otaReceivedSize_ / kProgressLogStep !=
+        receivedBefore / kProgressLogStep) {
+      ESP_LOGI(kTag, "Raw OTA progress: %u/%u bytes",
+               static_cast<unsigned>(otaReceivedSize_),
+               static_cast<unsigned>(otaExpectedSize_));
+    }
+    feedLoopWDT();
+  } else if (raw.status == RAW_END) {
+    if (!otaAllowed_ || !otaInProgress_) return;
+    if (raw.totalSize != otaExpectedSize_ ||
+        otaReceivedSize_ != otaExpectedSize_ ||
+        otaWrittenSize_ != otaExpectedSize_ || !otaHeaderValidated_) {
+      failOta("Incomplete OTA image", 422);
+      return;
+    }
+
+    const esp_err_t ended = esp_ota_end(otaHandle_);
+    otaHandleOpen_ = false;
+    if (ended != ESP_OK) {
+      ESP_LOGE(kTag, "esp_ota_end validation failed: %s",
+               esp_err_to_name(ended));
+      failOta("ESP image checksum/hash verification failed", 422);
+      return;
+    }
+
+    const esp_err_t selected =
+        esp_ota_set_boot_partition(otaTargetPartition_);
+    if (selected != ESP_OK) {
+      ESP_LOGE(kTag, "esp_ota_set_boot_partition failed: %s",
+               esp_err_to_name(selected));
+      failOta("Image is valid but boot partition selection failed", 500);
+      return;
+    }
+    const esp_partition_t* configured = esp_ota_get_boot_partition();
+    otaBootVerified_ = configured &&
+                       configured->address == otaTargetPartition_->address;
+    if (!otaBootVerified_) {
+      ESP_LOGE(kTag, "Boot selector mismatch: expected 0x%06lx, got 0x%06lx",
+               static_cast<unsigned long>(otaTargetPartition_->address),
+               static_cast<unsigned long>(configured ? configured->address : 0));
+      // Do not leave a silently selected image after returning HTTP failure.
+      esp_ota_set_boot_partition(otaSourcePartition_);
+      failOta("Boot partition read-back did not match the OTA target", 500);
+      return;
+    }
+
+    otaDiagnosticsRecorded_ = otaDiagnostics_.recordPending(
+        otaSourcePartition_, otaTargetPartition_, otaExpectedSize_,
+        otaDescriptorVersion_);
     otaAllowed_ = false;
     otaInProgress_ = false;
     otaSuccess_ = true;
     otaHttpStatus_ = 200;
-    ESP_LOGI(kTag, "OTA completed: %u bytes", upload.totalSize);
-  } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    failOta("Upload aborted", 400);
+    ESP_LOGI(kTag,
+             "Raw OTA verified: %u bytes, descriptor=%s, next boot=%s@0x%06lx",
+             static_cast<unsigned>(otaReceivedSize_), otaDescriptorVersion_,
+             configured->label,
+             static_cast<unsigned long>(configured->address));
+  } else if (raw.status == RAW_ABORTED) {
+    failOta("Upload stalled or was aborted", 408);
   }
 }
 
 void ServicePortal::handleOtaFinished() {
   touch();
-  // Check again in the request-completion handler: a POST with no multipart
-  // upload must not bypass confirmation or reuse a prior success state.
+  feedLoopWDT();
+  // Check again in the request-completion handler: a body-less POST must not
+  // bypass confirmation or reuse a prior success state.
   if (server_.header(kActionHeader) != "ota") {
     failOta("OTA confirmation header required", 403);
   }
-  if (!otaSuccess_) {
+  if (!otaSuccess_ || !otaBootVerified_ || !otaTargetPartition_) {
     if (otaHttpStatus_ == 429) server_.sendHeader("Retry-After", "30");
+    server_.sendHeader("Cache-Control", "no-store");
     server_.send(otaHttpStatus_, "text/plain",
                  otaError_.length() ? otaError_ : "OTA failed");
     return;
   }
+
+  JsonDocument response;
+  response["ok"] = true;
+  response["verified"] = true;
+  response["bootVerified"] = true;
+  response["rebooting"] = true;
+  response["bytes"] = otaReceivedSize_;
+  response["descriptorVersion"] = otaDescriptorVersion_;
+  response["sourcePartition"] = otaSourcePartition_->label;
+  response["sourceAddress"] = otaSourcePartition_->address;
+  response["targetPartition"] = otaTargetPartition_->label;
+  response["targetAddress"] = otaTargetPartition_->address;
+  response["diagnosticsRecorded"] = otaDiagnosticsRecorded_;
+  String output;
+  serializeJson(response, output);
+
   otaSuccess_ = false;
-  server_.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-  rebootAt_ = millis() + 1200;
+  otaExpectedSize_ = 0;
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+  // The response is already complete. No user action is required; the normal
+  // service loop performs one controlled software reset after the TCP reply.
+  rebootAt_ = millis() + 1500;
 }

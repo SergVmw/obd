@@ -2,8 +2,20 @@
 
 #include <cstddef>
 #include <cmath>
+#include <cstring>
+#include <type_traits>
 
 namespace {
+constexpr size_t kV5ChecksumOffset = 196;
+constexpr size_t kV5RecordSize = 200;
+static_assert(std::is_trivially_copyable<ConfigData>::value &&
+                  std::is_standard_layout<ConfigData>::value,
+              "NVS config must remain trivially copyable and standard-layout");
+static_assert(offsetof(ConfigData, brightness) == kV5ChecksumOffset,
+              "Schema-5 prefix changed; update migration explicitly");
+static_assert(offsetof(ConfigData, speedCorrectionKph) == 192,
+              "Schema-5 speed correction offset");
+
 uint32_t fnv1a(const uint8_t* bytes, size_t length) {
   uint32_t hash = 2166136261UL;
   for (size_t i = 0; i < length; ++i) {
@@ -21,6 +33,7 @@ ConfigData ConfigStore::defaults() {
 
   c.brightnessDay = 82;
   c.brightnessNight = 26;
+  c.brightness = BrightnessSettings{};  // Always Day until the LDR is wired
   c.rotation = 0;
   c.setDisplayStartPage(0);
   c.setMainCenterValue(MainCenterValue::Boost);
@@ -118,8 +131,9 @@ bool ConfigStore::valid(const ConfigData& config) {
       strnlen(config.apPassword, sizeof(config.apPassword));
 
   return finiteValues &&
-         config.brightnessDay >= 10 && config.brightnessDay <= 100 &&
-         config.brightnessNight >= 5 && config.brightnessNight <= 80 &&
+         BrightnessLogic::validSettings(config.brightness,
+                                         config.brightnessDay,
+                                         config.brightnessNight) &&
          config.rotation <= 3 && config.displayStartPage() <= 3 &&
          static_cast<uint8_t>(config.mainCenterValue()) <= 3 &&
          static_cast<uint8_t>(config.uiLanguage()) <= 1 &&
@@ -164,6 +178,30 @@ bool ConfigStore::valid(const ConfigData& config) {
          apPasswordLength < sizeof(config.apPassword);
 }
 
+bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV5ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 5 ||
+      storedChecksum != fnv1a(record, kV5ChecksumOffset)) return false;
+
+  destination = defaults();
+  // The tail was initialized by defaults(); only the validated legacy prefix
+  // is copied. ConfigData is explicitly asserted trivially copyable above.
+  memcpy(static_cast<void*>(&destination), record, kV5ChecksumOffset);
+  destination.brightness = BrightnessSettings{};
+  // Schema 5 permitted inverted levels. Preserve every other setting and
+  // cap Night at Day rather than throwing away the complete old config.
+  if (destination.brightnessNight > destination.brightnessDay) {
+    destination.brightnessNight = destination.brightnessDay;
+  }
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -175,8 +213,13 @@ bool ConfigStore::begin() {
   bool needsSave = false;
 
   if (storedLength == sizeof(ConfigData)) {
-    preferences_.getBytes("config", &config_, sizeof(config_));
-    loaded = valid(config_);
+    loaded = preferences_.getBytes("config", &config_, sizeof(config_)) ==
+                 sizeof(config_) && valid(config_);
+  } else if (storedLength == kV5RecordSize) {
+    uint8_t record[kV5RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record) && migrateV5(record, config_);
+    needsSave = loaded;
   }
 
   if (!loaded) {
@@ -194,14 +237,14 @@ bool ConfigStore::begin() {
     needsSave = true;
   }
 
-  if (needsSave) save();
-  return true;
+  return !needsSave || save();
 }
 
 bool ConfigStore::save() {
   config_.magic = kMagic;
   config_.schemaVersion = H2G_CONFIG_SCHEMA;
   config_.checksum = checksum(config_);
+  if (!valid(config_)) return false;
   return preferences_.putBytes("config", &config_, sizeof(config_)) == sizeof(config_);
 }
 

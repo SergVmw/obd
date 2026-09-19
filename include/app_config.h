@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include "version.h"
+#include "brightness_logic.h"
 
 enum class BaroSource : uint8_t {
   Auto = 0,
@@ -123,6 +124,9 @@ struct ConfigData {
   bool dfcoEnabled() const { return dfcoCorrectionEnabled; }
   void setDfcoEnabled(bool enabled) { dfcoCorrectionEnabled = enabled; }
 
+  // Schema 6: append only, preserving the complete schema-5 prefix.
+  BrightnessSettings brightness;
+
   uint32_t checksum;
 };
 
@@ -139,6 +143,7 @@ class ConfigStore {
   static constexpr uint32_t kMagic = 0x48324731UL;  // "H2G1"
   static uint32_t checksum(const ConfigData& config);
   static bool valid(const ConfigData& config);
+  static bool migrateV5(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

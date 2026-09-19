@@ -4,10 +4,12 @@
 #include "driver/gpio.h"
 
 #include "app_config.h"
+#include "brightness_manager.h"
 #include "can_monitor.h"
 #include "dashboard_ui.h"
 #include "input_manager.h"
 #include "obd_client.h"
+#include "ota_diagnostics.h"
 #include "pins.h"
 #include "power_manager.h"
 #include "service_portal.h"
@@ -31,8 +33,11 @@ DashboardUi dashboard;
 OneButton button;
 LpgValveInput lpgInput;
 PowerManager powerManager;
+BrightnessManager brightnessManager;
+OtaDiagnostics otaDiagnostics;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
-                            petrolCalibrationStore, canMonitor);
+                            petrolCalibrationStore, canMonitor,
+                            brightnessManager, otaDiagnostics);
 
 bool serviceMode = false;
 uint32_t lastTripSaveAt = 0;
@@ -48,6 +53,7 @@ uint32_t lastMemoryLogAt = 0;
     ESP_LOGE(kTag, "Forced petrol calibration checkpoint failed");
   }
 
+  brightnessManager.checkpoint();
   obdClient.shutdown();
   WiFi.mode(WIFI_OFF);
   dashboard.prepareForSleep();
@@ -70,6 +76,7 @@ void enterServiceMode() {
   obdClient.pause(true);
   if (configStore.data().saveTrip) tripStore.save(trip);
   if (petrolCalibration.active) petrolCalibrationStore.save(petrolCalibration);
+  brightnessManager.checkpoint();
   dashboard.releaseFramebuffer();
 
   if (servicePortal.begin()) {
@@ -103,6 +110,9 @@ void updateDemoData(uint32_t now) {
 #endif
 
 void setup() {
+  // Active-HIGH logic input of the display's backlight transistor.
+  pinMode(Pins::Backlight, OUTPUT);
+  digitalWrite(Pins::Backlight, LOW);
   // Release the deep-sleep hold, then immediately keep GC9A01 in reset. This
   // hides the previous dashboard frame while ESP32 services are starting.
   gpio_deep_sleep_hold_dis();
@@ -112,6 +122,10 @@ void setup() {
 
   Serial.begin(115200);
   delay(20);
+  // Confirm a first OTA boot as early as user setup can run and record which
+  // slot actually started. Arduino normally confirms even earlier in
+  // initArduino(); this explicit check makes the contract visible and robust.
+  otaDiagnostics.begin();
   ESP_LOGI(kTag, "H2 Gauge %s (%s)", H2G_FW_VERSION, H2G_BUILD_TARGET);
   ESP_LOGI(kTag, "Flash=%u MB, heap=%u bytes, PSRAM=%u/%u bytes free",
            ESP.getFlashChipSize() / 1024 / 1024, ESP.getFreeHeap(),
@@ -123,7 +137,7 @@ void setup() {
     ESP_LOGE(kTag, "N16R8 PSRAM check failed; verify qio_opi configuration");
   }
 
-  configStore.begin();
+  if (!configStore.begin()) ESP_LOGE(kTag, "Config NVS initialization/save failed");
   tripStore.begin(trip);
   petrolCalibrationStore.begin(petrolCalibration);
   telemetryEngine.begin(&trip, &petrolCalibration);
@@ -131,7 +145,9 @@ void setup() {
 
   const bool bootService = OneButton::heldAtBoot(3000);
   button.begin();
-  dashboard.begin(configStore.data(), !bootService);
+  brightnessManager.begin(millis(), configStore.data());
+  dashboard.begin(configStore.data(), !bootService,
+                   brightnessManager.state().currentPercent());
 
 #ifndef H2G_DEMO_MODE
   if (!obdClient.begin()) {
@@ -153,6 +169,22 @@ void loop() {
   const uint32_t now = millis();
   button.update(now, configStore.data());
   const ButtonEvent event = button.takeEvent();
+  if (event == ButtonEvent::QuadPress &&
+      configStore.data().brightness.mode == BrightnessMode::Manual) {
+    ConfigData& c = configStore.data();
+    const ConfigData previous = c;
+    c.brightness.manualNight = !previous.brightness.manualNight;
+    if (!configStore.save()) {
+      c = previous;
+      ESP_LOGE(kTag, "Manual brightness choice was not saved");
+    } else {
+      ESP_LOGI(kTag, "Manual brightness: %s", c.brightness.manualNight ? "night" : "day");
+    }
+  }
+  // Also runs in service mode so saved brightness changes and live ADC work
+  // without a reboot. During a raw OTA body the hardware PWM holds its duty.
+  brightnessManager.update(now, configStore.data());
+  dashboard.setBrightness(brightnessManager.state().currentPercent());
 
   if (serviceMode) {
 #ifndef H2G_DEMO_MODE
@@ -161,6 +193,7 @@ void loop() {
 #endif
     servicePortal.loop();
     if (event == ButtonEvent::ServiceHold) {
+      brightnessManager.checkpoint();
       ESP.restart();
     }
     delay(1);

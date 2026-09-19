@@ -1,8 +1,8 @@
-# H2 Gauge 0.3.2 — актуальные проектные решения
+# H2 Gauge 0.3.6 — актуальные проектные решения
 
-**Дата:** 2026-09-18  
+**Дата:** 2026-09-19  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** код и release собраны; требуется проверка на физической плате и автомобиле.
+**Состояние:** код и release собраны и проверены программно; требуется проверка OTA и остальных функций на физической плате и автомобиле.
 
 ## 1. Назначение
 
@@ -45,6 +45,7 @@ Generic board manifest PlatformIO может печатать базовое о�
 |---|---:|
 | Кнопка MODE/WAKE | 4 |
 | LPG sense | 5 |
+| LDR / ADC1_CH5 | 6 |
 | TFT backlight control | 7 |
 | TFT CS | 10 |
 | TFT DC | 11 |
@@ -93,14 +94,14 @@ MOSI → GPIO13
 CS   → GPIO10
 DC   → GPIO11
 RST  → GPIO12
-BLK  → GPIO7 только через подходящий ключ
+BLK  → GPIO7, подтверждённый logic-вход встроенного ключа
 VCC  → 3.3 V
 GND  → GND
 ```
 
 Между GPIO12/RST и GND устанавливается 10 кОм. Это удерживает дисплей в reset до начала инициализации и предотвращает вспышку предыдущего кадра перед красным HAVAL.
 
-На стенде BL/BLK можно подключить к постоянным 3.3 В, если модуль это допускает. Тогда GPIO7 не подключён и регулировка яркости программно не действует. Для PWM применяется подтверждённый high-side каскад AO3401A + MMBT3904. Ток подсветки напрямую через GPIO не пропускается.
+Владелец подтвердил BLK→GPIO7 и наличие транзистора на модуле. Если BLK — штатный low-current logic-вход, внешний high-side каскад не нужен; полярность и ток ещё должны быть проверены на столе. Ток LED через GPIO не пропускается. LEDC 5 кГц / 8 бит; TFT_eSPI больше не включает BLK самостоятельно при init. Подсветка остаётся выключенной до очистки TFT, затем используется выбранный начальный уровень и плавный логотип HAVAL.
 
 Красный логотип HAVAL проявляется плавно; перед ним не должна появляться шкала. Рабочий фон — тёмный карбон. Шкала расположена близко к кромке. Доступны segmented и настоящая непрерывная solid arc.
 
@@ -121,6 +122,7 @@ RGB565: 240 × 240 × 2 = 115200 bytes
 Единственная кнопка подключается между GPIO4 и GND, active LOW. GPIO4 поддерживает RTC wake.
 
 - короткое нажатие — следующая страница;
+- в режиме яркости «Ручное» четыре быстрых нажатия — День/Ночь с немедленным сохранением; 1–3 коротких нажатия ждут 400-мс окно, удержания отменяют multi-click;
 - длинное — контекстное действие;
 - около 5 секунд на стоящем автомобиле — service portal;
 - удержание при старте около 3 секунд — принудительный сервис;
@@ -195,11 +197,15 @@ URL: http://192.168.4.1
 
 Полный сервис и OTA разрешены только при parked guards. Опциональный read-only Wi‑Fi во время обычной работы допускается архитектурой, но пока не реализован. BLE зарезервирован для будущей телеметрии.
 
-NVS schema 5 хранит конфигурацию, trip и калибровочные накопители. В schema 5 `startPage`, `centerValue`, `language`, `fuelTrimPollingEnabled` и `dfcoCorrectionEnabled` являются явными полями вместо вручную упакованных флагов. Schema 4 намеренно не мигрирует побитно: несовместимая или повреждённая запись заменяется текущими defaults.
+Config schema **6** дописывает 12-байтные настройки яркости после неизменённого schema-5 prefix (196 байт), перед checksum. Исправная запись schema 5 (200 байт) проверяется и автоматически переносится в текущую 212-байтную конфигурацию. Старые коэффициенты топлива, скорость, Wi-Fi и оформление сохраняются; новый режим — «Всегда день». Если старый ночной уровень выше дневного, он ограничивается дневным. Trip и бензиновая калибровка остаются в отдельных неизменённых namespace. Schema 4 и повреждённые записи заменяются defaults. Выученный LDR-диапазон хранится отдельно в `h2light/range`: явный 16-byte LE формат с версией/checksum.
 
 POST `/api/config` транзакционный: новый объект проверяется отдельно, включая `isfinite()` и invariant порогов `min < 0 < warning < danger <= max`; невалидный объект получает HTTP 422 и не изменяет активную RAM-конфигурацию. При ошибке записи NVS сервер восстанавливает прежнюю RAM-конфигурацию.
 
-Factory reset требует `X-H2G-Action: factory-reset` и имеет cooldown 10 секунд. Web OTA требует `X-H2G-Action: ota`, не допускает параллельную сессию и имеет cooldown 30 секунд. Все ошибки OTA сходятся в единый abort/cleanup path. OTA принимает только app image; bootloader, partition table и factory image через app endpoint не загружаются.
+Factory reset требует `X-H2G-Action: factory-reset` и имеет cooldown 10 секунд. Web OTA требует `X-H2G-Action: ota`, не допускает параллельную сессию и имеет cooldown 30 секунд. Все ошибки OTA сходятся в единый abort/cleanup path. OTA принимает только app image; bootloader, partition table, filesystem и factory image через app endpoint не загружаются.
+
+В 0.3.6 OTA полностью переведён с Arduino `Update` на прямые `esp_ota_begin/write/end`. До первой записи проверяются ESP application header, descriptor и chip ID ESP32-S3; затем обязательны точное равенство Content-Length/received/written, финальная проверка образа, `esp_ota_set_boot_partition(target)` и read-back через `esp_ota_get_boot_partition()`. HTTP 200 выдаётся только после совпадения выбранного адреса с целевым. После завершённого ответа сервис сам перезагружает устройство.
+
+`OtaDiagnostics` хранит в отдельном namespace `h2ota` checksummed 64-байтную запись source/target/size/attempt/result. На старте pending-образ явно подтверждается через `esp_ota_mark_app_valid_cancel_rollback()`, а попытка классифицируется как applied, rolled_back или unexpected_slot. `/api/status` и UI показывают running/boot/next slots, image state, reset reason и последний результат без serial monitor. Эта запись не меняет namespace конфигурации, trip, топливной или световой калибровки.
 
 CAN RX обрабатывает не более 16 кадров и 2000 мкс за один вызов, чтобы очередь не монополизировала loop. Arduino loopTask подписан на Task Watchdog.
 
@@ -226,7 +232,8 @@ SN65HVD230
 GC9A01
 кнопка GPIO4
 выход LPG на GPIO5
-ключ BLK от GPIO7
+logic-вход ключа BLK от GPIO7
+LDR-делитель и RC на GPIO6
 ```
 
 Межблочный шестиконтактный разъём:
@@ -269,23 +276,24 @@ LittleFS 8064 KiB
 Проверенная чистая release-сборка:
 
 ```text
-RAM: 50 124 / 327 680 bytes
-app Flash payload: 1 046 529 / 4 194 304 bytes
+RAM: 52 644 / 327 680 bytes (16.1%)
+app Flash payload: 1 072 573 / 4 194 304 bytes (25.6%)
+app .bin: 1 072 992 bytes
 ```
 
 Release:
 
 ```text
-h2-gauge-v0.3.2-esp32s3-n16r8.bin
-SHA-256 defa6581f52b7851b3de7604f5160920b5fd4dadfbb727566334b2b70841a8d1
+h2-gauge-v0.3.6-esp32s3-n16r8.bin
+SHA-256 646babc02e7b7624a7d168c3dc03bfcc6d8b452ebdbeb411dd341aeee015f7f9
 
-h2-gauge-v0.3.2-esp32s3-n16r8-factory.bin
-SHA-256 14e18e14ccfc4ea10ad74b00b958c95f8c4b97bb0f862981c96e69279825ed4d
+h2-gauge-v0.3.6-esp32s3-n16r8-factory.bin
+SHA-256 3cfdf8b23d39693d38d35d351454a7953109bd98d3b6cfaeee975c4ac3753954
 ```
 
-Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0.
+Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0; он намеренно содержит начальную OTA data и не используется для сохранения NVS.
 
-Финальная проверка 0.3.2 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна, API `enableLoopWDT()`, `WebServer::collectHeaders()` и `Update.isRunning()` совместимы. Отдельный validator подтвердил pinned TTF hashes, структуру VLW, 8-bit alpha, порядок codepoints и покрытие webfont; двойной запуск генератора дал идентичные SHA-256. Дополнительно проверены JSON, синтаксис встроенного JavaScript, точное совпадение gzip с `web/index.html`, локальные Markdown-ссылки, SHA-256 обоих образов, valid ESP image hash и расположение app payload в factory image по offset `0x10000`. Аппаратные проверки на автомобиле этой проверкой не заменяются.
+Финальная программная проверка 0.3.6 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна. OTA-validator подтверждает raw body, прямые `esp_ota_*`, проверку заголовка/чипа/descriptor, exact-length, WDT feeding, set/read-back boot partition, startup confirmation и постоянный результат. ESP32-S3 app имеет шесть сегментов, корректный checksum `b3` и validation hash `3533dc6cc4d29cc43f8b6d070ca28f68f47d450bd85d2945e6a83e51ef940c7e`. Font-validator подтвердил pinned TTF hashes, VLW и webfont. 25 host-групп, browser fixture с OTA-карточками/verified workflow на 360…1280 px, JavaScript, embedded gzip и integration-checks прошли. Проверены SHA-256 release-файлов и точное расположение app payload в factory image по offset `0x10000`. Реальный 0.3.5→0.3.6 OTA и аппаратные проверки всё ещё обязательны.
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -315,6 +323,30 @@ UI benchmark 300 frames: render avg/max ... us, bg restore avg ... us, cache=yes
 
 Для TFT_eSPI 2.5.43 используется `getPointer()`, а не неподтверждённый `getBuffer()`. Основной и фоновый sprite имеют одинаковую 16-битную глубину, поэтому внутреннее byte-swapped RGB565 представление копируется без преобразования. Smooth-font callback также работает только внутри текущего text layer и не обращается к TFT по SPI.
 
+### OTA transport и гарантированная активация (исправление 0.3.6)
+
+В Arduino-ESP32 2.0.17 multipart обрабатывается синхронно внутри одного `WebServer::handleClient()`: `_parseForm()` читает тело побайтово, а `_uploadReadByte()` способен ждать подключённого клиента в неограниченном цикле. Поскольку `enableLoopWDT()` подписывает `loopTask`, а Arduino кормит его только между вызовами `loop()`, передача дольше штатного 5-секундного TWDT вызывала panic и перезагрузку посреди OTA. Поэтому multipart не возвращается и watchdog не отключается.
+
+Web UI отправляет сам файл как `application/octet-stream`, имя передаётся в `X-H2G-Filename`, подтверждение — в `X-H2G-Action`. Raw callback WebServer вызывается на каждом блоке 1436 байт и выполняет `feedLoopWDT()` до/после записи. В отличие от `_uploadReadByte()`, raw-путь использует `WiFiClient::readBytes()` с bounded timeout: потеря передачи приводит к abort/HTTP 408, а не к WDT panic. В service mode вызывается `WiFi.setSleep(false)`.
+
+0.3.6 устраняет отдельный класс ошибки, когда upload доходил до подтверждённого успеха и автоматической перезагрузки, но устройство снова запускало прежний слот. Arduino `Update` больше не участвует. Сервер сам выбирает следующий неактивный OTA subtype, проверяет его размер, вызывает `esp_ota_begin`, передаёт все байты через `esp_ota_write` и завершает `esp_ota_end`. Перед первой записью нужны ESP magic, допустимое число сегментов, chip ID 9 (ESP32-S3) и `ESP_APP_DESC_MAGIC_WORD`; factory/bootloader/partition images поэтому не принимаются. Ожидаемая, полученная и записанная длины обязаны совпасть.
+
+После успешной проверки сервер вызывает `esp_ota_set_boot_partition(target)`, немедленно читает результат через `esp_ota_get_boot_partition()` и сравнивает физический адрес. Несовпадение даёт HTTP 500 и попытку восстановить source selection. Только после совпадения ответ содержит `verified:true`, `bootVerified:true` и `rebooting:true`; достижение браузером 100% передачи само по себе успехом не считается. Ответ завершается до отложенного software reset, ручной RESET не требуется.
+
+До reboot в `h2ota` фиксируются source/target и размер. На новом старте pending-образ подтверждается до обычной работы, затем запись получает post-reboot результат. UI показывает фактические слоты и reset reason. Поле низкоуровневой диагностики называется `descriptorVersion`: в prebuilt Arduino-ESP32 2.0.17 это framework descriptor `esp-idf: v4.4.7 38eeba213a`, а не релиз H2 Gauge. Авторитетная версия H2 Gauge — верхнеуровневое поле `/api/status.version` (`0.3.6`); framework descriptor намеренно не выдаётся за номер релиза.
+
+## 11a. Адаптивная яркость — решение 2026-09-19
+
+Приняты пользовательские варианты: плавный Авто, `3.3 В → LDR → 22 кОм → GND` на ADC1 GPIO6 через 1 кОм/100 нФ, ручной День/Ночь четырьмя нажатиями с сохранением, автоматическое обучение диапазона вместо кнопок захвата. Четыре режима — Auto / Manual / AlwaysDay / AlwaysNight. Default AlwaysDay оставлен намеренно: ещё не смонтированный LDR не должен менять яркость.
+
+`BrightnessLogic` независим от Arduino: median5 + EMA 800 мс, гистерезис 32 ADC, deadband 1 п.п., раздельные задержки default 3000/1000 мс, линейная интерполяция, PWM slew 25 п.п./с. `BrightnessManager` читает четыре ADC1 отсчёта раз в 50 мс без неограниченных циклов. Он вызывается до ветвления normal/service, поэтому web-save применяется сразу, а ADC доступен в сервисе. Во время raw OTA аппаратный PWM удерживает последний duty.
+
+Автокалибровка принимает только устойчивые двухсекундные окна, не учится на насыщении, ждёт диапазон ≥800 ADC, затем использует точки 15%/85%. Диапазон только расширяется, чтобы постоянный свет не переопределял день/ночь. До обучения действуют заданные исходные пороги. Изменённый диапазон записывается не чаще раза в 10 минут, плюс штатные checkpoints; отключение питания до checkpoint может потерять последние наблюдения. Нельзя отличить обрыв LDR от темноты только пассивным ADC-делителем: отсутствие датчика не обещается диагностировать автоматически.
+
+POST конфигурации проверяет целочисленные диапазоны, boolean-типы, `night <= day` и `ADC day - night >= 200` до commit. Сброс диапазона защищён action-header/cooldown и сначала пишет NVS, затем очищает RAM. Dashboard сам владеет PWM, `TFT_BL/TFT_BACKLIGHT_ON` убраны из build flags для исключения принудительной 100%-ной вспышки в `TFT_eSPI::init()`.
+
+Проверены 25 групп реальных C++ host-регрессий с ASan/UBSan, browser-контракт с тестовыми REST-ответами на 360…1280 px и сборка ESP32-S3. Host stubs не эмулируют электрический ADC, LEDC или настоящий ESP NVS; физические проверки остаются обязательными. Подробности: [BRIGHTNESS_GUIDE.md](BRIGHTNESS_GUIDE.md), [принципиальная схема](ambient-light-circuit.svg).
+
 ## 12. Обязательная физическая проверка
 
 1. Проверить маркировку N16R8 на модуле.
@@ -327,5 +359,7 @@ UI benchmark 300 frames: render avg/max ... us, bg restore avg ... us, cache=yes
 8. Подключить CAN сначала на стоящем автомобиле и запросить `01 00`.
 9. Проверить реальные PID `0B`, `10`, `33`, `42`, `5E` и ECU response ID.
 10. Измерить ток, падение 5 В, температуру закрытого корпуса и поведение под солнцем.
+11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
+12. Выполнить реальный 0.3.5→0.3.6 OTA: подтвердить автоматический reboot в новый slot, version 0.3.6 и post-reboot result `applied`; затем обновить 0.3.6→следующий app-образ уже нативным handler. При медленной передаче TWDT не должен срабатывать.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

@@ -11,7 +11,8 @@ class DashboardUi {
       : sprite_(&tft_), backgroundCache_(&tft_), textSmall_(&tft_),
         textMedium_(&tft_), textLarge_(&tft_) {}
 
-  void begin(const ConfigData& config, bool normalMode);
+  void begin(const ConfigData& config, bool normalMode,
+             float initialBrightnessPercent);
   void render(uint32_t now, const TelemetryData& data,
               const TelemetryEngine& engine, const ConfigData& config);
   void nextPage(const ConfigData& config);
@@ -23,6 +24,7 @@ class DashboardUi {
   void showMessage(const char* title, const char* line1,
                    const ConfigData& config, const char* line2 = nullptr);
   void releaseFramebuffer();
+  void setBrightness(float percent);
   void prepareForSleep();
 
  private:
@@ -62,6 +64,8 @@ class DashboardUi {
   TFT_eSprite textSmall_;
   TFT_eSprite textMedium_;
   TFT_eSprite textLarge_;
+  bool pwmReady_ = false;
+  uint8_t lastPwmDuty_ = 0;
   bool framebufferReady_ = false;
   bool backgroundCacheReady_ = false;
   bool smoothFontsReady_ = false;

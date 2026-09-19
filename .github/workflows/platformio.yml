@@ -19,6 +19,14 @@ jobs:
       - name: Install PlatformIO Core
         run: python -m pip install "platformio>=6.1,<7"
 
+      - name: Test brightness, button gestures and NVS migration
+        run: python tools/test_brightness.py
+
+      - name: Check embedded UI and OTA invariants
+        run: |
+          python tools/check_brightness_integration.py
+          python tools/check_ota_transport.py
+
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
 

@@ -69,15 +69,20 @@ uint16_t dimRgb565(uint16_t color, uint8_t level) {
 }
 }  // namespace
 
-void DashboardUi::begin(const ConfigData& config, bool normalMode) {
+void DashboardUi::begin(const ConfigData& config, bool normalMode,
+                         float initialBrightnessPercent) {
+  // PWM is owned here, not by TFT_eSPI. Keep BLK dark until the first clean
+  // background has replaced any power-on pixels; do not flash at 100% first.
+  ledcSetup(0, 5000, 8);
+  ledcAttachPin(Pins::Backlight, 0);
+  ledcWrite(0, 0);
+  pwmReady_ = true;
+  lastPwmDuty_ = 0;
   tft_.init();
   tft_.setRotation(config.rotation & 0x03);
   tft_.fillScreen(kBackground);
+  setBrightness(initialBrightnessPercent);
   if (normalMode) drawStartupLogo();
-
-  ledcSetup(0, 5000, 8);
-  ledcAttachPin(Pins::Backlight, 0);
-  ledcWrite(0, config.brightnessDay * 255 / 100);
 
   page_ = config.displayStartPage();
   if (!pageEnabled(page_, config)) page_ = 0;
@@ -357,9 +362,18 @@ void DashboardUi::releaseFramebuffer() {
   }
 }
 
+void DashboardUi::setBrightness(float percent) {
+  if (!pwmReady_) return;
+  const uint8_t duty = static_cast<uint8_t>(
+      lroundf(clampFloat(percent, 0.0f, 100.0f) * 255.0f / 100.0f));
+  if (duty == lastPwmDuty_) return;
+  ledcWrite(0, duty);
+  lastPwmDuty_ = duty;
+}
+
 void DashboardUi::prepareForSleep() {
   releaseFramebuffer();
-  ledcWrite(0, 0);
+  setBrightness(0.0f);
   tft_.writecommand(TFT_DISPOFF);
   digitalWrite(Pins::TftReset, LOW);
 }
