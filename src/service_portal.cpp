@@ -77,6 +77,10 @@ const char* resetReasonName(esp_reset_reason_t reason) {
 }  // namespace
 
 bool ServicePortal::begin() {
+  // Read each OTA image once before status polling starts. Flash contents do
+  // not change again until a successful OTA schedules the reboot.
+  firmwareSlots_.scan();
+
   const ConfigData& config = configStore_.data();
   const uint16_t suffix = static_cast<uint16_t>(ESP.getEfuseMac() & 0xFFFF);
   char suffixText[8];
@@ -582,6 +586,35 @@ void ServicePortal::sendStatus() {
   lastOta["targetAddress"] = otaDiagnostics_.targetAddress();
   lastOta["imageSize"] = otaDiagnostics_.imageSize();
   lastOta["descriptorVersion"] = otaDiagnostics_.descriptorVersion();
+
+  JsonArray slots = ota["slots"].to<JsonArray>();
+  for (size_t i = 0; i < firmwareSlots_.count(); ++i) {
+    const FirmwareSlots::SlotInfo& info = firmwareSlots_.at(i);
+    const esp_partition_t* partition = info.partition;
+    JsonObject slot = slots.add<JsonObject>();
+    slot["partition"] = OtaDiagnostics::partitionLabel(partition);
+    slot["address"] = partition ? partition->address : 0;
+    slot["descriptorReadable"] = info.descriptorReadable;
+    slot["versionKnown"] = info.versionKnown;
+    slot["version"] = info.versionKnown ? info.version : "unknown";
+    slot["versionSource"] =
+        FirmwareSlots::versionSourceName(info.versionSource);
+    slot["buildTarget"] = info.buildTarget;
+    slot["descriptorVersion"] = info.descriptorVersion;
+    slot["descriptorProject"] = info.descriptorProject;
+    slot["running"] = runningPartition && partition &&
+                      runningPartition->address == partition->address;
+    slot["bootSelected"] = bootPartition && partition &&
+                           bootPartition->address == partition->address;
+    slot["nextUpdate"] = nextPartition && partition &&
+                         nextPartition->address == partition->address;
+    esp_ota_img_states_t slotState = ESP_OTA_IMG_UNDEFINED;
+    const bool hasSlotState = partition &&
+        esp_ota_get_state_partition(partition, &slotState) == ESP_OK;
+    slot["state"] = hasSlotState
+                        ? OtaDiagnostics::imageStateName(slotState)
+                        : "undefined";
+  }
 
   const BrightnessLogic& light = brightness_.state();
   const LightCalibration& range = light.calibration();

@@ -20,6 +20,7 @@ class DashboardUi {
   uint8_t page() const { return page_; }
   void resetPeak() { peakBoost_ = -10.0f; }
   void showService(const String& ssid, const String& ip,
+                   const String& runningFirmware, const String& slotVersions,
                    const ConfigData& config);
   void showMessage(const char* title, const char* line1,
                    const ConfigData& config, const char* line2 = nullptr);

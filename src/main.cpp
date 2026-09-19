@@ -81,7 +81,8 @@ void enterServiceMode() {
 
   if (servicePortal.begin()) {
     dashboard.showService(servicePortal.ssid(), servicePortal.ip(),
-                          configStore.data());
+                          servicePortal.runningFirmwareLine(),
+                          servicePortal.slotVersionsLine(), configStore.data());
   } else {
     if (configStore.data().uiLanguage() == UiLanguage::Russian) {
       dashboard.showMessage("ОШИБКА СЕРВИСА", "WI-FI НЕ ЗАПУЩЕН",

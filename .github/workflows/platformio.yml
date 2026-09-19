@@ -30,6 +30,9 @@ jobs:
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
 
+      - name: Check per-slot firmware manifest
+        run: python tools/check_firmware_manifest.py
+
       - name: Upload ESP32-S3 build artifacts
         uses: actions/upload-artifact@v4
         with:

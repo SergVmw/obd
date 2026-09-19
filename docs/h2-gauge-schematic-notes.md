@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.6 — расчёты и pin-to-pin netlist
+# H2 Gauge 0.3.7 — расчёты и pin-to-pin netlist
 
 Этот документ фиксирует электрические соединения для текущей платы **ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8**. Графические листы старой ревизии удалены из `docs`; актуальным источником подключения являются этот netlist и [`wiring.md`](wiring.md). Для LDR добавлена отдельная [принципиальная схема](ambient-light-circuit.svg).
 
@@ -284,7 +284,7 @@ Native USB использует GPIO19/20. `ARDUINO_USB_MODE=1` и `ARDUINO_USB_
 - TPS2660: <https://www.ti.com/lit/ds/symlink/tps2660.pdf>
 - SN65HVD230: <https://www.ti.com/lit/ds/symlink/sn65hvd230.pdf>
 
-## Вход освещённости LDR (дополнение 0.3.6)
+## Вход освещённости LDR (config schema 6)
 
 [Принципиальная схема](ambient-light-circuit.svg). Устанавливается в коробке дисплея:
 

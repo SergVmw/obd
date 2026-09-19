@@ -8,6 +8,7 @@
 #include "app_config.h"
 #include "brightness_manager.h"
 #include "can_monitor.h"
+#include "firmware_slots.h"
 #include "ota_diagnostics.h"
 #include "telemetry.h"
 
@@ -28,6 +29,8 @@ class ServicePortal {
   void loop();
   const String& ssid() const { return ssid_; }
   String ip() const { return WiFi.softAPIP().toString(); }
+  String runningFirmwareLine() const { return firmwareSlots_.runningLine(); }
+  String slotVersionsLine() const { return firmwareSlots_.slotsLine(); }
 
  private:
   void setupRoutes();
@@ -59,6 +62,7 @@ class ServicePortal {
   CanMonitor& canMonitor_;
   BrightnessManager& brightness_;
   OtaDiagnostics& otaDiagnostics_;
+  FirmwareSlots firmwareSlots_;
   DNSServer dns_;
   WebServer server_;
   String ssid_;

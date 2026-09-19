@@ -32,10 +32,18 @@ const vm = require('node:vm');
       }
       if (url.pathname === '/api/status') {
         if (offline) return route.fulfill({ status: 503, body: 'test offline' });
-        return json({ version: 'test-fixture', target: 'ESP32-S3', obdConnected: false,
+        return json({ version: '0.3.7', target: 'ESP32-S3', obdConnected: false,
           boostBar: null, fuelMode: '95', ota: { runningPartition: 'app0', runningAddress: 0x10000,
             bootPartition: 'app0', bootAddress: 0x10000, nextPartition: 'app1', nextAddress: 0x410000,
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
+            slots: [
+              { partition: 'app0', address: 0x10000, descriptorReadable: true,
+                versionKnown: true, version: '0.3.7', versionSource: 'manifest',
+                running: true, bootSelected: true, nextUpdate: false, state: 'valid' },
+              { partition: 'app1', address: 0x410000, descriptorReadable: true,
+                versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
+                running: false, bootSelected: false, nextUpdate: true, state: 'valid' },
+            ],
             last: { result: 'applied', attempt: 1, sourceAddress: 0x410000,
               targetAddress: 0x10000, imageSize: 1066640, descriptorVersion: 'fixture' } },
           brightness: { ...sample, mode: saved.display.brightnessMode,
@@ -57,7 +65,14 @@ const vm = require('node:vm');
     });
     await page.goto('http://h2g.test/');
     await page.waitForFunction(() => document.getElementById('lightRaw').textContent === '1830');
-    assert.equal(await page.locator('#otaFirmware').textContent(), 'test-fixture');
+    assert.equal(await page.locator('#otaFirmware').textContent(), '0.3.7');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.3.7');
+    assert.equal(await page.locator('#slotCurrentMeta').textContent(), 'app0 · запущена');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.3.7');
+    assert.match(await page.locator('#slotApp0Meta').textContent(), /запущен/);
+    assert.equal(await page.locator('#slotApp0Card').getAttribute('class'), 'card slotCard running');
+    assert.equal(await page.locator('#slotApp1Version').textContent(), '0.3.6');
+    assert.match(await page.locator('#slotApp1Meta').textContent(), /следующий OTA/);
     assert.equal(await page.locator('#otaRunning').textContent(), 'app0');
     assert.equal(await page.locator('#otaBoot').textContent(), 'app0');
     assert.equal(await page.locator('#otaLast').textContent(), 'Применено');
@@ -125,6 +140,8 @@ const vm = require('node:vm');
     offline = true;
     await page.evaluate(() => status());
     assert.equal(await page.locator('#lightRaw').textContent(), '—');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '—');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '—');
     assert.match(await page.locator('#lightLive').textContent(), /Нет актуальных данных/);
     offline = false; sample.adcClipped = false; sample.storageHealthy = true;
     await page.selectOption('#brightnessMode', '0');
@@ -133,6 +150,11 @@ const vm = require('node:vm');
       await page.setViewportSize({ width, height: 900 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'horizontal overflow at ' + width);
     }
+    if (process.env.H2G_UI_TOP_SCREENSHOT) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => scrollTo(0, 0));
+      await page.screenshot({ path: process.env.H2G_UI_TOP_SCREENSHOT });
+    }
     if (process.env.H2G_UI_SCREENSHOT) {
       await page.setViewportSize({ width: 768, height: 1000 });
       await page.evaluate(() => document.fonts.ready);
@@ -140,6 +162,6 @@ const vm = require('node:vm');
       await page.screenshot({ path: process.env.H2G_UI_SCREENSHOT });
     }
     assert.deepEqual(errors, []);
-    console.log('PASS browser: brightness modes/live data, OTA slots and verified reboot UI, validation/reset, stale-state clearing, 360–1280 px layouts');
+    console.log('PASS browser: brightness/live data, per-slot build cards, verified OTA reboot UI, validation/reset, stale-state clearing, 360–1280 px layouts');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

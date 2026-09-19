@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.6 — актуальные проектные решения
+# H2 Gauge 0.3.7 — актуальные проектные решения
 
 **Дата:** 2026-09-19  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
@@ -207,6 +207,8 @@ Factory reset требует `X-H2G-Action: factory-reset` и имеет cooldow
 
 `OtaDiagnostics` хранит в отдельном namespace `h2ota` checksummed 64-байтную запись source/target/size/attempt/result. На старте pending-образ явно подтверждается через `esp_ota_mark_app_valid_cancel_rollback()`, а попытка классифицируется как applied, rolled_back или unexpected_slot. `/api/status` и UI показывают running/boot/next slots, image state, reset reason и последний результат без serial monitor. Эта запись не меняет namespace конфигурации, trip, топливной или световой калибровки.
 
+0.3.7 добавляет независимую H2 build identity. В DROM каждого нового app находится 56-байтный packed manifest с двумя magic, версией формата, размером, `H2G_FW_VERSION`, target и trailer. `FirmwareSlots` один раз при входе в сервис читает первые DROM-сегменты `app0/app1`, проверяет manifest и кэширует результат. Это не сканируется при каждом 1,2-секундном status poll. Ранее выпущенный 0.3.6 определяется по точному `app_elf_sha256`; неизвестный старый/повреждённый image честно показывается как «неизвестно» или «пусто». Версии обоих slots видны на GC9A01 service screen, в постоянных верхних web-карточках и в `ota.slots[]` API вместе с running/boot/next flags.
+
 CAN RX обрабатывает не более 16 кадров и 2000 мкс за один вызов, чтобы очередь не монополизировала loop. Arduino loopTask подписан на Task Watchdog.
 
 ## 10. Питание и две коробки
@@ -276,24 +278,24 @@ LittleFS 8064 KiB
 Проверенная чистая release-сборка:
 
 ```text
-RAM: 52 644 / 327 680 bytes (16.1%)
-app Flash payload: 1 072 573 / 4 194 304 bytes (25.6%)
-app .bin: 1 072 992 bytes
+RAM: 52 876 / 327 680 bytes (16.1%)
+app Flash payload: 1 077 197 / 4 194 304 bytes (25.7%)
+app .bin: 1 077 616 bytes
 ```
 
 Release:
 
 ```text
-h2-gauge-v0.3.6-esp32s3-n16r8.bin
-SHA-256 646babc02e7b7624a7d168c3dc03bfcc6d8b452ebdbeb411dd341aeee015f7f9
+h2-gauge-v0.3.7-esp32s3-n16r8.bin
+SHA-256 b5cea758be22a7480e2b6e4cc85d61ebcad72972ec94676a7e6c24c32cd648ad
 
-h2-gauge-v0.3.6-esp32s3-n16r8-factory.bin
-SHA-256 3cfdf8b23d39693d38d35d351454a7953109bd98d3b6cfaeee975c4ac3753954
+h2-gauge-v0.3.7-esp32s3-n16r8-factory.bin
+SHA-256 a22a840ff44e37e24fc756aec73cc239fc417d96d803c6b1c6e8d8f89cef111a
 ```
 
 Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0; он намеренно содержит начальную OTA data и не используется для сохранения NVS.
 
-Финальная программная проверка 0.3.6 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна. OTA-validator подтверждает raw body, прямые `esp_ota_*`, проверку заголовка/чипа/descriptor, exact-length, WDT feeding, set/read-back boot partition, startup confirmation и постоянный результат. ESP32-S3 app имеет шесть сегментов, корректный checksum `b3` и validation hash `3533dc6cc4d29cc43f8b6d070ca28f68f47d450bd85d2945e6a83e51ef940c7e`. Font-validator подтвердил pinned TTF hashes, VLW и webfont. 25 host-групп, browser fixture с OTA-карточками/verified workflow на 360…1280 px, JavaScript, embedded gzip и integration-checks прошли. Проверены SHA-256 release-файлов и точное расположение app payload в factory image по offset `0x10000`. Реальный 0.3.5→0.3.6 OTA и аппаратные проверки всё ещё обязательны.
+Финальная программная проверка 0.3.7 выполнена PlatformIO 6.1.18, platform `espressif32@6.8.1` и Arduino-ESP32 2.0.17: чистая release-сборка успешна. OTA-validator подтверждает raw body, прямые `esp_ota_*`, exact-length, set/read-back boot partition, startup confirmation, per-slot manifests и постоянный результат. ESP32-S3 app имеет шесть сегментов, корректный checksum `d2` и validation hash `e2e437806c595479f2e952daf883dcc72af17bc81654d5fd6fc98b0a7186ce70`; manifest `0.3.7 / esp32s3-n16r8` найден внутри первого DROM-сегмента. Font-validator, 25 host-групп и browser fixture с per-slot карточками/verified OTA workflow на 360…1280 px прошли. Embedded HTML 108 385 байт совпадает с 57 371-байтным gzip. Проверены SHA-256 release-файлов и точное расположение app payload в factory image по offset `0x10000`. Реальный 0.3.6→0.3.7 OTA остаётся обязательной аппаратной проверкой.
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -333,7 +335,7 @@ Web UI отправляет сам файл как `application/octet-stream`, �
 
 После успешной проверки сервер вызывает `esp_ota_set_boot_partition(target)`, немедленно читает результат через `esp_ota_get_boot_partition()` и сравнивает физический адрес. Несовпадение даёт HTTP 500 и попытку восстановить source selection. Только после совпадения ответ содержит `verified:true`, `bootVerified:true` и `rebooting:true`; достижение браузером 100% передачи само по себе успехом не считается. Ответ завершается до отложенного software reset, ручной RESET не требуется.
 
-До reboot в `h2ota` фиксируются source/target и размер. На новом старте pending-образ подтверждается до обычной работы, затем запись получает post-reboot результат. UI показывает фактические слоты и reset reason. Поле низкоуровневой диагностики называется `descriptorVersion`: в prebuilt Arduino-ESP32 2.0.17 это framework descriptor `esp-idf: v4.4.7 38eeba213a`, а не релиз H2 Gauge. Авторитетная версия H2 Gauge — верхнеуровневое поле `/api/status.version` (`0.3.6`); framework descriptor намеренно не выдаётся за номер релиза.
+До reboot в `h2ota` фиксируются source/target и размер. На новом старте pending-образ подтверждается до обычной работы, затем запись получает post-reboot результат. UI показывает фактические слоты и reset reason. Поле низкоуровневой диагностики называется `descriptorVersion`: в prebuilt Arduino-ESP32 2.0.17 это framework descriptor `esp-idf: v4.4.7 38eeba213a`, а не релиз H2 Gauge. Авторитетная текущая версия находится в `/api/status.version`, а версии содержимого slots — в проверенном H2 manifest/legacy-hash полях `ota.slots[]`; framework descriptor намеренно не выдаётся за номер релиза.
 
 ## 11a. Адаптивная яркость — решение 2026-09-19
 
@@ -360,6 +362,6 @@ POST конфигурации проверяет целочисленные ди
 9. Проверить реальные PID `0B`, `10`, `33`, `42`, `5E` и ECU response ID.
 10. Измерить ток, падение 5 В, температуру закрытого корпуса и поведение под солнцем.
 11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
-12. Выполнить реальный 0.3.5→0.3.6 OTA: подтвердить автоматический reboot в новый slot, version 0.3.6 и post-reboot result `applied`; затем обновить 0.3.6→следующий app-образ уже нативным handler. При медленной передаче TWDT не должен срабатывать.
+12. Выполнить реальный 0.3.6→0.3.7 OTA: до загрузки зафиксировать running/next slot, дождаться автоматического reboot без RESET, затем подтвердить version 0.3.7, смену running slot, result `applied` и карточки 0.3.6/0.3.7 на GC9A01 и web. При медленной передаче TWDT не должен срабатывать.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

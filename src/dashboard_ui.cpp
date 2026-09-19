@@ -758,18 +758,24 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
 }
 
 void DashboardUi::showService(const String& ssid, const String& ip,
+                              const String& runningFirmware,
+                              const String& slotVersions,
                               const ConfigData& config) {
   releaseFramebuffer();
   tft_.fillScreen(kBackground);
-  drawDirectText(translated(config, "СЕРВИС", "SERVICE"), 120, 68,
+  drawDirectText(translated(config, "СЕРВИС", "SERVICE"), 120, 52,
                  MC_DATUM, kGreen, FontRole::Medium, FSSB18);
-  drawDirectText(ssid.c_str(), 120, 112, MC_DATUM, kWhite, FontRole::Small,
+  drawDirectText(ssid.c_str(), 120, 87, MC_DATUM, kWhite, FontRole::Small,
                  FSSB9);
-  drawDirectText(ip.c_str(), 120, 139, MC_DATUM, kCyan, FontRole::Small,
+  drawDirectText(ip.c_str(), 120, 112, MC_DATUM, kCyan, FontRole::Small,
                  FSSB9);
+  drawDirectText(runningFirmware.c_str(), 120, 143, MC_DATUM, kGreen,
+                 FontRole::Small, FSSB9);
+  drawDirectText(slotVersions.c_str(), 120, 167, MC_DATUM, kWhite,
+                 FontRole::Small, FSSB9);
   drawDirectText(translated(config, "КНОПКА: ВЫХОД",
                             "Hold button to exit"),
-                 120, 183, MC_DATUM, kMuted, FontRole::Small,
+                 120, 202, MC_DATUM, kMuted, FontRole::Small,
                  labelFont(config));
 }
 

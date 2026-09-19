@@ -9,6 +9,9 @@ portal = (ROOT / "src/service_portal.cpp").read_text(encoding="utf-8")
 header = (ROOT / "include/service_portal.h").read_text(encoding="utf-8")
 main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
 diagnostics = (ROOT / "src/ota_diagnostics.cpp").read_text(encoding="utf-8")
+slots = (ROOT / "src/firmware_slots.cpp").read_text(encoding="utf-8")
+manifest = (ROOT / "src/firmware_manifest.cpp").read_text(encoding="utf-8")
+version = (ROOT / "include/version.h").read_text(encoding="utf-8")
 
 assert "new FormData" not in html, "multipart OTA returned to the web client"
 assert "application/octet-stream" in html
@@ -40,4 +43,11 @@ assert "kStateRolledBack" in diagnostics and 'preferences_.begin("h2ota"' in dia
 assert 'doc["version"] = H2G_FW_VERSION' in portal
 assert 'lastOta["descriptorVersion"]' in portal
 assert 'lastOta["imageVersion"]' not in portal, "framework descriptor mislabeled as H2 release version"
-print("OTA transport: raw body, ESP-IDF write/verify/select/read-back, boot confirmation, truthful descriptor label and persisted result OK")
+assert 'ota["slots"]' in portal and 'slot["version"]' in portal
+assert "H2G_FIRMWARE_MANIFEST" in manifest
+assert "readManifest" in slots and "esp_partition_read" in slots
+assert "kV036ElfSha256" in slots and 'return "0.3.6"' in slots
+assert 'H2G_FW_VERSION "0.3.7"' in version
+for token in ("slotCurrentVersion", "slotApp0Version", "slotApp1Version"):
+    assert token in html
+print("OTA transport: native verify/select/read-back, boot confirmation, per-slot H2 build manifests and persisted result OK")

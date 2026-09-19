@@ -1,4 +1,4 @@
-# H2 Gauge 0.3.6 — адаптивная яркость (без изменений schema 6)
+# H2 Gauge 0.3.7 — адаптивная яркость (без изменений schema 6)
 
 **Цель:** только ESP32-S3 DevKitC-1 N16R8, GC9A01, BLK на GPIO7, фоторезистор на GPIO6.  
 **Выбранное поведение:** плавный `Авто`, запоминаемый ручной День/Ночь, автоматическое обучение диапазона света.  
@@ -191,11 +191,12 @@ python3 tools/check_brightness_integration.py
 python3 tools/check_ota_transport.py
 python3 tools/check_ui_fonts.py
 pio run -e esp32s3_n16r8
+python3 tools/check_firmware_manifest.py
 ```
 
 Host-тесты компилируют **реальные** `brightness_logic.cpp`, `brightness_manager.cpp`, `input_manager.cpp` и `app_config.cpp` с небольшими заглушками GPIO/Preferences; AddressSanitizer и UndefinedBehaviorSanitizer включены. 25 групп проверяют интерполяцию, режимы, таймеры/rollover, выбросы, паузы ADC, обучение, ограничения записи NVS, сброс, ошибки хранения, жесты кнопки и миграцию.
 
-Browser-тест `tests/web/brightness_ui.cjs` использует явно тестовые API-ответы, а не ESP32. Проверены поля четырёх режимов, live ADC без перезаписи формы, валидация, POST/reload, header сброса, OTA slot/result cards, отклонение factory-файла, server-verified OTA workflow, очистка устаревших показаний и ширины 360/390/768/1280 px. Для запуска нужен Node.js и Playwright с Chromium:
+Browser-тест `tests/web/brightness_ui.cjs` использует явно тестовые API-ответы, а не ESP32. Проверены поля четырёх режимов, live ADC без перезаписи формы, валидация, POST/reload, header сброса, карточки сборок APP0/APP1 и running highlight, отклонение factory-файла, server-verified OTA workflow, очистка устаревших показаний и ширины 360/390/768/1280 px. Для запуска нужен Node.js и Playwright с Chromium:
 
 ```bash
 npm install --prefix /tmp/h2g-web-test playwright@1.55.1

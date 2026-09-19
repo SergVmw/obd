@@ -14,11 +14,11 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.6
+## Текущая версия 0.3.7
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.6** исправляет активацию OTA-образа после успешной передачи: прошивка использует прямые операции ESP-IDF `esp_ota_*`, проверяет заголовок приложения, целевой чип, точную длину и hash образа, явно выбирает неактивный OTA-слот и читает выбор загрузчика обратно до ответа об успехе. После ответа устройство автоматически перезагружается; ручной RESET не нужен. После старта pending-образ подтверждается, а слоты, reset reason и результат предыдущего OTA доступны в сервисе без serial log.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.7** показывает номер запущенной сборки и содержимое обоих OTA-слотов прямо на физическом экране «СЕРВИС» и в верхней части веб-интерфейса. Для каждого `app0/app1` видны версия, running/boot/next роль и состояние образа. Начиная с 0.3.7 каждый app содержит собственную проверяемую H2-метку версии; ранее выпущенный 0.3.6 распознаётся по точному ELF SHA из его app descriptor.
 
-Адаптивная подсветка 0.3.5 по LDR на ADC1 GPIO6 сохранена: Авто / Ручное / Всегда день / Всегда ночь, фильтрация, раздельные задержки, обучение диапазона и live-данные. Четыре быстрых нажатия в ручном режиме переключают День/Ночь с сохранением. Config schema **6** не изменена; обновление сохраняет NVS-настройки, trip, топливную и световую калибровки. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
+Нативная OTA-защита 0.3.6 сохранена: прямые `esp_ota_*`, проверка ESP32-S3 image и точной длины, явный выбор неактивного slot, read-back boot partition, автоматическая перезагрузка и post-reboot результат. Ручной RESET не нужен. Config schema остаётся **6**; OTA сохраняет NVS-настройки, trip, топливную и световую калибровки. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
 
 ## Реализовано
 
@@ -48,6 +48,7 @@
 - Wi‑Fi captive portal и watchdog-safe raw app OTA без multipart;
 - нативная ESP-IDF OTA-запись с exact-length/hash validation, явным выбором и read-back целевого boot-слота;
 - подтверждение pending-образа и постоянная post-reboot OTA-диагностика через API/UI;
+- H2 build manifest и отображение версий `app0/app1` на GC9A01 и главной странице сервиса;
 - Wi‑Fi power save отключается на время service mode.
 
 ## Распиновка ESP32-S3
@@ -190,19 +191,19 @@ pio run -e esp32s3_n16r8 --target upload
 
 Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.6
+## Release 0.3.7
 
 ```text
-releases/h2-gauge-v0.3.6-esp32s3-n16r8.bin
-Размер: 1 072 992 байт
-SHA-256: 646babc02e7b7624a7d168c3dc03bfcc6d8b452ebdbeb411dd341aeee015f7f9
+releases/h2-gauge-v0.3.7-esp32s3-n16r8.bin
+Размер: 1 077 616 байт
+SHA-256: b5cea758be22a7480e2b6e4cc85d61ebcad72972ec94676a7e6c24c32cd648ad
 
-releases/h2-gauge-v0.3.6-esp32s3-n16r8-factory.bin
-Размер: 1 138 528 байт
-SHA-256: 3cfdf8b23d39693d38d35d351454a7953109bd98d3b6cfaeee975c4ac3753954
+releases/h2-gauge-v0.3.7-esp32s3-n16r8-factory.bin
+Размер: 1 143 152 байт
+SHA-256: a22a840ff44e37e24fc756aec73cc239fc417d96d803c6b1c6e8d8f89cef111a
 ```
 
-Первый файл — обычный app image для веб-OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для OTA и стирает сохранённые данные. Инструкция, включая безопасный одноразовый USB-переход с неисправного updater 0.3.5 без `erase_flash`: [`releases/README-v0.3.6.md`](releases/README-v0.3.6.md).
+Первый файл — обычный app image для веб-OTA 0.3.6→0.3.7. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для OTA и стирает сохранённые данные. Инструкция и чек-лист проверки смены slot: [`releases/README-v0.3.7.md`](releases/README-v0.3.7.md).
 
 ## Flash и PSRAM
 
@@ -225,7 +226,7 @@ PSRAM: 8 MB
 - LittleFS: 8064 КиБ;
 - NVS и OTA metadata в начале Flash.
 
-Веб-OTA принимает только обычный app image `.bin`. Не загружать через него bootloader, partitions, factory/merged image или образ файловой системы. Нормальное обновление: выбрать app `.bin` → дождаться серверной проверки и выбора boot-слота → прибор сам перезагрузится. Достижение 100% передачи ещё не считается успехом; интерфейс ждёт `verified:true` и `bootVerified:true`. Текущий, выбранный и следующий слоты, состояние образа, причина reset и результат прошлой попытки показываются в «Система → OTA».
+Веб-OTA принимает только обычный app image `.bin`. Не загружать через него bootloader, partitions, factory/merged image или образ файловой системы. Нормальное обновление: выбрать app `.bin` → дождаться серверной проверки и выбора boot-слота → прибор сам перезагрузится. Достижение 100% передачи ещё не считается успехом; интерфейс ждёт `verified:true` и `bootVerified:true`. Сборки в `app0/app1` постоянно видны сверху главной страницы сервиса; подробные адреса, boot/next roles, image state, reset reason и результат прошлой попытки находятся в «Система → OTA».
 
 ## Сервисный режим
 
@@ -259,6 +260,7 @@ python3 tools/embed_web.py
 python3 tools/check_brightness_integration.py
 python3 tools/check_ota_transport.py
 pio run -e esp32s3_n16r8
+python3 tools/check_firmware_manifest.py
 ```
 
 ## Шрифт и лицензия
@@ -267,7 +269,7 @@ Golos Text взят из официального upstream commit `cf2e27222937d
 
 ## Пока не реализовано или не проверено
 
-- физическая проверка прошивки 0.3.6 и реальный переход OTA 0.3.5 → 0.3.6 на ESP32-S3;
+- реальный переход OTA 0.3.6 → 0.3.7 с подтверждением автоматической смены slot и карточек обеих сборок;
 - автомобильная проверка CAN Haval;
 - BRC K-Line/KWP2000;
 - подтверждённые Haval Mode 22 DID;
