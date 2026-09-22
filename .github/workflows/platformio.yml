@@ -31,14 +31,20 @@ jobs:
           python tools/check_ota_transport.py
           python tools/check_ui_fonts.py
 
+      - name: Run browser OTA/UI regression
+        run: |
+          npm install --no-save --no-package-lock playwright@1.55.0
+          npx playwright install --with-deps chromium
+          NODE_PATH="$PWD/node_modules" node tests/web/brightness_ui.cjs
+
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
 
       - name: Check build and committed release artifacts
         run: |
           python tools/check_firmware_manifest.py
-          python tools/check_firmware_manifest.py releases/h2-gauge-v0.3.7-esp32s3-n16r8.bin --expected-version 0.3.7
-          (cd releases && sha256sum -c SHA256SUMS-v0.3.7.txt)
+          python tools/check_firmware_manifest.py releases/h2-gauge-v0.3.8-esp32s3-n16r8.bin --expected-version 0.3.8
+          (cd releases && sha256sum -c SHA256SUMS-v0.3.8.txt)
 
       - name: Upload ESP32-S3 build artifacts
         uses: actions/upload-artifact@v7

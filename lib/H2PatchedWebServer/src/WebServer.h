@@ -33,6 +33,13 @@
 enum HTTPUploadStatus { UPLOAD_FILE_START, UPLOAD_FILE_WRITE, UPLOAD_FILE_END,
                         UPLOAD_FILE_ABORTED };
 enum HTTPRawStatus { RAW_START, RAW_WRITE, RAW_END, RAW_ABORTED };
+enum HTTPRawAbortReason {
+  RAW_ABORT_NONE,
+  RAW_ABORT_IDLE_TIMEOUT,
+  RAW_ABORT_TOTAL_TIMEOUT,
+  RAW_ABORT_DISCONNECTED,
+  RAW_ABORT_HANDLER
+};
 enum HTTPClientStatus { HC_NONE, HC_WAIT_READ, HC_WAIT_CLOSE };
 enum HTTPAuthMethod { BASIC_AUTH, DIGEST_AUTH };
 
@@ -50,6 +57,12 @@ enum HTTPAuthMethod { BASIC_AUTH, DIGEST_AUTH };
 #define HTTP_MAX_POST_WAIT 5000 //ms to wait for POST data to arrive
 #define HTTP_MAX_SEND_WAIT 5000 //ms to wait for data chunk to be ACKed
 #define HTTP_MAX_CLOSE_WAIT 2000 //ms to wait for the client to close the connection
+#ifndef HTTP_RAW_IDLE_TIMEOUT_MS
+#define HTTP_RAW_IDLE_TIMEOUT_MS 2000UL
+#endif
+#ifndef HTTP_RAW_TOTAL_TIMEOUT_MS
+#define HTTP_RAW_TOTAL_TIMEOUT_MS 180000UL
+#endif
 
 #define CONTENT_LENGTH_UNKNOWN ((size_t) -1)
 #define CONTENT_LENGTH_NOT_SET ((size_t) -2)
@@ -69,9 +82,12 @@ typedef struct {
 typedef struct
 {
   HTTPRawStatus status;
+  HTTPRawAbortReason abortReason;
+  bool    abortRequested;
+  uint32_t elapsedMs;
   size_t  totalSize;   // content size
   size_t  currentSize; // size of data currently in buf
-  uint8_t buf[HTTP_UPLOAD_BUFLEN];
+  uint8_t buf[HTTP_RAW_BUFLEN];
   void    *data;       // additional data
 } HTTPRaw;
 

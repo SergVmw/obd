@@ -1,8 +1,8 @@
-# H2 Gauge 0.3.7 — актуальные проектные решения
+# H2 Gauge 0.3.8 — актуальные проектные решения
 
 **Дата:** 2026-09-19  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. Остальные автомобильные функции по-прежнему требуют проверки на физической плате и автомобиле.
+**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая аппаратно принятая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. 0.3.8 — отдельный OTA-hardening кандидат с absolute deadline, metadata preflight, structured abort errors и status recovery; до повторного теста на физическом N16R8 он не считается аппаратно принятым. Остальные автомобильные функции также требуют проверки на физической плате и автомобиле.
 
 ## 1. Назначение
 
@@ -279,7 +279,7 @@ Core dump 64 KiB
 LittleFS 8064 KiB
 ```
 
-Проверенная чистая release-сборка:
+Аппаратно подтверждённая baseline-сборка 0.3.7 (историческая запись):
 
 ```text
 RAM: 52 892 / 327 680 bytes (16.1%)
@@ -300,6 +300,18 @@ SHA-256 06b841a847fc427ddcb39923ce7a400505d99f688fcdeabf5de94cb07215654a
 Первый файл — app image для OTA. Второй — merged image для чистой записи с offset 0x0; он намеренно содержит начальную OTA data и не используется для сохранения NVS.
 
 Релиз 0.3.7 проверен PlatformIO 6.1.18, `espressif32@6.8.1` и Arduino-ESP32 2.0.17: clean-сборка успешна без warnings/errors, dependency graph выбирает project-local `H2PatchedWebServer`. OTA-validator подтверждает exact remaining-length raw read, 2-секундный timeout настоящего parser client, FreeRTOS worker/semaphore для финальных операций, включённый TWDT, journal v3, set/read-back boot partition, startup confirmation и per-slot manifests. Прошли 25 прежних host-групп и 11 OTA-diagnostics групп с ASan/UBSan, включая `interrupted_upload`, сохранённый receive progress и миграцию v2→v3. Embedded HTML 109 525 байт совпадает с 57 724-байтным gzip. Packaged app побайтно равен build output; проверены SHA-256, factory offsets/FF gaps и app payload по `0x10000`. Новый app имеет неполный 768-байтный final raw fragment, то есть тест не скрыт padding-ом. Аппаратная проверка мост 0.3.6.2→обычный OTA 0.3.7→автоматический запуск APP1 успешно завершена 2026-09-20.
+
+Программно проверенный кандидат 0.3.8:
+
+```text
+RAM: 51 156 / 327 680 bytes (15.6%)
+app Flash payload: 1 093 805 / 4 194 304 bytes (26.1%)
+app .bin: 1 094 224 bytes; final raw fragment 1 428 bytes
+SHA-256 app: a41fabdd08684473cdbbdb8df3b39654692e5a5e06508cc9658f7a34d9bf2e2d
+SHA-256 factory: 5c5e511b4b0b39d9a0a21b7c9dc92b0079f8c9162fc1aac706df4c6cb03e6bb3
+```
+
+Clean PlatformIO build завершён без warnings/errors. Прошли 25 host + 11 OTA diagnostic групп, расширенный static gate, Playwright metadata-preflight/error-recovery fixture, deterministic embedded web 112 898→58 711 байт, fonts, manifest и packaged/factory layout. Это ещё не заменяет обязательный физический OTA 0.3.7→0.3.8; подробный отчёт находится в [`../releases/README-v0.3.8.md`](../releases/README-v0.3.8.md).
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -363,6 +375,18 @@ Journal повышен до v3. `recordReceiving()` выполняется по�
 [`OTA_POSTMORTEM_2026-09-19.md`](OTA_POSTMORTEM_2026-09-19.md). Одноразовые
 recovery-образы и дампы после подтверждения удалены из чистого проекта.
 
+#### Отдельный OTA-hardening кандидат 0.3.8
+
+22 сентября 2026 принят отдельный номер 0.3.8: уже аппаратно подтверждённый 0.3.7 не превращается в hotfix с тем же номером. Idle watchdog 2 секунды сохранён, но raw parser теперь имеет также единый absolute deadline 180 секунд с wrap-safe `millis()` arithmetic. Поэтому клиент, который постоянно посылает редкие байты и никогда не достигает idle timeout, всё равно не может удерживать `handleClient()` бесконечно.
+
+`HTTPRaw` хранит abort reason, application abort request и elapsed time. Parser различает idle, total timeout, disconnect и handler rejection, вызывает `RAW_ABORTED`, затем даёт route completion handler отправить JSON и явно закрывает TCP. `ServicePortal` закрывает OTA handle, очищает active/success/read-back state, но сохраняет byte counters и machine-readable code для `/api/ota/status`. Браузер при XHR network error открывает новое соединение к status endpoint вместо безусловного сообщения «соединение потеряно».
+
+Перед полным binary POST UI получает фактические `maxImageBytes`, `probeBytes` и timeout, читает только начало локального файла и выполняет `/api/ota/preflight`. Сервер проверяет filename/size, chip ID ESP32-S3, app descriptor, движение, питание и неактивный раздел. Тот же actual body повторно проверяется в `RAW_START`/`RAW_WRITE`. Preflight не открывает handle и не расходует cooldown. Фоновые status/fuel/CAN polls во время OTA остановлены.
+
+Probe имеет compile-time размер `sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)`. Он собирается через любое число 1 436-байтных transport chunks; структуры заполняются выровненным `memcpy`, а остаток блока, завершившего probe, записывается сразу после него. Static model отдельно проверяет будущий probe больше одного network chunk. Native verify/select worker получает минимум из собственного 30-секундного лимита и остатка общего deadline; TWDT остаётся включённым, multipart остаётся запрещённым.
+
+Полный протокол, коды ошибок, программный gate и аппаратный acceptance checklist сохранены в [`OTA_HARDENING_0.3.8.md`](OTA_HARDENING_0.3.8.md).
+
 ## 11a. Адаптивная яркость — решение 2026-09-19
 
 Приняты пользовательские варианты: плавный Авто, `3.3 В → LDR → 22 кОм → GND` на ADC1 GPIO6 через 1 кОм/100 нФ, ручной День/Ночь четырьмя нажатиями с сохранением, автоматическое обучение диапазона вместо кнопок захвата. Четыре режима — Auto / Manual / AlwaysDay / AlwaysNight. Default AlwaysDay оставлен намеренно: ещё не смонтированный LDR не должен менять яркость.
@@ -389,5 +413,6 @@ POST конфигурации проверяет целочисленные ди
 10. Измерить ток, падение 5 В, температуру закрытого корпуса и поведение под солнцем.
 11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
 12. **Выполнено 2026-09-20:** app-only мост 0.3.6.2 в APP0 → штатный web OTA обычного app 0.3.7 → server verification → автоматический reboot без RESET. Подтверждены current 0.3.7, APP0 0.3.6.2, APP1 0.3.7, running=boot APP1 и image state `valid`; последний 768-байтный raw fragment прошёл без TWDT.
+13. **Ожидает выполнения для 0.3.8:** с работающего 0.3.7 пройти metadata preflight, штатный OTA обычного app 0.3.8 и автоматический reboot; подтвердить running/boot 0.3.8, противоположный slot 0.3.7, state `valid` и сохранность schema 6/NVS.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

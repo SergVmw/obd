@@ -4,6 +4,8 @@
 #include <DNSServer.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_app_format.h>
+#include <esp_image_format.h>
 #include <esp_ota_ops.h>
 #include "app_config.h"
 #include "brightness_manager.h"
@@ -43,12 +45,39 @@ class ServicePortal {
   void applyPetrolCalibration();
   void sendCanSnapshot();
   void clearCanSnapshot();
+  struct OtaCandidateValidation {
+    uint16_t httpStatus = 400;
+    uint32_t retryAfterSeconds = 0;
+    size_t maxImageBytes = 0;
+    String code;
+    String error;
+    const esp_partition_t* source = nullptr;
+    const esp_partition_t* target = nullptr;
+  };
+
+  void handleOtaPreflight();
+  void sendOtaStatus();
   void handleOtaBody();
   void handleOtaRaw();
   void handleOtaFinished();
+  bool validateOtaCandidate(const String& filename, size_t imageSize,
+                            uint32_t now,
+                            OtaCandidateValidation& validation) const;
   bool validateOtaHeader();
+  bool validateOtaProbe(const uint8_t* probe, size_t probeSize,
+                        char* descriptorVersion, size_t descriptorCapacity,
+                        String& error) const;
   bool writeOtaBytes(const uint8_t* data, size_t size);
-  void failOta(const char* message, uint16_t httpStatus = 400);
+  void rejectOtaRaw(HTTPRaw& raw, const char* code, const char* message,
+                    uint16_t httpStatus);
+  void failOta(const char* message, uint16_t httpStatus = 400,
+               const char* code = "ota_failed");
+  void sendOtaErrorResponse(uint16_t httpStatus, const String& code,
+                            const String& message, size_t receivedBytes,
+                            size_t expectedBytes,
+                            uint32_t retryAfterSeconds = 0);
+  bool otaDeadlineExpired(uint32_t now) const;
+  uint32_t otaDeadlineRemaining(uint32_t now) const;
   bool requireAction(const char* action, uint32_t& lastAcceptedAt,
                      uint32_t cooldownMs);
   void touch();
@@ -86,10 +115,17 @@ class ServicePortal {
   size_t otaExpectedSize_ = 0;
   size_t otaReceivedSize_ = 0;
   size_t otaWrittenSize_ = 0;
-  static constexpr size_t kOtaInitialBufferSize = 2048;
-  uint8_t otaInitialBuffer_[kOtaInitialBufferSize]{};
+  uint32_t otaStartedAt_ = 0;
+  static constexpr uint32_t kOtaTotalTimeoutMs =
+      HTTP_RAW_TOTAL_TIMEOUT_MS;
+  static constexpr size_t kOtaProbeSize =
+      sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) +
+      sizeof(esp_app_desc_t);
+  uint8_t otaInitialBuffer_[kOtaProbeSize]{};
   size_t otaInitialSize_ = 0;
   char otaDescriptorVersion_[33]{};
-  uint16_t otaHttpStatus_ = 400;
+  uint16_t otaHttpStatus_ = 200;
+  uint32_t otaRetryAfterSeconds_ = 0;
+  String otaErrorCode_;
   String otaError_;
 };

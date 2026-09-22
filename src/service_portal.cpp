@@ -52,7 +52,9 @@ void nativeOtaJobTask(void* parameter) {
 
 NativeOtaJobResult runNativeOtaJob(NativeOtaJob job,
                                    esp_ota_handle_t handle,
-                                   const esp_partition_t* partition) {
+                                   const esp_partition_t* partition,
+                                   uint32_t timeoutMs) {
+  const uint32_t startedAt = millis();
   NativeOtaJobContext context;
   context.job = job;
   context.handle = handle;
@@ -72,17 +74,27 @@ NativeOtaJobResult runNativeOtaJob(NativeOtaJob job,
   // but can exceed the 5 s loopTask TWDT on some flash/power combinations.
   // Keep loopTask alive while a short worker performs the blocking IDF call;
   // the watchdog remains enabled and all OTA results are still checked here.
-  // A native call that does not return in 30 s causes a controlled restart;
-  // its already-persisted phase then explains exactly where it stopped.
-  const uint32_t startedAt = millis();
-  while (xSemaphoreTake(context.done, pdMS_TO_TICKS(100)) != pdTRUE) {
-    feedLoopWDT();
-    if (millis() - startedAt >= kNativeOtaJobTimeoutMs) {
+  // A native call that does not return before its 30 s operation limit or the
+  // absolute OTA deadline causes a controlled restart; its already-persisted
+  // phase then explains exactly where it stopped. The task cannot safely be
+  // cancelled because the ESP-IDF call owns the OTA handle while it runs.
+  const uint32_t effectiveTimeout =
+      timeoutMs < kNativeOtaJobTimeoutMs ? timeoutMs
+                                         : kNativeOtaJobTimeoutMs;
+  while (true) {
+    const uint32_t elapsed = millis() - startedAt;
+    if (elapsed >= effectiveTimeout) {
       ESP_LOGE(kTag, "Native OTA finalization exceeded %lu ms; restarting",
-               static_cast<unsigned long>(kNativeOtaJobTimeoutMs));
+               static_cast<unsigned long>(effectiveTimeout));
       delay(20);
       esp_restart();
     }
+    const uint32_t remaining = effectiveTimeout - elapsed;
+    const uint32_t waitMs = remaining < 100 ? remaining : 100;
+    TickType_t waitTicks = pdMS_TO_TICKS(waitMs);
+    if (waitTicks == 0) waitTicks = 1;
+    if (xSemaphoreTake(context.done, waitTicks) == pdTRUE) break;
+    feedLoopWDT();
   }
   feedLoopWDT();
   output.result = context.result;
@@ -295,11 +307,17 @@ void ServicePortal::setupRoutes() {
     rebootAt_ = millis() + 1000;
   });
 
+  server_.on("/api/ota/preflight", HTTP_POST,
+             [this]() { handleOtaPreflight(); });
+  server_.on("/api/ota/status", HTTP_GET,
+             [this]() { sendOtaStatus(); });
+
   // The body is sent as application/octet-stream, not multipart/form-data.
   // Arduino-ESP32 2.0.17 parses multipart in one blocking byte-by-byte loop;
   // a slow AP upload can therefore starve loopTask's 5 s Task Watchdog.
   // Raw mode invokes handleOtaBody() once per 1436-byte chunk, where the WDT
-  // is fed explicitly. A stalled raw read times out instead of waiting forever.
+  // is fed explicitly. Idle and absolute deadlines abort a stalled/trickled
+  // body and still dispatch handleOtaFinished() for a structured HTTP error.
   server_.on("/api/ota", HTTP_POST,
              [this]() { handleOtaFinished(); },
              [this]() { handleOtaBody(); });
@@ -647,6 +665,14 @@ void ServicePortal::sendStatus() {
                              : "unavailable";
   ota["resetReason"] = resetReasonName(esp_reset_reason());
   ota["diagnosticsStorageHealthy"] = otaDiagnostics_.storageHealthy();
+  ota["minImageBytes"] = kMinOtaImageBytes;
+  ota["maxImageBytes"] =
+      nextPartition && nextPartition->size < kMaxOtaImageBytes
+          ? nextPartition->size
+          : kMaxOtaImageBytes;
+  ota["probeBytes"] = kOtaProbeSize;
+  ota["idleTimeoutMs"] = HTTP_RAW_IDLE_TIMEOUT_MS;
+  ota["totalTimeoutMs"] = kOtaTotalTimeoutMs;
   JsonObject lastOta = ota["last"].to<JsonObject>();
   lastOta["result"] = otaDiagnostics_.resultName();
   lastOta["phase"] = otaDiagnostics_.phaseName();
@@ -945,41 +971,309 @@ void ServicePortal::clearCanSnapshot() {
   server_.send(200, "application/json", "{\"ok\":true}");
 }
 
-bool ServicePortal::validateOtaHeader() {
-  constexpr size_t kProbeSize = sizeof(esp_image_header_t) +
-                                sizeof(esp_image_segment_header_t) +
-                                sizeof(esp_app_desc_t);
-  if (otaInitialSize_ < kProbeSize) return false;
+bool ServicePortal::validateOtaCandidate(
+    const String& filename, size_t imageSize, uint32_t now,
+    OtaCandidateValidation& validation) const {
+  validation = OtaCandidateValidation{};
+  validation.source = esp_ota_get_running_partition();
+  validation.target = esp_ota_get_next_update_partition(nullptr);
+  validation.maxImageBytes = kMaxOtaImageBytes;
+  if (validation.target && validation.target->size < validation.maxImageBytes) {
+    validation.maxImageBytes = validation.target->size;
+  }
 
-  const auto* image =
-      reinterpret_cast<const esp_image_header_t*>(otaInitialBuffer_);
-  if (image->magic != ESP_IMAGE_HEADER_MAGIC || image->segment_count == 0 ||
-      image->segment_count > 16) {
-    otaError_ = "Invalid ESP application header";
+  auto reject = [&](uint16_t status, const char* code,
+                    const char* error) {
+    validation.httpStatus = status;
+    validation.code = code;
+    validation.error = error;
+    return false;
+  };
+
+  if (otaInProgress_) {
+    return reject(409, "ota_busy", "Another OTA upload is already active");
+  }
+  if (imageSize < kMinOtaImageBytes) {
+    return reject(422, "invalid_size",
+                  "OTA app image is smaller than the minimum size");
+  }
+  if (imageSize > validation.maxImageBytes) {
+    return reject(413, "image_too_large",
+                  "OTA app image does not fit the inactive partition");
+  }
+
+  String lowerFilename = filename;
+  lowerFilename.toLowerCase();
+  if (!lowerFilename.endsWith(".bin") ||
+      lowerFilename.indexOf("factory") >= 0 ||
+      lowerFilename.indexOf("bootloader") >= 0 ||
+      lowerFilename.indexOf("partition") >= 0 ||
+      lowerFilename.indexOf("merged") >= 0 ||
+      lowerFilename.indexOf("spiffs") >= 0 ||
+      lowerFilename.indexOf("littlefs") >= 0 ||
+      lowerFilename.indexOf("filesystem") >= 0) {
+    return reject(422, "invalid_filename",
+                  "Only a normal app .bin image is accepted");
+  }
+
+  if (lastOtaAttemptAt_ != 0 &&
+      now - lastOtaAttemptAt_ < kOtaCooldownMs) {
+    validation.retryAfterSeconds =
+        (kOtaCooldownMs - (now - lastOtaAttemptAt_) + 999) / 1000;
+    return reject(429, "rate_limited", "OTA attempt rate limited");
+  }
+  if (telemetry_.rawSpeedKph.valid(now) &&
+      telemetry_.rawSpeedKph.value > 3.0f) {
+    return reject(409, "vehicle_moving", "Vehicle is moving");
+  }
+  if (telemetry_.ecuVoltage.valid(now) &&
+      telemetry_.ecuVoltage.value < 11.3f) {
+    return reject(409, "low_voltage", "Supply voltage is too low");
+  }
+  if (!validation.source || !validation.target ||
+      validation.target->address == validation.source->address ||
+      validation.target->type != ESP_PARTITION_TYPE_APP ||
+      (validation.target->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
+       validation.target->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MAX)) {
+    return reject(507, "no_target_partition",
+                  "No compatible inactive OTA partition is available");
+  }
+  return true;
+}
+
+void ServicePortal::sendOtaErrorResponse(
+    uint16_t httpStatus, const String& code, const String& message,
+    size_t receivedBytes, size_t expectedBytes,
+    uint32_t retryAfterSeconds) {
+  JsonDocument response;
+  response["ok"] = false;
+  response["status"] = httpStatus;
+  response["code"] = code.length() ? code : "ota_failed";
+  response["error"] = message.length() ? message : "OTA failed";
+  response["receivedBytes"] = receivedBytes;
+  response["expectedBytes"] = expectedBytes;
+  response["timeoutMs"] = kOtaTotalTimeoutMs;
+  if (retryAfterSeconds > 0) {
+    response["retryAfterSeconds"] = retryAfterSeconds;
+    char retryAfter[12];
+    snprintf(retryAfter, sizeof(retryAfter), "%lu",
+             static_cast<unsigned long>(retryAfterSeconds));
+    server_.sendHeader("Retry-After", retryAfter);
+  }
+  String output;
+  output.reserve(320);
+  serializeJson(response, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(httpStatus, "application/json", output);
+}
+
+void ServicePortal::handleOtaPreflight() {
+  touch();
+  if (server_.header(kActionHeader) != "ota") {
+    sendOtaErrorResponse(403, "confirmation_required",
+                         "OTA confirmation header required", 0, 0);
+    return;
+  }
+  if (!server_.hasArg("plain")) {
+    sendOtaErrorResponse(400, "invalid_preflight",
+                         "OTA preflight JSON body required", 0, 0);
+    return;
+  }
+
+  const String preflightBody = server_.arg("plain");
+  if (preflightBody.length() > kOtaProbeSize * 2U + 512U) {
+    sendOtaErrorResponse(413, "preflight_too_large",
+                         "OTA preflight request is too large", 0, 0);
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, preflightBody)) {
+    sendOtaErrorResponse(400, "invalid_preflight",
+                         "Invalid OTA preflight JSON", 0, 0);
+    return;
+  }
+  const JsonVariantConst sizeValue = request["size"];
+  const char* filename = request["filename"] | "";
+  if (!sizeValue.is<uint32_t>() || strlen(filename) == 0) {
+    sendOtaErrorResponse(422, "invalid_preflight",
+                         "Preflight requires filename and integer size", 0, 0);
+    return;
+  }
+
+  const size_t imageSize = sizeValue.as<uint32_t>();
+  OtaCandidateValidation validation;
+  if (!validateOtaCandidate(filename, imageSize, millis(), validation)) {
+    sendOtaErrorResponse(validation.httpStatus, validation.code,
+                         validation.error, 0, imageSize,
+                         validation.retryAfterSeconds);
+    return;
+  }
+
+  const String probeHex = request["probeHex"] | "";
+  if (probeHex.length() != kOtaProbeSize * 2U) {
+    sendOtaErrorResponse(422, "invalid_probe",
+                         "Preflight requires the exact ESP image metadata probe",
+                         0, imageSize);
+    return;
+  }
+  auto hexNibble = [](char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+  };
+  uint8_t probe[kOtaProbeSize];
+  for (size_t i = 0; i < kOtaProbeSize; ++i) {
+    const int high = hexNibble(probeHex[i * 2U]);
+    const int low = hexNibble(probeHex[i * 2U + 1U]);
+    if (high < 0 || low < 0) {
+      sendOtaErrorResponse(422, "invalid_probe",
+                           "Preflight metadata probe is not hexadecimal",
+                           0, imageSize);
+      return;
+    }
+    probe[i] = static_cast<uint8_t>((high << 4) | low);
+  }
+  char descriptorVersion[33]{};
+  String probeError;
+  if (!validateOtaProbe(probe, sizeof(probe), descriptorVersion,
+                        sizeof(descriptorVersion), probeError)) {
+    sendOtaErrorResponse(422, "invalid_image", probeError, 0, imageSize);
+    return;
+  }
+
+  JsonDocument response;
+  response["ok"] = true;
+  response["accepted"] = true;
+  response["size"] = imageSize;
+  response["minImageBytes"] = kMinOtaImageBytes;
+  response["maxImageBytes"] = validation.maxImageBytes;
+  response["probeBytes"] = kOtaProbeSize;
+  response["chipId"] = 9;
+  response["descriptorVersion"] = descriptorVersion;
+  response["timeoutMs"] = kOtaTotalTimeoutMs;
+  response["sourcePartition"] = validation.source->label;
+  response["targetPartition"] = validation.target->label;
+  String output;
+  output.reserve(256);
+  serializeJson(response, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendOtaStatus() {
+  touch();
+  const esp_partition_t* nextPartition =
+      esp_ota_get_next_update_partition(nullptr);
+  const size_t maxImageBytes =
+      nextPartition && nextPartition->size < kMaxOtaImageBytes
+          ? nextPartition->size
+          : kMaxOtaImageBytes;
+  JsonDocument response;
+  response["ok"] = otaError_.length() == 0;
+  response["inProgress"] = otaInProgress_;
+  response["verified"] = otaSuccess_ && otaBootVerified_;
+  response["status"] = otaHttpStatus_;
+  response["code"] = otaErrorCode_;
+  response["error"] = otaError_;
+  response["receivedBytes"] = otaReceivedSize_;
+  response["expectedBytes"] = otaExpectedSize_;
+  response["writtenBytes"] = otaWrittenSize_;
+  response["minImageBytes"] = kMinOtaImageBytes;
+  response["maxImageBytes"] = maxImageBytes;
+  response["probeBytes"] = kOtaProbeSize;
+  response["idleTimeoutMs"] = HTTP_RAW_IDLE_TIMEOUT_MS;
+  response["elapsedMs"] =
+      otaStartedAt_ != 0 ? millis() - otaStartedAt_ : 0;
+  response["timeoutMs"] = kOtaTotalTimeoutMs;
+  response["targetPartition"] =
+      OtaDiagnostics::partitionLabel(otaTargetPartition_);
+  String output;
+  output.reserve(384);
+  serializeJson(response, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+bool ServicePortal::otaDeadlineExpired(uint32_t now) const {
+  return otaInProgress_ &&
+         static_cast<uint32_t>(now - otaStartedAt_) >= kOtaTotalTimeoutMs;
+}
+
+uint32_t ServicePortal::otaDeadlineRemaining(uint32_t now) const {
+  if (!otaInProgress_) return 0;
+  const uint32_t elapsed = now - otaStartedAt_;
+  return elapsed < kOtaTotalTimeoutMs ? kOtaTotalTimeoutMs - elapsed : 0;
+}
+
+void ServicePortal::rejectOtaRaw(HTTPRaw& raw, const char* code,
+                                 const char* message,
+                                 uint16_t httpStatus) {
+  failOta(message, httpStatus, code);
+  raw.abortReason = RAW_ABORT_HANDLER;
+  raw.abortRequested = true;
+}
+
+bool ServicePortal::validateOtaHeader() {
+  String error;
+  if (!validateOtaProbe(otaInitialBuffer_, otaInitialSize_,
+                        otaDescriptorVersion_, sizeof(otaDescriptorVersion_),
+                        error)) {
+    otaError_ = error;
+    return false;
+  }
+  otaHeaderValidated_ = true;
+  return true;
+}
+
+bool ServicePortal::validateOtaProbe(const uint8_t* probe, size_t probeSize,
+                                     char* descriptorVersion,
+                                     size_t descriptorCapacity,
+                                     String& error) const {
+  if (!probe || probeSize != kOtaProbeSize) {
+    error = "Incomplete ESP image metadata probe";
+    return false;
+  }
+
+  // Copy into naturally aligned SDK structures instead of assuming that the
+  // byte probe has suitable alignment on every future toolchain.
+  esp_image_header_t image{};
+  memcpy(&image, probe, sizeof(image));
+  if (image.magic != ESP_IMAGE_HEADER_MAGIC || image.segment_count == 0 ||
+      image.segment_count > 16) {
+    error = "Invalid ESP application header";
     return false;
   }
   // ESP32-S3 is chip id 9 in the ESP image format. Rejecting a different chip
-  // here prevents a valid ESP32/ESP32-C3 image from reaching the boot selector.
+  // during preflight prevents a valid ESP32/ESP32-C3 image from being sent.
   constexpr uint16_t kEsp32S3ChipId = 9;
-  if (image->chip_id != kEsp32S3ChipId) {
-    otaError_ = "Firmware image is not for ESP32-S3";
+  if (image.chip_id != kEsp32S3ChipId) {
+    error = "Firmware image is not for ESP32-S3";
     return false;
   }
 
-  const auto* description = reinterpret_cast<const esp_app_desc_t*>(
-      otaInitialBuffer_ + sizeof(esp_image_header_t) +
-      sizeof(esp_image_segment_header_t));
-  if (description->magic_word != ESP_APP_DESC_MAGIC_WORD) {
-    otaError_ = "App descriptor missing; factory/bootloader images are forbidden";
+  esp_app_desc_t description{};
+  memcpy(&description,
+         probe + sizeof(esp_image_header_t) +
+             sizeof(esp_image_segment_header_t),
+         sizeof(description));
+  if (description.magic_word != ESP_APP_DESC_MAGIC_WORD) {
+    error = "App descriptor missing; factory/bootloader images are forbidden";
     return false;
   }
+
   // Arduino-ESP32 2.0.17 ships a framework-generated descriptor (typically
   // "esp-idf: ..."), not the H2 Gauge release number. Keep it only as a
-  // low-level image diagnostic and label it accordingly in the API.
-  memcpy(otaDescriptorVersion_, description->version,
-         sizeof(description->version));
-  otaDescriptorVersion_[sizeof(otaDescriptorVersion_) - 1] = '\0';
-  otaHeaderValidated_ = true;
+  // low-level diagnostic. Bound the copy even if a later SDK changes the field.
+  if (descriptorVersion && descriptorCapacity > 0) {
+    const size_t descriptorVersionBytes =
+        sizeof(description.version) < descriptorCapacity - 1
+            ? sizeof(description.version)
+            : descriptorCapacity - 1;
+    memcpy(descriptorVersion, description.version, descriptorVersionBytes);
+    descriptorVersion[descriptorVersionBytes] = '\0';
+  }
+  error = "";
   return true;
 }
 
@@ -995,7 +1289,8 @@ bool ServicePortal::writeOtaBytes(const uint8_t* data, size_t size) {
   return true;
 }
 
-void ServicePortal::failOta(const char* message, uint16_t httpStatus) {
+void ServicePortal::failOta(const char* message, uint16_t httpStatus,
+                            const char* code) {
   if (otaHandleOpen_) {
     const esp_err_t aborted = esp_ota_abort(otaHandle_);
     if (aborted != ESP_OK) {
@@ -1007,8 +1302,10 @@ void ServicePortal::failOta(const char* message, uint16_t httpStatus) {
   otaInProgress_ = false;
   otaSuccess_ = false;
   otaBootVerified_ = false;
-  otaExpectedSize_ = 0;
+  // Keep expected/received/written counts until the next attempt so the UI can
+  // recover a detailed error even if the upload connection itself was reset.
   otaHttpStatus_ = httpStatus;
+  otaErrorCode_ = code ? code : "ota_failed";
   otaError_ = message;
 }
 
@@ -1054,71 +1351,42 @@ void ServicePortal::handleOtaRaw() {
     otaExpectedSize_ = 0;
     otaReceivedSize_ = 0;
     otaWrittenSize_ = 0;
+    otaStartedAt_ = millis();
     otaInitialSize_ = 0;
     otaDescriptorVersion_[0] = '\0';
     otaHttpStatus_ = 400;
+    otaRetryAfterSeconds_ = 0;
+    otaErrorCode_ = "";
     otaError_ = "";
 
     if (server_.header(kActionHeader) != "ota") {
-      failOta("OTA confirmation header required", 403);
+      rejectOtaRaw(raw, "confirmation_required",
+                   "OTA confirmation header required", 403);
       return;
     }
     if (!server_.header(kContentTypeHeader).startsWith(
             "application/octet-stream")) {
-      failOta("Raw application/octet-stream body required", 415);
+      rejectOtaRaw(raw, "invalid_content_type",
+                   "Raw application/octet-stream body required", 415);
       return;
     }
 
     const size_t contentLength = server_.clientContentLength();
-    if (contentLength < kMinOtaImageBytes ||
-        contentLength > kMaxOtaImageBytes) {
-      failOta("OTA image size must be between 4 KiB and 4 MiB", 413);
+    otaExpectedSize_ = contentLength;
+    const String filename =
+        WebServer::urlDecode(server_.header(kFilenameHeader));
+    OtaCandidateValidation validation;
+    if (!validateOtaCandidate(filename, contentLength, otaStartedAt_,
+                              validation)) {
+      otaRetryAfterSeconds_ = validation.retryAfterSeconds;
+      rejectOtaRaw(raw, validation.code.c_str(), validation.error.c_str(),
+                   validation.httpStatus);
       return;
     }
 
-    String filename = WebServer::urlDecode(server_.header(kFilenameHeader));
-    String lowerFilename = filename;
-    lowerFilename.toLowerCase();
-    if (!lowerFilename.endsWith(".bin") ||
-        lowerFilename.indexOf("factory") >= 0 ||
-        lowerFilename.indexOf("bootloader") >= 0 ||
-        lowerFilename.indexOf("partition") >= 0) {
-      failOta("Only an app .bin image is accepted; factory/bootloader/partitions are forbidden",
-              422);
-      return;
-    }
-
-    const uint32_t now = millis();
-    if (lastOtaAttemptAt_ != 0 &&
-        now - lastOtaAttemptAt_ < kOtaCooldownMs) {
-      failOta("OTA attempt rate limited", 429);
-      return;
-    }
-    lastOtaAttemptAt_ = now;
-
-    if (telemetry_.rawSpeedKph.valid(now) &&
-        telemetry_.rawSpeedKph.value > 3.0f) {
-      failOta("Vehicle is moving", 409);
-      return;
-    }
-    if (telemetry_.ecuVoltage.valid(now) &&
-        telemetry_.ecuVoltage.value < 11.3f) {
-      failOta("Supply voltage is too low", 409);
-      return;
-    }
-
-    otaSourcePartition_ = esp_ota_get_running_partition();
-    otaTargetPartition_ = esp_ota_get_next_update_partition(nullptr);
-    if (!otaSourcePartition_ || !otaTargetPartition_ ||
-        otaTargetPartition_->address == otaSourcePartition_->address ||
-        otaTargetPartition_->type != ESP_PARTITION_TYPE_APP ||
-        (otaTargetPartition_->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
-         otaTargetPartition_->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) ||
-        contentLength > otaTargetPartition_->size) {
-      failOta("No compatible inactive OTA partition or image is too large", 507);
-      return;
-    }
-
+    otaSourcePartition_ = validation.source;
+    otaTargetPartition_ = validation.target;
+    lastOtaAttemptAt_ = otaStartedAt_;
     const esp_err_t begun =
         esp_ota_begin(otaTargetPartition_, contentLength, &otaHandle_);
     if (begun != ESP_OK) {
@@ -1126,12 +1394,12 @@ void ServicePortal::handleOtaRaw() {
                otaTargetPartition_->label,
                static_cast<unsigned long>(otaTargetPartition_->address),
                esp_err_to_name(begun));
-      failOta("ESP-IDF could not open the inactive OTA partition", 507);
+      rejectOtaRaw(raw, "ota_begin_failed",
+                   "ESP-IDF could not open the inactive OTA partition", 507);
       return;
     }
 
     otaHandleOpen_ = true;
-    otaExpectedSize_ = contentLength;
     otaAllowed_ = true;
     otaInProgress_ = true;
     // Commit the attempt before Parsing.cpp starts its synchronous body loop.
@@ -1154,35 +1422,46 @@ void ServicePortal::handleOtaRaw() {
     if (!otaAllowed_ || !otaInProgress_) return;
     const size_t receivedBefore = otaReceivedSize_;
     otaReceivedSize_ += raw.currentSize;
+    if (otaDeadlineExpired(millis())) {
+      rejectOtaRaw(raw, "total_timeout",
+                   "OTA exceeded the absolute upload deadline", 408);
+      return;
+    }
     if (otaReceivedSize_ > otaExpectedSize_) {
-      failOta("Received more bytes than Content-Length", 422);
+      rejectOtaRaw(raw, "length_overflow",
+                   "Received more bytes than Content-Length", 422);
       return;
     }
 
+    const uint8_t* chunk = raw.buf;
+    size_t chunkSize = raw.currentSize;
     if (!otaHeaderValidated_) {
-      if (otaInitialSize_ + raw.currentSize > sizeof(otaInitialBuffer_)) {
-        failOta("Application header did not fit validation buffer", 422);
-        return;
-      }
-      memcpy(otaInitialBuffer_ + otaInitialSize_, raw.buf, raw.currentSize);
-      otaInitialSize_ += raw.currentSize;
-      constexpr size_t kProbeSize = sizeof(esp_image_header_t) +
-                                    sizeof(esp_image_segment_header_t) +
-                                    sizeof(esp_app_desc_t);
-      if (otaInitialSize_ >= kProbeSize) {
+      const size_t probeRemaining = kOtaProbeSize - otaInitialSize_;
+      const size_t probeBytes =
+          chunkSize < probeRemaining ? chunkSize : probeRemaining;
+      memcpy(otaInitialBuffer_ + otaInitialSize_, chunk, probeBytes);
+      otaInitialSize_ += probeBytes;
+      chunk += probeBytes;
+      chunkSize -= probeBytes;
+
+      if (otaInitialSize_ == kOtaProbeSize) {
         if (!validateOtaHeader()) {
           const String error = otaError_;
-          failOta(error.c_str(), 422);
+          rejectOtaRaw(raw, "invalid_image", error.c_str(), 422);
           return;
         }
         if (!writeOtaBytes(otaInitialBuffer_, otaInitialSize_)) {
-          failOta("Flash write failed", 500);
+          rejectOtaRaw(raw, "flash_write_failed", "Flash write failed", 500);
           return;
         }
         otaInitialSize_ = 0;
+        if (chunkSize > 0 && !writeOtaBytes(chunk, chunkSize)) {
+          rejectOtaRaw(raw, "flash_write_failed", "Flash write failed", 500);
+          return;
+        }
       }
-    } else if (!writeOtaBytes(raw.buf, raw.currentSize)) {
-      failOta("Flash write failed", 500);
+    } else if (!writeOtaBytes(chunk, chunkSize)) {
+      rejectOtaRaw(raw, "flash_write_failed", "Flash write failed", 500);
       return;
     }
 
@@ -1201,10 +1480,15 @@ void ServicePortal::handleOtaRaw() {
     feedLoopWDT();
   } else if (raw.status == RAW_END) {
     if (!otaAllowed_ || !otaInProgress_) return;
+    if (otaDeadlineExpired(millis())) {
+      failOta("OTA exceeded the absolute upload deadline", 408,
+              "total_timeout");
+      return;
+    }
     if (raw.totalSize != otaExpectedSize_ ||
         otaReceivedSize_ != otaExpectedSize_ ||
         otaWrittenSize_ != otaExpectedSize_ || !otaHeaderValidated_) {
-      failOta("Incomplete OTA image", 422);
+      failOta("Incomplete OTA image", 422, "incomplete_image");
       return;
     }
 
@@ -1214,8 +1498,14 @@ void ServicePortal::handleOtaRaw() {
         otaSourcePartition_, otaTargetPartition_, otaExpectedSize_,
         otaDescriptorVersion_);
 
-    const NativeOtaJobResult endJob =
-        runNativeOtaJob(NativeOtaJob::EndImage, otaHandle_, nullptr);
+    uint32_t remaining = otaDeadlineRemaining(millis());
+    if (remaining == 0) {
+      failOta("OTA deadline expired before image verification", 408,
+              "total_timeout");
+      return;
+    }
+    const NativeOtaJobResult endJob = runNativeOtaJob(
+        NativeOtaJob::EndImage, otaHandle_, nullptr, remaining);
     if (endJob.started) otaHandleOpen_ = false;  // esp_ota_end consumes it.
     if (!endJob.started || endJob.result != ESP_OK) {
       const esp_err_t error =
@@ -1225,14 +1515,26 @@ void ServicePortal::handleOtaRaw() {
           otaDiagnosticsRecorded_;
       ESP_LOGE(kTag, "esp_ota_end validation failed: %s",
                esp_err_to_name(error));
-      failOta("ESP image checksum/hash verification failed", 422);
+      failOta("ESP image checksum/hash verification failed", 422,
+              "image_verification_failed");
+      return;
+    }
+    if (otaDeadlineExpired(millis())) {
+      failOta("OTA deadline expired after image verification", 408,
+              "total_timeout");
       return;
     }
     otaDiagnosticsRecorded_ =
         otaDiagnostics_.recordImageVerified() && otaDiagnosticsRecorded_;
 
-    const NativeOtaJobResult selectJob =
-        runNativeOtaJob(NativeOtaJob::SelectBoot, 0, otaTargetPartition_);
+    remaining = otaDeadlineRemaining(millis());
+    if (remaining == 0) {
+      failOta("OTA deadline expired before boot selection", 408,
+              "total_timeout");
+      return;
+    }
+    const NativeOtaJobResult selectJob = runNativeOtaJob(
+        NativeOtaJob::SelectBoot, 0, otaTargetPartition_, remaining);
     if (!selectJob.started || selectJob.result != ESP_OK) {
       const esp_err_t error =
           selectJob.started ? selectJob.result : ESP_ERR_NO_MEM;
@@ -1241,12 +1543,28 @@ void ServicePortal::handleOtaRaw() {
           otaDiagnosticsRecorded_;
       ESP_LOGE(kTag, "esp_ota_set_boot_partition failed: %s",
                esp_err_to_name(error));
-      failOta("Image is valid but boot partition selection failed", 500);
+      failOta("Image is valid but boot partition selection failed", 500,
+              "boot_selection_failed");
       return;
     }
+
     const esp_partition_t* configured = esp_ota_get_boot_partition();
     otaBootVerified_ = configured &&
                        configured->address == otaTargetPartition_->address;
+    if (otaDeadlineExpired(millis())) {
+      otaDiagnosticsRecorded_ =
+          otaDiagnostics_.recordBootSelectionFailed(ESP_ERR_TIMEOUT) &&
+          otaDiagnosticsRecorded_;
+      const NativeOtaJobResult restoreJob = runNativeOtaJob(
+          NativeOtaJob::SelectBoot, 0, otaSourcePartition_,
+          kNativeOtaJobTimeoutMs);
+      if (!restoreJob.started || restoreJob.result != ESP_OK) {
+        ESP_LOGE(kTag, "Could not restore source boot partition after timeout");
+      }
+      failOta("OTA deadline expired after boot selection", 408,
+              "total_timeout");
+      return;
+    }
     if (!otaBootVerified_) {
       ESP_LOGE(kTag, "Boot selector mismatch: expected 0x%06lx, got 0x%06lx",
                static_cast<unsigned long>(otaTargetPartition_->address),
@@ -1255,12 +1573,14 @@ void ServicePortal::handleOtaRaw() {
           otaDiagnostics_.recordBootSelectionFailed(ESP_ERR_INVALID_STATE) &&
           otaDiagnosticsRecorded_;
       // Do not leave a silently selected image after returning HTTP failure.
-      const NativeOtaJobResult restoreJob =
-          runNativeOtaJob(NativeOtaJob::SelectBoot, 0, otaSourcePartition_);
+      const NativeOtaJobResult restoreJob = runNativeOtaJob(
+          NativeOtaJob::SelectBoot, 0, otaSourcePartition_,
+          kNativeOtaJobTimeoutMs);
       if (!restoreJob.started || restoreJob.result != ESP_OK) {
         ESP_LOGE(kTag, "Could not restore source boot partition after mismatch");
       }
-      failOta("Boot partition read-back did not match the OTA target", 500);
+      failOta("Boot partition read-back did not match the OTA target", 500,
+              "boot_readback_mismatch");
       return;
     }
 
@@ -1271,13 +1591,37 @@ void ServicePortal::handleOtaRaw() {
     otaInProgress_ = false;
     otaSuccess_ = true;
     otaHttpStatus_ = 200;
+    otaErrorCode_ = "";
+    otaError_ = "";
     ESP_LOGI(kTag,
              "Raw OTA verified: %u bytes, descriptor=%s, next boot=%s@0x%06lx",
              static_cast<unsigned>(otaReceivedSize_), otaDescriptorVersion_,
              configured->label,
              static_cast<unsigned long>(configured->address));
   } else if (raw.status == RAW_ABORTED) {
-    failOta("Upload stalled or was aborted", 408);
+    switch (raw.abortReason) {
+      case RAW_ABORT_HANDLER:
+        if (otaError_.length() == 0) {
+          failOta("OTA request rejected", 400, "request_rejected");
+        }
+        break;
+      case RAW_ABORT_TOTAL_TIMEOUT:
+        failOta("OTA exceeded the absolute upload deadline", 408,
+                "total_timeout");
+        break;
+      case RAW_ABORT_IDLE_TIMEOUT:
+        failOta("No OTA upload progress for 2 seconds", 408,
+                "idle_timeout");
+        break;
+      case RAW_ABORT_DISCONNECTED:
+        failOta("OTA client disconnected before completion", 408,
+                "client_disconnected");
+        break;
+      case RAW_ABORT_NONE:
+      default:
+        failOta("OTA upload was aborted", 408, "upload_aborted");
+        break;
+    }
   }
 }
 
@@ -1287,13 +1631,13 @@ void ServicePortal::handleOtaFinished() {
   // Check again in the request-completion handler: a body-less POST must not
   // bypass confirmation or reuse a prior success state.
   if (server_.header(kActionHeader) != "ota") {
-    failOta("OTA confirmation header required", 403);
+    failOta("OTA confirmation header required", 403,
+            "confirmation_required");
   }
   if (!otaSuccess_ || !otaBootVerified_ || !otaTargetPartition_) {
-    if (otaHttpStatus_ == 429) server_.sendHeader("Retry-After", "30");
-    server_.sendHeader("Cache-Control", "no-store");
-    server_.send(otaHttpStatus_, "text/plain",
-                 otaError_.length() ? otaError_ : "OTA failed");
+    sendOtaErrorResponse(otaHttpStatus_, otaErrorCode_, otaError_,
+                         otaReceivedSize_, otaExpectedSize_,
+                         otaRetryAfterSeconds_);
     return;
   }
 
@@ -1303,6 +1647,9 @@ void ServicePortal::handleOtaFinished() {
   response["bootVerified"] = true;
   response["rebooting"] = true;
   response["bytes"] = otaReceivedSize_;
+  response["elapsedMs"] =
+      otaStartedAt_ != 0 ? millis() - otaStartedAt_ : 0;
+  response["timeoutMs"] = kOtaTotalTimeoutMs;
   response["descriptorVersion"] = otaDescriptorVersion_;
   response["sourcePartition"] = otaSourcePartition_->label;
   response["sourceAddress"] = otaSourcePartition_->address;

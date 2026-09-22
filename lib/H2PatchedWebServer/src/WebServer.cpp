@@ -304,7 +304,15 @@ void WebServer::handleClient() {
           // it must be divided by 1000
           _currentClient.setTimeout(HTTP_MAX_SEND_WAIT / 1000);
           _contentLength = CONTENT_LENGTH_NOT_SET;
+          const bool closeAbortedRaw =
+              _currentRaw && _currentRaw->status == RAW_ABORTED;
           _handleRequest();
+          if (closeAbortedRaw) {
+            // The completion handler has written the structured 4xx response.
+            // Do not leave a half-uploaded keep-alive socket attached to the
+            // sole synchronous WebServer client.
+            _currentClient.stop();
+          }
 
 // Fix for issue with Chrome based browsers: https://github.com/espressif/arduino-esp32/issues/3652
 //           if (_currentClient.connected()) {

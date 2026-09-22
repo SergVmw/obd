@@ -9,7 +9,9 @@ const vm = require('node:vm');
 (async () => {
   const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8');
   let saved = vm.runInNewContext('(' + html.match(/const DEFAULT_CONFIG=(.*);\n/)[1] + ')');
-  let posts = 0, resetHeader = '', otaHeader = '', otaBytes = 0, offline = false;
+  let posts = 0, resetHeader = '', otaHeader = '', otaPreflightHeader = '';
+  let otaBytes = 0, otaPreflights = 0, otaBehavior = 'jsonError';
+  let otaPreflightReject = true, otaStatusError = null, offline = false;
   let otaLast = { result: 'applied', phase: 'boot_selected', resetReason: 'software', attempt: 1,
     sourceAddress: 0x410000, targetAddress: 0x10000, imageSize: 1080640,
     receivedSize: 1080640, descriptorVersion: 'fixture' };
@@ -39,13 +41,14 @@ const vm = require('node:vm');
       }
       if (url.pathname === '/api/status') {
         if (offline) return route.fulfill({ status: 503, body: 'test offline' });
-        return json({ version: '0.3.7', target: 'ESP32-S3', obdConnected: false,
+        return json({ version: '0.3.8', target: 'ESP32-S3', obdConnected: false,
           boostBar: null, fuelMode: '95', ota: { runningPartition: 'app0', runningAddress: 0x10000,
+            maxImageBytes: 2097152, probeBytes: 288, idleTimeoutMs: 2000, totalTimeoutMs: 180000,
             bootPartition: 'app0', bootAddress: 0x10000, nextPartition: 'app1', nextAddress: 0x410000,
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
             slots: [
               { partition: 'app0', address: 0x10000, descriptorReadable: true,
-                versionKnown: true, version: '0.3.7', versionSource: 'manifest',
+                versionKnown: true, version: '0.3.8', versionSource: 'manifest',
                 running: true, bootSelected: true, nextUpdate: false, state: 'valid' },
               { partition: 'app1', address: 0x410000, descriptorReadable: true,
                 versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
@@ -60,9 +63,45 @@ const vm = require('node:vm');
         sample.observedMinAdc = sample.observedMaxAdc = null;
         return json({ ok: true });
       }
+      if (url.pathname === '/api/ota/preflight') {
+        otaPreflightHeader = req.headers()['x-h2g-action'];
+        const body = req.postDataJSON();
+        ++otaPreflights;
+        assert.equal(body.filename, 'h2-gauge-v0.3.8-esp32s3-n16r8.bin');
+        assert.equal(body.size, 5000);
+        assert.equal(body.probeHex.length, 576);
+        assert.match(body.probeHex, /^(a5)+$/);
+        if (otaPreflightReject) {
+          otaPreflightReject = false;
+          return route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({
+            ok: false, status: 422, code: 'invalid_image',
+            error: 'Firmware image is not for ESP32-S3' }) });
+        }
+        return json({ ok: true, accepted: true, imageSize: body.size,
+          maxImageBytes: 2097152, targetPartition: 'app1', timeoutMs: 180000 });
+      }
+      if (url.pathname === '/api/ota/status') {
+        return json({ ok: true, inProgress: false, error: '', code: '',
+          minImageBytes: 4096, maxImageBytes: 2097152, probeBytes: 288,
+          timeoutMs: 180000, ...(otaStatusError || {}) });
+      }
       if (url.pathname === '/api/ota') {
         otaHeader = req.headers()['x-h2g-action'];
         otaBytes = req.postDataBuffer().length;
+        if (otaBehavior === 'jsonError') {
+          otaBehavior = 'networkError';
+          return route.fulfill({ status: 408, contentType: 'application/json', body: JSON.stringify({
+            ok: false, status: 408, code: 'total_timeout', error: 'absolute deadline',
+            receivedBytes: 4096, expectedBytes: otaBytes, timeoutMs: 180000 }) });
+        }
+        if (otaBehavior === 'networkError') {
+          otaBehavior = 'success';
+          otaStatusError = { ok: false, status: 408, code: 'idle_timeout',
+            error: 'No OTA upload progress for 2 seconds', receivedBytes: 2048,
+            expectedBytes: otaBytes, timeoutMs: 180000 };
+          return route.abort('connectionreset');
+        }
+        otaStatusError = null;
         return json({ ok: true, verified: true, bootVerified: true, rebooting: true,
           bytes: otaBytes, sourcePartition: 'app0', targetPartition: 'app1' });
       }
@@ -71,10 +110,10 @@ const vm = require('node:vm');
     });
     await page.goto('http://h2g.test/');
     await page.waitForFunction(() => document.getElementById('lightRaw').textContent === '1830');
-    assert.equal(await page.locator('#otaFirmware').textContent(), '0.3.7');
-    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.3.7');
+    assert.equal(await page.locator('#otaFirmware').textContent(), '0.3.8');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.3.8');
     assert.equal(await page.locator('#slotCurrentMeta').textContent(), 'app0 · запущена');
-    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.3.7');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.3.8');
     assert.match(await page.locator('#slotApp0Meta').textContent(), /запущен/);
     assert.equal(await page.locator('#slotApp0Card').getAttribute('class'), 'card slotCard running');
     assert.equal(await page.locator('#slotApp1Version').textContent(), '0.3.6');
@@ -152,12 +191,31 @@ const vm = require('node:vm');
     await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-factory.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000) });
     assert.equal(await page.locator('#install').isDisabled(), true);
     assert.match(await page.locator('#otaText').textContent(), /только app-образ/);
-    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.3.6-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
+    await page.locator('#firmware').setInputFiles({ name: 'too-large.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2097153) });
+    assert.equal(await page.locator('#install').isDisabled(), true);
+    assert.match(await page.locator('#otaText').textContent(), /2\.00 МБ/);
+    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.3.8-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
+    assert.equal(await page.locator('#install').isEnabled(), true);
+    await page.click('#install');
+    await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[invalid_image]'));
+    assert.match(await page.locator('#otaText').textContent(), /not for ESP32-S3/);
+    assert.equal(otaBytes, 0, 'binary body was sent after rejected preflight');
+    assert.equal(await page.locator('#install').isEnabled(), true);
+    await page.click('#install');
+    await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[total_timeout]'));
+    assert.match(await page.locator('#otaText').textContent(), /4096 из 5000 байт/);
+    assert.equal(await page.locator('#install').isEnabled(), true);
+    await page.click('#install');
+    await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[idle_timeout]'));
+    assert.match(await page.locator('#otaText').textContent(), /2048 из 5000 байт/);
     assert.equal(await page.locator('#install').isEnabled(), true);
     await page.click('#install');
     await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('выбран app1'));
+    assert.equal(otaPreflightHeader, 'ota');
+    assert.equal(otaPreflights, 4);
     assert.equal(otaHeader, 'ota');
     assert.equal(otaBytes, 5000);
+    await page.evaluate(() => { otaActive = false; }); // simulate post-reboot page lifecycle
     await page.click('button[data-tab="display"]');
     offline = true;
     await page.evaluate(() => status());
@@ -184,6 +242,6 @@ const vm = require('node:vm');
       await page.screenshot({ path: process.env.H2G_UI_SCREENSHOT });
     }
     assert.deepEqual(errors, []);
-    console.log('PASS browser: brightness/live data, slot cards, interrupted-upload progress, verified OTA UI, validation/reset, stale-state clearing, 360–1280 px layouts');
+    console.log('PASS browser: brightness/live data, slot cards, dynamic OTA limit, metadata preflight rejection, structured OTA errors/status recovery, verified install, validation/reset, stale-state clearing, 360–1280 px layouts');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

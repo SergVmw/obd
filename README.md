@@ -14,13 +14,13 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущая версия 0.3.7
+## Текущий кандидат 0.3.8
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.7** показывает номер запущенной сборки и содержимое обоих OTA-слотов прямо на физическом экране «СЕРВИС» и в верхней части веб-интерфейса. Для каждого `app0/app1` видны версия, running/boot/next роль и состояние образа. Начиная с 0.3.7 каждый app содержит собственную проверяемую H2-метку версии; ранее выпущенный 0.3.6 распознаётся по точному ELF SHA из его app descriptor.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.8** сохраняет вывод номера запущенной сборки и содержимого обоих OTA-слотов на физическом экране «СЕРВИС» и в верхней части web UI. Для каждого `app0/app1` видны версия, running/boot/next роль и состояние образа. Начиная с 0.3.7 каждый app содержит собственную проверяемую H2-метку версии; ранее выпущенный 0.3.6 распознаётся по точному ELF SHA из его app descriptor.
 
-APP1-форензика второго reset доказала ошибку raw-парсера Arduino-ESP32 2.0.17: последний неполный блок запрашивался как полные 1 436 байт, ожидание данных за `Content-Length` длилось пять секунд и сталкивалось с 5-секундным TWDT. Проект использует source-local `H2PatchedWebServer`: read ограничен точным остатком, watchdog кормится внутри receive-loop, а отсутствие прогресса ограничено двумя секундами. Worker для `esp_ota_end()`/boot selection, обязательный read-back и rollback-защита сохранены. Journal v3 добавляет `receiving` и receive progress до `verifying` / `image_verified` / `boot_selected`.
+APP1-форензика второго reset доказала ошибку raw-парсера Arduino-ESP32 2.0.17: последний неполный блок запрашивался как полные 1 436 байт, ожидание данных за `Content-Length` длилось пять секунд и сталкивалось с 5-секундным TWDT. Проект использует source-local `H2PatchedWebServer`: read ограничен точным остатком, watchdog кормится внутри receive-loop, а отсутствие прогресса ограничено двумя секундами. В 0.3.8 добавлены непродлеваемый 180-секундный deadline, структурированный `RAW_ABORTED` с явным TCP close, metadata preflight ESP32-S3 и status recovery браузера. Worker для `esp_ota_end()`/boot selection, обязательный read-back, rollback-защита и journal v3 сохранены.
 
-**20 сентября 2026 исправление подтверждено на приборе:** обычный app `.bin` 0.3.7 прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. Подробности сохранены в [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md). Config schema остаётся **6**; NVS-настройки, trip, топливная и световая калибровки сохраняются. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
+**20 сентября 2026 исправление 0.3.7 подтверждено на приборе:** обычный app `.bin` прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. **0.3.8 пока является отдельным программно проверяемым кандидатом и требует такого же аппаратного OTA acceptance.** Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); решение 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md). Config schema остаётся **6**; NVS-настройки, trip, топливная и световая калибровки сохраняются. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
 
 История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
@@ -49,7 +49,7 @@ APP1-форензика второго reset доказала ошибку raw-�
 - адаптивный LDR-контроллер яркости, PWM GPIO7, автоматическое обучение диапазона;
 - ручной День/Ночь четырьмя нажатиями с сохранением в NVS;
 - NVS config schema 6 с миграцией schema 5;
-- Wi‑Fi captive portal и watchdog-safe raw app OTA без multipart;
+- Wi‑Fi captive portal и watchdog-safe raw app OTA без multipart, с metadata preflight, idle/absolute timeout и status recovery;
 - нативная ESP-IDF OTA-запись с exact-length/hash validation, явным выбором и read-back целевого boot-слота;
 - подтверждение pending-образа и постоянная post-reboot OTA-диагностика через API/UI;
 - H2 build manifest и отображение версий `app0/app1` на GC9A01 и главной странице сервиса;
@@ -194,21 +194,21 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` собирает только environment `esp32s3_n16r8` и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, собирает только environment `esp32s3_n16r8`, сверяет committed 0.3.8 release artifacts и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release 0.3.7
+## Release candidate 0.3.8
 
 ```text
-releases/h2-gauge-v0.3.7-esp32s3-n16r8.bin
-Размер: 1 080 640 байт
-SHA-256: dc3b7d3b844481dde00db41c97deedc6204884d87c86ee156f6835b5d5ec652e
+releases/h2-gauge-v0.3.8-esp32s3-n16r8.bin
+Размер: 1 094 224 байт
+SHA-256: a41fabdd08684473cdbbdb8df3b39654692e5a5e06508cc9658f7a34d9bf2e2d
 
-releases/h2-gauge-v0.3.7-esp32s3-n16r8-factory.bin
-Размер: 1 146 176 байт
-SHA-256: 06b841a847fc427ddcb39923ce7a400505d99f688fcdeabf5de94cb07215654a
+releases/h2-gauge-v0.3.8-esp32s3-n16r8-factory.bin
+Размер: 1 159 760 байт
+SHA-256: 5c5e511b4b0b39d9a0a21b7c9dc92b0079f8c9162fc1aac706df4c6cb03e6bb3
 ```
 
-Первый файл — аппаратно подтверждённый обычный app image для веб-OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA и стирает сохранённые данные. Контрольные суммы, исправление и результаты проверки: [`releases/README-v0.3.7.md`](releases/README-v0.3.7.md).
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA и стирает сохранённые данные. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **аппаратное OTA acceptance 0.3.8 ещё требуется**. Полный release report: [`releases/README-v0.3.8.md`](releases/README-v0.3.8.md).
 
 ## Flash и PSRAM
 

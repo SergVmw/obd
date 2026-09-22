@@ -13,6 +13,7 @@ TARGET = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', version_text).group(1)
 APP = ROOT / f"releases/h2-gauge-v{VERSION}-{TARGET}.bin"
 FACTORY = ROOT / f"releases/h2-gauge-v{VERSION}-{TARGET}-factory.bin"
 SUMS = ROOT / f"releases/SHA256SUMS-v{VERSION}.txt"
+RELEASE_README = ROOT / f"releases/README-v{VERSION}.md"
 BOOT_APP0 = PIO / "packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
 
 
@@ -47,6 +48,8 @@ assert len(factory) == 0x10000 + len(app)
 expected = "".join(f"{sha(path)}  {path.name}\n" for path in (APP, FACTORY))
 assert SUMS.read_text("ascii") == expected
 assert sorted(path.name for path in (ROOT / "releases").glob("h2-gauge-v*.bin")) == sorted((APP.name, FACTORY.name))
+assert RELEASE_README.is_file()
+assert [path.name for path in (ROOT / "releases").glob("README-v*.md")] == [RELEASE_README.name]
 
 print(
     f"Artifacts OK: app={len(app)} ({len(app) % 1436}-byte final raw "

@@ -17,6 +17,7 @@ TARGET = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', version_text).group(1)
 APP = RELEASES / f"h2-gauge-v{VERSION}-{TARGET}.bin"
 FACTORY = RELEASES / f"h2-gauge-v{VERSION}-{TARGET}-factory.bin"
 SUMS = RELEASES / f"SHA256SUMS-v{VERSION}.txt"
+RELEASE_README = RELEASES / f"README-v{VERSION}.md"
 
 for name in ("firmware.bin", "bootloader.bin", "partitions.bin"):
     path = BUILD / name
@@ -51,6 +52,9 @@ for path in RELEASES.glob("h2-gauge-v*.bin"):
         path.unlink()
 for path in RELEASES.glob("SHA256SUMS-v*.txt"):
     if path != SUMS:
+        path.unlink()
+for path in RELEASES.glob("README-v*.md"):
+    if path != RELEASE_README:
         path.unlink()
 SUMS.write_text(
     "".join(f"{digest(path)}  {path.name}\n" for path in (APP, FACTORY)),

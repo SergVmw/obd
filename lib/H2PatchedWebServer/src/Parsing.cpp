@@ -45,13 +45,24 @@ static char* readBytesWithTimeout(WiFiClient& client, size_t maxLength, size_t& 
 {
   char *buf = nullptr;
   dataLength = 0;
+  const uint32_t startedAt = millis();
   while (dataLength < maxLength) {
-    int tries = timeout_ms;
-    size_t newLength;
-    while (!(newLength = client.available()) && tries--) delay(1);
-    if (!newLength) {
+    int available = 0;
+    while ((available = client.available()) <= 0) {
+      feedLoopWDT();
+      if (!client.connected() ||
+          static_cast<uint32_t>(millis() - startedAt) >=
+              static_cast<uint32_t>(timeout_ms)) {
+        break;
+      }
+      delay(1);
+    }
+    if (available <= 0) {
       break;
     }
+    size_t newLength = static_cast<size_t>(available);
+    const size_t remaining = maxLength - dataLength;
+    if (newLength > remaining) newLength = remaining;
     if (!buf) {
       buf = (char *) malloc(newLength + 1);
       if (!buf) {
@@ -66,8 +77,10 @@ static char* readBytesWithTimeout(WiFiClient& client, size_t maxLength, size_t& 
       }
       buf = newBuf;
     }
-    client.readBytes(buf + dataLength, newLength);
-    dataLength += newLength;
+    const int received = client.read(
+        reinterpret_cast<uint8_t*>(buf + dataLength), newLength);
+    if (received <= 0) break;
+    dataLength += static_cast<size_t>(received);
     buf[dataLength] = '\0';
   }
   return buf;
@@ -76,13 +89,24 @@ static char* readBytesWithTimeout(WiFiClient& client, size_t maxLength, size_t& 
 // H2 Gauge's raw upload is parsed synchronously on loopTask. Stream::readBytes
 // cannot feed that task's watchdog while it waits and its timeout is measured
 // per byte, so a slow trickle can keep one call alive beyond the TWDT interval.
-// Read only currently available bytes, feed on every pass, and bound idle time.
+// Read only currently available bytes, feed on every pass, and enforce both an
+// idle timeout and one absolute deadline for the complete HTTP body.
 static size_t readRawBodyChunk(WiFiClient& client, uint8_t* buffer,
-                               size_t requested) {
-  constexpr uint32_t kRawIdleTimeoutMs = 2000;
+                               size_t requested, uint32_t rawStartedAt,
+                               HTTPRawAbortReason& abortReason) {
+  constexpr uint32_t kRawIdleTimeoutMs = HTTP_RAW_IDLE_TIMEOUT_MS;
+  constexpr uint32_t kRawTotalTimeoutMs = HTTP_RAW_TOTAL_TIMEOUT_MS;
   size_t received = 0;
   uint32_t lastProgressAt = millis();
+  abortReason = RAW_ABORT_NONE;
   while (received < requested) {
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - rawStartedAt) >=
+        kRawTotalTimeoutMs) {
+      abortReason = RAW_ABORT_TOTAL_TIMEOUT;
+      break;
+    }
+
     const int available = client.available();
     if (available > 0) {
       size_t take = static_cast<size_t>(available);
@@ -98,9 +122,13 @@ static size_t readRawBodyChunk(WiFiClient& client, uint8_t* buffer,
     }
 
     feedLoopWDT();
-    if (!client.connected() ||
-        static_cast<uint32_t>(millis() - lastProgressAt) >=
-            kRawIdleTimeoutMs) {
+    if (!client.connected()) {
+      abortReason = RAW_ABORT_DISCONNECTED;
+      break;
+    }
+    if (static_cast<uint32_t>(millis() - lastProgressAt) >=
+        kRawIdleTimeoutMs) {
+      abortReason = RAW_ABORT_IDLE_TIMEOUT;
       break;
     }
     delay(1);
@@ -216,15 +244,36 @@ bool WebServer::_parseRequest(WiFiClient& client) {
       // Two seconds permits normal Wi-Fi jitter but makes a stalled raw body
       // abort cleanly before the 5 s watchdog.
       client.setTimeout(2);
+      const uint32_t rawStartedAt = millis();
+      bool rawAborted = false;
       _currentRaw.reset(new HTTPRaw());
       _currentRaw->status = RAW_START;
+      _currentRaw->abortReason = RAW_ABORT_NONE;
+      _currentRaw->abortRequested = false;
+      _currentRaw->elapsedMs = 0;
       _currentRaw->totalSize = 0;
       _currentRaw->currentSize = 0;
+
+      auto abortRaw = [&](HTTPRawAbortReason reason) {
+        _currentRaw->abortReason = reason;
+        _currentRaw->elapsedMs = millis() - rawStartedAt;
+        _currentRaw->status = RAW_ABORTED;
+        _currentHandler->raw(*this, _currentUri, *_currentRaw);
+        rawAborted = true;
+      };
+
       log_v("Start Raw");
       _currentHandler->raw(*this, _currentUri, *_currentRaw);
-      _currentRaw->status = RAW_WRITE;
+      if (_currentRaw->abortRequested) {
+        abortRaw(_currentRaw->abortReason == RAW_ABORT_NONE
+                     ? RAW_ABORT_HANDLER
+                     : _currentRaw->abortReason);
+      } else {
+        _currentRaw->status = RAW_WRITE;
+      }
 
-      while (_currentRaw->totalSize < _clientContentLength) {
+      while (!rawAborted &&
+             _currentRaw->totalSize < _clientContentLength) {
         // Upstream 2.0.17 always requested a full 1436-byte buffer. When the
         // declared HTTP body was not exactly divisible by 1436, the final call
         // consumed the remaining bytes and then waited for bytes beyond
@@ -234,19 +283,43 @@ bool WebServer::_parseRequest(WiFiClient& client) {
         const size_t requested = remaining < HTTP_RAW_BUFLEN
                                      ? remaining
                                      : HTTP_RAW_BUFLEN;
-        _currentRaw->currentSize =
-            readRawBodyChunk(client, _currentRaw->buf, requested);
+        HTTPRawAbortReason readAbortReason = RAW_ABORT_NONE;
+        _currentRaw->currentSize = readRawBodyChunk(
+            client, _currentRaw->buf, requested, rawStartedAt,
+            readAbortReason);
         _currentRaw->totalSize += _currentRaw->currentSize;
-        if (_currentRaw->currentSize == 0) {
-          _currentRaw->status = RAW_ABORTED;
+        _currentRaw->elapsedMs = millis() - rawStartedAt;
+
+        if (_currentRaw->currentSize > 0) {
           _currentHandler->raw(*this, _currentUri, *_currentRaw);
-          return false;
         }
-        _currentHandler->raw(*this, _currentUri, *_currentRaw);
+        if (_currentRaw->abortRequested) {
+          abortRaw(_currentRaw->abortReason == RAW_ABORT_NONE
+                       ? RAW_ABORT_HANDLER
+                       : _currentRaw->abortReason);
+        } else if (readAbortReason != RAW_ABORT_NONE) {
+          abortRaw(readAbortReason);
+        } else if (_currentRaw->currentSize == 0) {
+          abortRaw(client.connected() ? RAW_ABORT_IDLE_TIMEOUT
+                                      : RAW_ABORT_DISCONNECTED);
+        }
       }
-      _currentRaw->status = RAW_END;
-      _currentHandler->raw(*this, _currentUri, *_currentRaw);
-      log_v("Finish Raw");
+
+      if (!rawAborted) {
+        _currentRaw->elapsedMs = millis() - rawStartedAt;
+        _currentRaw->status = RAW_END;
+        _currentHandler->raw(*this, _currentUri, *_currentRaw);
+        log_v("Finish Raw");
+      } else {
+        // Parsing still succeeds so the route completion handler can return a
+        // structured HTTP error. handleClient() closes the socket explicitly
+        // after that response instead of leaving the browser waiting.
+        log_w("Raw aborted: reason=%d elapsed=%u received=%u/%u",
+              static_cast<int>(_currentRaw->abortReason),
+              static_cast<unsigned>(_currentRaw->elapsedMs),
+              static_cast<unsigned>(_currentRaw->totalSize),
+              static_cast<unsigned>(_clientContentLength));
+      }
     } else if (!isForm) {
       size_t plainLength;
       char* plainBuf = readBytesWithTimeout(client, _clientContentLength, plainLength, HTTP_MAX_POST_WAIT);
