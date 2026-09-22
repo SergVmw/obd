@@ -48,6 +48,9 @@
   payload byte count/CRC, raw headers/body, enable/delete и persistence panel.
 - Static gate связывает размеры/CRC/A-B/fallback/LittleFS policy с embedded UI;
   PlatformIO N16R8, OTA, brightness, fonts и все прежние gates сохранены.
+- Финальный app `1 159 184` байта (`SHA-256 4eddc675…73c023`) и factory
+  `1 224 720` байт (`SHA-256 08917e02…7128bc`) проверены по manifest,
+  byte equality, offsets/FF gaps и `SHA256SUMS-v0.3.9.txt`.
 
 Подробности: [`docs/CUSTOM_VISUAL_ASSETS_DESIGN.md`](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md)
 и [`docs/POWER_LOSS_PERSISTENCE_DESIGN.md`](docs/POWER_LOSS_PERSISTENCE_DESIGN.md).

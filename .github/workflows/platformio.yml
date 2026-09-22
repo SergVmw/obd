@@ -46,8 +46,8 @@ jobs:
       - name: Check build and committed release artifacts
         run: |
           python tools/check_firmware_manifest.py
-          python tools/check_firmware_manifest.py releases/h2-gauge-v0.3.8-esp32s3-n16r8.bin --expected-version 0.3.8
-          (cd releases && sha256sum -c SHA256SUMS-v0.3.8.txt)
+          python tools/check_firmware_manifest.py releases/h2-gauge-v0.3.9-esp32s3-n16r8.bin --expected-version 0.3.9
+          (cd releases && sha256sum -c SHA256SUMS-v0.3.9.txt)
 
       - name: Upload ESP32-S3 build artifacts
         uses: actions/upload-artifact@v7

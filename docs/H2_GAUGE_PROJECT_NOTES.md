@@ -313,7 +313,19 @@ SHA-256 app: a41fabdd08684473cdbbdb8df3b39654692e5a5e06508cc9658f7a34d9bf2e2d
 SHA-256 factory: 5c5e511b4b0b39d9a0a21b7c9dc92b0079f8c9162fc1aac706df4c6cb03e6bb3
 ```
 
-Clean PlatformIO build завершён без warnings/errors. Прошли 25 host + 11 OTA diagnostic групп, расширенный static gate, Playwright metadata-preflight/error-recovery fixture, deterministic embedded web 112 898→58 711 байт, fonts, manifest и packaged/factory layout. Это ещё не заменяет обязательный физический OTA 0.3.7→0.3.8; подробный отчёт находится в [`../releases/README-v0.3.8.md`](../releases/README-v0.3.8.md).
+Clean PlatformIO build завершён без warnings/errors. Прошли 25 host + 11 OTA diagnostic групп, расширенный static gate, Playwright metadata-preflight/error-recovery fixture, deterministic embedded web 112 898→58 711 байт, fonts, manifest и packaged/factory layout. Это ещё не заменяет обязательный физический OTA 0.3.7→0.3.8; исторический протокол и acceptance checklist сохранены в [`OTA_HARDENING_0.3.8.md`](OTA_HARDENING_0.3.8.md).
+
+Финально упакованный кандидат 0.3.9:
+
+```text
+RAM: 51 684 / 327 680 bytes (15.8%)
+app Flash payload: 1 158 765 / 4 194 304 bytes (27.6%)
+app .bin: 1 159 184 bytes; final raw fragment 332 bytes
+SHA-256 app: 4eddc675f2f483eea922546f03debde6c22bd0b52f72a69c8f4dac8ee973c023
+SHA-256 factory: 08917e028fb29841b54849f8266f8ba6512e36f671267581d543459cab7128bc
+```
+
+Clean build, H2 manifest `0.3.9 / esp32s3-n16r8`, host/static/browser gates, app/build byte equality, checksums и factory layout проверены. В `releases/` оставлена только 0.3.9. Полный отчёт: [`../releases/README-v0.3.9.md`](../releases/README-v0.3.9.md).
 
 ### Реализованный PSRAM-кэш и render benchmark
 

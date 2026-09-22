@@ -927,8 +927,8 @@ App image для загрузки через эту веб-страницу:
 
 ```text
 releases/h2-gauge-v0.3.9-esp32s3-n16r8.bin
-Размер: 1 094 224 байт
-SHA-256: a41fabdd08684473cdbbdb8df3b39654692e5a5e06508cc9658f7a34d9bf2e2d
+Размер: 1 159 184 байт
+SHA-256: 4eddc675f2f483eea922546f03debde6c22bd0b52f72a69c8f4dac8ee973c023
 ```
 
-Это программно проверенный кандидат, которому ещё требуется аппаратное OTA acceptance. Factory image `h2-gauge-v0.3.8-esp32s3-n16r8-factory.bin` через web OTA не загружать; он предназначен только для действительно чистой USB-прошивки с offset `0x0` и удаляет сохранённые данные.
+Это программно проверенный кандидат; ещё требуются аппаратные OTA/assets/random-cut проверки. Factory image `h2-gauge-v0.3.9-esp32s3-n16r8-factory.bin` через web OTA не загружать: он предназначен только для действительно чистой USB-прошивки с offset `0x0`. При предварительном erase он удаляет NVS и LittleFS вместе с journal/custom assets.

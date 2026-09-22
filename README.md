@@ -201,21 +201,21 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, собирает только environment `esp32s3_n16r8`, сверяет committed 0.3.8 release artifacts и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, собирает только environment `esp32s3_n16r8`, сверяет committed 0.3.9 release artifacts и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release candidate 0.3.8
+## Release candidate 0.3.9
 
 ```text
-releases/h2-gauge-v0.3.8-esp32s3-n16r8.bin
-Размер: 1 094 224 байт
-SHA-256: a41fabdd08684473cdbbdb8df3b39654692e5a5e06508cc9658f7a34d9bf2e2d
+releases/h2-gauge-v0.3.9-esp32s3-n16r8.bin
+Размер: 1 159 184 байт
+SHA-256: 4eddc675f2f483eea922546f03debde6c22bd0b52f72a69c8f4dac8ee973c023
 
-releases/h2-gauge-v0.3.8-esp32s3-n16r8-factory.bin
-Размер: 1 159 760 байт
-SHA-256: 5c5e511b4b0b39d9a0a21b7c9dc92b0079f8c9162fc1aac706df4c6cb03e6bb3
+releases/h2-gauge-v0.3.9-esp32s3-n16r8-factory.bin
+Размер: 1 224 720 байт
+SHA-256: 08917e028fb29841b54849f8266f8ba6512e36f671267581d543459cab7128bc
 ```
 
-Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA и стирает сохранённые данные. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **аппаратное OTA acceptance 0.3.8 ещё требуется**. Полный release report: [`releases/README-v0.3.8.md`](releases/README-v0.3.8.md).
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **0.3.9 требует физической OTA/assets/random-cut проверки, а отдельный gate 0.3.7→0.3.8 остаётся незакрытым**. Полный release report: [`releases/README-v0.3.9.md`](releases/README-v0.3.9.md).
 
 ## Flash и PSRAM
 
