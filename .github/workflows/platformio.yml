@@ -24,10 +24,13 @@ jobs:
         run: |
           python tools/test_brightness.py
           python tools/test_ota_diagnostics.py
+          python tools/test_persistence.py
+          python tools/test_storage_recovery.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
           python tools/check_brightness_integration.py
+          python tools/check_storage_integration.py
           python tools/check_ota_transport.py
           python tools/check_ui_fonts.py
 

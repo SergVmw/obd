@@ -209,9 +209,9 @@ POST /api/can/clear
 - `APP0/APP1: неизвестно` — descriptor читается, но это неизвестная старая сборка без H2 manifest; это не означает номер Arduino framework;
 - `APP0/APP1: пусто` — валидный app descriptor не прочитан, проверьте полный JSON до любых действий.
 
-### Ошибки OTA 0.3.8 до и во время передачи
+### Ошибки OTA 0.3.8+ до и во время передачи
 
-0.3.8 сначала выполняет metadata preflight. Если показан код `invalid_image`, `invalid_probe`, `image_too_large`, `vehicle_moving`, `low_voltage`, `rate_limited` или `no_target_partition`, полный app body ещё **не отправлялся**. Исправьте указанную причину; factory/bootloader/partition image выбирать нельзя. При `rate_limited` UI показывает оставшееся время.
+0.3.8 и более новые версии сначала выполняют metadata preflight. Если показан код `invalid_image`, `invalid_probe`, `image_too_large`, `vehicle_moving`, `low_voltage`, `rate_limited` или `no_target_partition`, полный app body ещё **не отправлялся**. Исправьте указанную причину; factory/bootloader/partition image выбирать нельзя. При `rate_limited` UI показывает оставшееся время.
 
 Во время binary POST сервер ограничивает отсутствие прогресса двумя секундами, а всю сессию — 180 секундами независимо от trickle. `idle_timeout` означает паузу, `total_timeout` — достижение общего предела, `client_disconnected` — разрыв клиента. JSON содержит `receivedBytes/expectedBytes`. Если XHR не смог получить HTTP-ответ, UI автоматически спрашивает `/api/ota/status`; тот же URL можно открыть вручную до новой попытки. `RAW_ABORTED` очищает активный OTA handle и явно закрывает TCP, поэтому повторять установку до понимания кода не нужно.
 
@@ -225,12 +225,38 @@ POST /api/can/clear
 
 Не загружайте в web OTA bootloader, partitions, filesystem или `-factory.bin`. Не пытайтесь «лечить» активацию ручным RESET, многократным входом в сервис, стиранием Flash или заводским сбросом.
 
+## Не загружается пользовательский фон или логотип (0.3.9)
+
+- Используйте обычный Chrome/Safari/Firefox по `http://192.168.4.1`, а не Android captive-portal WebView: встроенное окно может не открывать системный file picker.
+- Разрешены только PNG/JPEG/WebP до 8 МиБ, до 8192 px на сторону и до 16 Мп после decode. Ошибка появляется до передачи ESP32.
+- Фон обязан стать `240×240 / 115 200` байт RGB565; логотип — не больше `220×80` и ровно `width×height×2`. В строке preview видны конечные bytes и CRC32.
+- `vehicle_moving`, `low_voltage`, `storage_busy`, `rate_limited` и `preflight_required` нужно устранять по смыслу; upload нельзя совмещать с OTA.
+- `invalid_content_length`, `asset_payload_size_mismatch` или `asset_payload_crc_mismatch` означает, что сервер отверг неполный/изменённый body. Старый manifest остаётся активным, не повторяйте upload при нестабильном питании.
+- `filesystem_unavailable` вместе с `mount_failed_nonblank_not_formatted` означает защитный отказ монтирования. Прошивка намеренно **не форматирует** непустой раздел автоматически, чтобы не уничтожить journal/assets.
+- После успешной загрузки требуется reboot: dashboard читает assets только один раз при startup. До reboot статус manifest уже новый, но текущий экран использует startup cache.
+- При corrupt/missing asset экран должен показать встроенный carbon/HAVAL. Если экран пуст, это отдельная ошибка, потому что embedded fallback не зависит от LittleFS.
+
+Factory reset сохраняет custom assets. Удаляйте каждый ресурс его отдельной кнопкой. Factory/merged USB image, `erase_flash`, `uploadfs` и смена partition table могут удалить LittleFS.
+
+## Ошибка journal/NVS persistence (0.3.9)
+
+В «Система → Сохранение trip» проверьте mount status, CRC, source, sequence, active segment/tail, возраст, writes и failures.
+
+- `journalHealthy=false`, `nvsHealthy=true` — прибор продолжает через NVS; окно потери увеличивается с 0–20 до 0–60 секунд.
+- `activeTailClean=false` после внезапного cut означает обнаруженный torn/corrupt tail. Предыдущая valid запись уже выбрана; следующий изменённый checkpoint должен безопасно перейти в другой segment.
+- `recoverySource=nvs_mirror` означает, что NVS имел более новую valid sequence или LittleFS не был доступен. Startup пытается синхронизировать journal.
+- `latestRecordCrcValid=false` не является нормой: сохраните `/api/status` и serial log до factory reset/перепрошивки.
+- Нулевой возраст/надпись «после запуска ещё не было» допустимы, если после boot relevant state не менялся: journal dirty-only и не пишет одинаковые records.
+- Factory reset очищает оба journal segment и `h2persist`, затем пишет новый monotonic reset snapshot; assets остаются.
+
+Не форматируйте и не стирайте Flash до сохранения `/api/status`, serial log и, если возможно, read-only дампа LittleFS. Физическое исчезновение питания всё равно может потерять изменения после последнего завершённого checkpoint: 0–20 секунд штатно или 0–60 секунд при NVS-only fallback.
+
 ## Настройки не сохраняются или повреждён NVS
 
 - После `Сохранить настройки` дождитесь успешного ответа и штатно перезагрузите прибор.
 - Если `/api/config` отвечает HTTP 422, исправьте невалидные поля; в частности, пороги должны удовлетворять `min < 0 < warning < danger <= max`. Активные настройки при таком ответе не меняются.
 - Если `/api/config` отвечает `NVS save failed` (HTTP 500), проверьте flash и таблицу разделов. Прошивка откатывает RAM к прежней конфигурации.
-- `Полный заводской сброс` очищает namespace `h2gauge`, восстанавливает defaults и сбрасывает trip. Запрос без confirmation header блокируется; повторная попытка ограничена cooldown 10 секунд.
+- `Полный заводской сброс` очищает config, brightness calibration, legacy trip/calibration и combined 20/60 snapshots, затем пишет monotonic reset state. Custom assets сохраняются. Запрос без confirmation header блокируется; повторная попытка ограничена cooldown 10 секунд.
 - Прошивка использует schema 6 и автоматически переносит исправную schema 5. Более старые несовместимые или повреждённые записи заменяются defaults; миграция не затрагивает trip и бензиновую калибровку.
 - Не выключайте питание во время OTA или записи NVS.
 

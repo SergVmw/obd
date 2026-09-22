@@ -1,8 +1,8 @@
-# H2 Gauge 0.3.8 — актуальные проектные решения
+# H2 Gauge 0.3.9 — актуальные проектные решения
 
-**Дата:** 2026-09-19  
+**Дата актуализации:** 2026-09-22  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая аппаратно принятая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. 0.3.8 — отдельный OTA-hardening кандидат с absolute deadline, metadata preflight, structured abort errors и status recovery; до повторного теста на физическом N16R8 он не считается аппаратно принятым. Остальные автомобильные функции также требуют проверки на физической плате и автомобиле.
+**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая аппаратно принятая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. 0.3.8 остаётся отдельным OTA-hardening кандидатом и требует физического gate. Следующий кандидат 0.3.9 добавляет custom visual assets и software-only journal 20/60; локальные программные проверки не заменяют тесты на физическом N16R8 и автомобиле.
 
 ## 1. Назначение
 
@@ -230,6 +230,8 @@ MP1584, настроенный на 5.00 V
 
 MP1584 нельзя подключать непосредственно к OBD +12 В. До него обязательны предохранитель, TVS, reverse-polarity/OVP cutoff и фильтрация.
 
+При мгновенном снятии switched питания последний software checkpoint выполнить невозможно. Текущие trip/petrol-calibration records пишутся в NVS раз в 60 секунд, поэтому abrupt cut теряет хвост 0…60 секунд. Пользователь уточнил, что отдельного `ACC_OFF/POWER_FAIL` и гарантированного hold-up, скорее всего, не будет; основной дальнейший путь — software-only. Предпочтительный проект следующей версии: 5-секундный append-only LittleFS journal с sequence/CRC, двумя bounded segments и сохранением 60-секундного NVS mirror как fallback. Полный аудит, ограничения и тестовая матрица сохранены в [`POWER_LOSS_PERSISTENCE_DESIGN.md`](POWER_LOSS_PERSISTENCE_DESIGN.md).
+
 Коробка дисплея:
 
 ```text
@@ -387,6 +389,20 @@ Probe имеет compile-time размер `sizeof(esp_image_header_t) + sizeof(
 
 Полный протокол, коды ошибок, программный gate и аппаратный acceptance checklist сохранены в [`OTA_HARDENING_0.3.8.md`](OTA_HARDENING_0.3.8.md).
 
+#### Кандидат 0.3.9: пользовательские фон и стартовый логотип
+
+Raw upload пользовательских background/logo реализован в LittleFS 7,875 МиБ. Браузер валидирует PNG/JPEG/WebP, source bytes/decoded pixels, выполняет crop/resize/darken и выдаёт little-endian RGB565: фон строго `240×240 / 115 200` байт, логотип пропорционально вписывается в `220×80`. Preflight передаёт dimensions/length/CRC32; ESP повторно проверяет metadata и точный `Content-Length`, пишет header+payload в неактивный A/B-файл, выполняет flush/full CRC read-back и только затем переключает второй CRC-защищённый A/B manifest.
+
+Asset raw parser использует общий 2-секундный idle watchdog и отдельный 30-секундный absolute deadline, задаваемый handler в `HTTPRaw`; OTA сохраняет 180-секундный deadline. Multipart и отключение TWDT не используются. Background читается один раз в существующий PSRAM cache; logo — один раз перед splash. Встроенные `drawCarbonBackground()`/`kHavalLogoRgb565` всегда остаются recovery path. Factory reset сохраняет оформление, а enable/fallback/delete доступны отдельно. App-only OTA не пересекается с LittleFS; `erase_flash`, `uploadfs` и смена partition table остаются разрушающими операциями. Полная архитектура и матрица проверки: [`CUSTOM_VISUAL_ASSETS_DESIGN.md`](CUSTOM_VISUAL_ASSETS_DESIGN.md).
+
+#### Кандидат 0.3.9: software-only persistence 20/60
+
+Trip и petrol calibration кодируются в единый канонический record 140 байт: header magic/schema/bytes/monotonic sequence, sealed 64-byte `TripState`, sealed 56-byte `PetrolCalibrationState`, outer CRC32. Dirty-only checkpoint каждые 20 секунд append-ится в `/trip-journal.a` или `.b`; каждый сегмент ограничен 256 КиБ. Append считается успешным только после `flush()` и exact read-back. Boot scan идёт по полным CRC-valid records до первого torn/corrupt tail; при ротации старый active segment не удаляется до записи нового valid record.
+
+Combined NVS mirror `h2persist/snapshot` получает ту же sequence каждые 60 секунд. Boot выбирает newest valid LittleFS/NVS record с wrap-safe ordering, затем синхронизирует отставшую сторону. Если новых records нет, исходные `h2trip`/`h2petcal` мигрируют в sequence 1; legacy stores продолжают обновляться на forced lifecycle checkpoints для downgrade compatibility. Factory reset создаёт sequence новее найденной до очистки, поэтому не удалившийся stale segment не воскресит старый trip.
+
+Forced checkpoints выполняются для trip reset, start/apply calibration, service entry/reboot/timeout, engine stop и low-voltage sleep. В service mode/OTA operational state не меняется и periodic journal не выполняется. UI/REST показывают mount status, recovery source, latest/journal/NVS sequence, active segment/bytes/tail/rotation, CRC validity, write age/counts/failures. Непустой не монтируемый LittleFS не форматируется; auto-format разрешён только после полного raw scan, доказавшего erased `0xFF` partition. Нормальное loss window 0–20 секунд, fallback 0–60 секунд. Полная архитектура/endurance: [`POWER_LOSS_PERSISTENCE_DESIGN.md`](POWER_LOSS_PERSISTENCE_DESIGN.md).
+
 ## 11a. Адаптивная яркость — решение 2026-09-19
 
 Приняты пользовательские варианты: плавный Авто, `3.3 В → LDR → 22 кОм → GND` на ADC1 GPIO6 через 1 кОм/100 нФ, ручной День/Ночь четырьмя нажатиями с сохранением, автоматическое обучение диапазона вместо кнопок захвата. Четыре режима — Auto / Manual / AlwaysDay / AlwaysNight. Default AlwaysDay оставлен намеренно: ещё не смонтированный LDR не должен менять яркость.
@@ -414,5 +430,7 @@ POST конфигурации проверяет целочисленные ди
 11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
 12. **Выполнено 2026-09-20:** app-only мост 0.3.6.2 в APP0 → штатный web OTA обычного app 0.3.7 → server verification → автоматический reboot без RESET. Подтверждены current 0.3.7, APP0 0.3.6.2, APP1 0.3.7, running=boot APP1 и image state `valid`; последний 768-байтный raw fragment прошёл без TWDT.
 13. **Ожидает выполнения для 0.3.8:** с работающего 0.3.7 пройти metadata preflight, штатный OTA обычного app 0.3.8 и автоматический reboot; подтвердить running/boot 0.3.8, противоположный slot 0.3.7, state `valid` и сохранность schema 6/NVS.
+14. **Ожидает выполнения для 0.3.9 assets:** загрузить фон/логотип, проверить preview на GC9A01, reboot, disable/delete, app0↔app1 OTA/rollback и random cut на стадиях A/B commit.
+15. **Ожидает выполнения для 0.3.9 persistence:** измерить append/flush/read-back, выполнить серию random cut в начале/середине/конце append и при rotation, подтвердить newest LittleFS/NVS recovery и реальные loss bounds 20/60.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

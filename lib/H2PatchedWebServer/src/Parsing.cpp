@@ -93,16 +93,15 @@ static char* readBytesWithTimeout(WiFiClient& client, size_t maxLength, size_t& 
 // idle timeout and one absolute deadline for the complete HTTP body.
 static size_t readRawBodyChunk(WiFiClient& client, uint8_t* buffer,
                                size_t requested, uint32_t rawStartedAt,
+                               uint32_t totalTimeoutMs,
                                HTTPRawAbortReason& abortReason) {
   constexpr uint32_t kRawIdleTimeoutMs = HTTP_RAW_IDLE_TIMEOUT_MS;
-  constexpr uint32_t kRawTotalTimeoutMs = HTTP_RAW_TOTAL_TIMEOUT_MS;
   size_t received = 0;
   uint32_t lastProgressAt = millis();
   abortReason = RAW_ABORT_NONE;
   while (received < requested) {
     const uint32_t now = millis();
-    if (static_cast<uint32_t>(now - rawStartedAt) >=
-        kRawTotalTimeoutMs) {
+    if (static_cast<uint32_t>(now - rawStartedAt) >= totalTimeoutMs) {
       abortReason = RAW_ABORT_TOTAL_TIMEOUT;
       break;
     }
@@ -251,6 +250,7 @@ bool WebServer::_parseRequest(WiFiClient& client) {
       _currentRaw->abortReason = RAW_ABORT_NONE;
       _currentRaw->abortRequested = false;
       _currentRaw->elapsedMs = 0;
+      _currentRaw->totalTimeoutMs = HTTP_RAW_TOTAL_TIMEOUT_MS;
       _currentRaw->totalSize = 0;
       _currentRaw->currentSize = 0;
 
@@ -286,7 +286,7 @@ bool WebServer::_parseRequest(WiFiClient& client) {
         HTTPRawAbortReason readAbortReason = RAW_ABORT_NONE;
         _currentRaw->currentSize = readRawBodyChunk(
             client, _currentRaw->buf, requested, rawStartedAt,
-            readAbortReason);
+            _currentRaw->totalTimeoutMs, readAbortReason);
         _currentRaw->totalSize += _currentRaw->currentSize;
         _currentRaw->elapsedMs = millis() - rawStartedAt;
 

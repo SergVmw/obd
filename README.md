@@ -14,13 +14,15 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущий кандидат 0.3.8
+## Текущий кандидат 0.3.9
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.8** сохраняет вывод номера запущенной сборки и содержимого обоих OTA-слотов на физическом экране «СЕРВИС» и в верхней части web UI. Для каждого `app0/app1` видны версия, running/boot/next роль и состояние образа. Начиная с 0.3.7 каждый app содержит собственную проверяемую H2-метку версии; ранее выпущенный 0.3.6 распознаётся по точному ELF SHA из его app descriptor.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.9** добавляет две функции поверх зафиксированного OTA-hardening 0.3.8: проверяемые пользовательские фон/логотип и software-only защиту trip/бензиновой калибровки от внезапного отключения питания. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI; для `app0/app1` показываются версия, running/boot/next роль и состояние образа.
 
-APP1-форензика второго reset доказала ошибку raw-парсера Arduino-ESP32 2.0.17: последний неполный блок запрашивался как полные 1 436 байт, ожидание данных за `Content-Length` длилось пять секунд и сталкивалось с 5-секундным TWDT. Проект использует source-local `H2PatchedWebServer`: read ограничен точным остатком, watchdog кормится внутри receive-loop, а отсутствие прогресса ограничено двумя секундами. В 0.3.8 добавлены непродлеваемый 180-секундный deadline, структурированный `RAW_ABORTED` с явным TCP close, metadata preflight ESP32-S3 и status recovery браузера. Worker для `esp_ota_end()`/boot selection, обязательный read-back, rollback-защита и journal v3 сохранены.
+Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. Логотип пропорционально вписывается в `220×80`, а payload имеет ровно `width×height×2` байт. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest. Передача — raw body без multipart, с TWDT-safe чтением, 2-секундным idle timeout и отдельным 30-секундным абсолютным deadline. Встроенные carbon/HAVAL всегда остаются fallback; app-only OTA LittleFS не стирает.
 
-**20 сентября 2026 исправление 0.3.7 подтверждено на приборе:** обычный app `.bin` прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. **0.3.8 пока является отдельным программно проверяемым кандидатом и требует такого же аппаратного OTA acceptance.** Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); решение 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md). Config schema остаётся **6**; NVS-настройки, trip, топливная и световая калибровки сохраняются. [Подключение и алгоритм яркости](docs/BRIGHTNESS_GUIDE.md).
+Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. На старте выбирается новейшая валидная sequence из LittleFS/NVS, torn tail игнорируется, а reset/calibration/service/low-voltage/reboot и остановка двигателя форсируют checkpoint. Непустой не монтируемый LittleFS никогда не форматируется автоматически. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
+
+**20 сентября 2026 исправление 0.3.7 подтверждено на приборе:** обычный app `.bin` прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. **Аппаратное acceptance 0.3.7→0.3.8 остаётся отдельным незакрытым gate; 0.3.9 также требует физической проверки после программной упаковки.** Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
 
 История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
@@ -53,6 +55,11 @@ APP1-форензика второго reset доказала ошибку raw-�
 - нативная ESP-IDF OTA-запись с exact-length/hash validation, явным выбором и read-back целевого boot-слота;
 - подтверждение pending-образа и постоянная post-reboot OTA-диагностика через API/UI;
 - H2 build manifest и отображение версий `app0/app1` на GC9A01 и главной странице сервиса;
+- загрузка из web UI пользовательского `240×240` фона и пропорционального логотипа до `220×80`, RGB565 LE, CRC32, A/B-файлы и A/B manifest;
+- startup-only загрузка пользовательских ресурсов в PSRAM с безусловным embedded carbon/HAVAL fallback;
+- 20-секундный dirty-only LittleFS journal из двух сегментов по 256 КиБ и 60-секундный sequence-bearing NVS fallback;
+- восстановление после torn tail/CRC-ошибки, выбор новейшего LittleFS/NVS snapshot и диагностика sequence/source/age/failures в web UI;
+- безопасное монтирование LittleFS: автоматическое форматирование разрешено только для полностью стёртого раздела;
 - Wi‑Fi power save отключается на время service mode.
 
 ## Распиновка ESP32-S3
@@ -260,9 +267,12 @@ URL: http://192.168.4.1
 python3 tools/generate_ui_fonts.py
 python3 tools/check_ui_fonts.py
 python3 tools/test_brightness.py
+python3 tools/test_persistence.py
+python3 tools/test_storage_recovery.py
 python3 tools/embed_web_fonts.py
 python3 tools/embed_web.py
 python3 tools/check_brightness_integration.py
+python3 tools/check_storage_integration.py
 python3 tools/check_ota_transport.py
 python3 tools/test_ota_diagnostics.py
 pio run -e esp32s3_n16r8

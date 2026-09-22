@@ -15,6 +15,15 @@ uint32_t TripStore::checksum(const TripState& trip) {
   return hash;
 }
 
+void TripStore::seal(TripState& trip) {
+  trip.magic = 0x54524950UL;
+  trip.checksum = checksum(trip);
+}
+
+bool TripStore::valid(const TripState& trip) {
+  return trip.magic == 0x54524950UL && trip.checksum == checksum(trip);
+}
+
 bool TripStore::begin(TripState& trip) {
   if (!preferences_.begin("h2trip", false)) {
     trip = TripState{};
@@ -23,7 +32,7 @@ bool TripStore::begin(TripState& trip) {
   if (preferences_.getBytesLength("trip") == sizeof(TripState)) {
     preferences_.getBytes("trip", &trip, sizeof(trip));
   }
-  if (trip.magic != 0x54524950UL || trip.checksum != checksum(trip)) {
+  if (!valid(trip)) {
     trip = TripState{};
     save(trip);
   }
@@ -31,8 +40,7 @@ bool TripStore::begin(TripState& trip) {
 }
 
 bool TripStore::save(TripState& trip) {
-  trip.magic = 0x54524950UL;
-  trip.checksum = checksum(trip);
+  seal(trip);
   return preferences_.putBytes("trip", &trip, sizeof(trip)) == sizeof(trip);
 }
 
@@ -53,6 +61,17 @@ uint32_t PetrolCalibrationStore::checksum(
   return hash;
 }
 
+void PetrolCalibrationStore::seal(PetrolCalibrationState& state) {
+  state.magic = 0x5043414CUL;
+  state.schemaVersion = 1;
+  state.checksum = checksum(state);
+}
+
+bool PetrolCalibrationStore::valid(const PetrolCalibrationState& state) {
+  return state.magic == 0x5043414CUL && state.schemaVersion == 1 &&
+         state.checksum == checksum(state);
+}
+
 bool PetrolCalibrationStore::begin(PetrolCalibrationState& state) {
   if (!preferences_.begin("h2petcal", false)) {
     state = PetrolCalibrationState{};
@@ -61,8 +80,7 @@ bool PetrolCalibrationStore::begin(PetrolCalibrationState& state) {
   if (preferences_.getBytesLength("state") == sizeof(state)) {
     preferences_.getBytes("state", &state, sizeof(state));
   }
-  if (state.magic != 0x5043414CUL || state.schemaVersion != 1 ||
-      state.checksum != checksum(state)) {
+  if (!valid(state)) {
     state = PetrolCalibrationState{};
     save(state);
   }
@@ -70,9 +88,7 @@ bool PetrolCalibrationStore::begin(PetrolCalibrationState& state) {
 }
 
 bool PetrolCalibrationStore::save(PetrolCalibrationState& state) {
-  state.magic = 0x5043414CUL;
-  state.schemaVersion = 1;
-  state.checksum = checksum(state);
+  seal(state);
   return preferences_.putBytes("state", &state, sizeof(state)) ==
          sizeof(state);
 }

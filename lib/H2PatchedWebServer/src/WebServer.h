@@ -85,6 +85,7 @@ typedef struct
   HTTPRawAbortReason abortReason;
   bool    abortRequested;
   uint32_t elapsedMs;
+  uint32_t totalTimeoutMs; // absolute body deadline; handler may lower at START
   size_t  totalSize;   // content size
   size_t  currentSize; // size of data currently in buf
   uint8_t buf[HTTP_RAW_BUFLEN];

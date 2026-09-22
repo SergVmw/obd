@@ -23,6 +23,7 @@ constexpr const char* kContentTypeHeader = "Content-Type";
 constexpr size_t kMinOtaImageBytes = 4096;
 constexpr size_t kMaxOtaImageBytes = 4U * 1024U * 1024U;
 constexpr uint32_t kFactoryResetCooldownMs = 10000;
+constexpr uint32_t kAssetCooldownMs = 3000;
 constexpr uint32_t kOtaCooldownMs = 30000;
 constexpr uint32_t kNativeOtaJobTimeoutMs = 30000;
 
@@ -222,6 +223,8 @@ void ServicePortal::loop() {
 
   const uint32_t now = millis();
   if (rebootAt_ != 0 && static_cast<int32_t>(now - rebootAt_) >= 0) {
+    persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                            configStore_.data().saveTrip, true);
     brightness_.checkpoint();
     delay(50);
     ESP.restart();
@@ -231,6 +234,8 @@ void ServicePortal::loop() {
       configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
   if (timeoutMs > 0 && now - lastActivityAt_ > timeoutMs) {
     ESP_LOGI(kTag, "Service timeout; rebooting");
+    persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                            configStore_.data().saveTrip, true);
     brightness_.checkpoint();
     ESP.restart();
   }
@@ -248,6 +253,28 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
   server_.on("/api/config", HTTP_POST, [this]() { receiveConfig(); });
   server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
+  server_.on("/api/assets/status", HTTP_GET,
+             [this]() { sendAssetStatus(); });
+  server_.on("/api/assets/preflight", HTTP_POST,
+             [this]() { handleAssetPreflight(); });
+  server_.on("/api/assets/background/enabled", HTTP_POST, [this]() {
+    handleAssetEnabled(VisualAssetType::Background);
+  });
+  server_.on("/api/assets/logo/enabled", HTTP_POST, [this]() {
+    handleAssetEnabled(VisualAssetType::Logo);
+  });
+  server_.on("/api/assets/background/delete", HTTP_POST, [this]() {
+    handleAssetDelete(VisualAssetType::Background);
+  });
+  server_.on("/api/assets/logo/delete", HTTP_POST, [this]() {
+    handleAssetDelete(VisualAssetType::Logo);
+  });
+  server_.on("/api/assets/background", HTTP_POST,
+             [this]() { handleAssetFinished(VisualAssetType::Background); },
+             [this]() { handleAssetBody(VisualAssetType::Background); });
+  server_.on("/api/assets/logo", HTTP_POST,
+             [this]() { handleAssetFinished(VisualAssetType::Logo); },
+             [this]() { handleAssetBody(VisualAssetType::Logo); });
   server_.on("/api/brightness/calibration/reset", HTTP_POST, [this]() {
     touch();
     if (!requireAction("light-calibration-reset", lastLightResetAt_, 10000)) return;
@@ -272,7 +299,14 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/trip/reset", HTTP_POST, [this]() {
     touch();
     engine_.resetTrip();
-    tripStore_.save(engine_.trip());
+    const bool legacyOk = tripStore_.save(engine_.trip());
+    if (!legacyOk ||
+        !persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                                 true, true)) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"trip persistence checkpoint failed\"}");
+      return;
+    }
     server_.send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -295,10 +329,15 @@ void ServicePortal::setupRoutes() {
                        kFactoryResetCooldownMs)) {
       return;
     }
-    if (!configStore_.factoryReset() ||
-        !brightness_.resetCalibration(millis()) ||
-        !tripStore_.reset(engine_.trip()) ||
-        !petrolCalibrationStore_.reset(engine_.petrolCalibration())) {
+    const bool configOk = configStore_.factoryReset();
+    const bool lightOk = brightness_.resetCalibration(millis());
+    const bool legacyTripOk = tripStore_.reset(engine_.trip());
+    const bool legacyCalibrationOk =
+        petrolCalibrationStore_.reset(engine_.petrolCalibration());
+    const bool runtimeOk = persistence_.factoryReset(
+        engine_.trip(), engine_.petrolCalibration());
+    if (!configOk || !lightOk || !legacyTripOk ||
+        !legacyCalibrationOk || !runtimeOk) {
       server_.send(500, "application/json",
                    "{\"error\":\"factory reset storage failure\"}");
       return;
@@ -647,6 +686,45 @@ void ServicePortal::sendStatus() {
   doc["timeouts"] = telemetry_.obdTimeoutCount;
   doc["freeHeap"] = ESP.getFreeHeap();
 
+  JsonObject persistence = doc["persistence"].to<JsonObject>();
+  persistence["littlefsMounted"] = littleFs_.mounted();
+  persistence["littlefsStatus"] = littleFs_.statusName();
+  persistence["littlefsTotalBytes"] = littleFs_.totalBytes();
+  persistence["littlefsUsedBytes"] = littleFs_.usedBytes();
+  persistence["journalIntervalMs"] = RuntimePersistence::kJournalIntervalMs;
+  persistence["nvsIntervalMs"] = RuntimePersistence::kNvsIntervalMs;
+  persistence["journalHealthy"] = persistence_.journalHealthy();
+  persistence["nvsHealthy"] = persistence_.nvsHealthy();
+  persistence["latestSequence"] = persistence_.latestSequence();
+  persistence["journalSequence"] = persistence_.journalSequence();
+  persistence["nvsSequence"] = persistence_.nvsSequence();
+  persistence["journalWrites"] = persistence_.journalWrites();
+  persistence["nvsWrites"] = persistence_.nvsWrites();
+  persistence["journalFailures"] = persistence_.journalFailures();
+  persistence["nvsFailures"] = persistence_.nvsFailures();
+  persistence["lastJournalWriteMs"] = persistence_.lastJournalWriteMs();
+  persistence["lastNvsWriteMs"] = persistence_.lastNvsWriteMs();
+  if (persistence_.lastJournalWriteMs() != 0) {
+    persistence["lastJournalWriteAgeMs"] =
+        millis() - persistence_.lastJournalWriteMs();
+  } else {
+    persistence["lastJournalWriteAgeMs"] = nullptr;
+  }
+  if (persistence_.lastNvsWriteMs() != 0) {
+    persistence["lastNvsWriteAgeMs"] = millis() - persistence_.lastNvsWriteMs();
+  } else {
+    persistence["lastNvsWriteAgeMs"] = nullptr;
+  }
+  persistence["latestRecordCrcValid"] = persistence_.latestRecordCrcValid();
+  persistence["recordBytes"] = PersistenceSnapshot::kRecordBytes;
+  persistence["activeTailClean"] = persistence_.activeTailClean();
+  persistence["rotationPending"] = persistence_.rotationPending();
+  persistence["recoverySource"] = persistence_.recoverySource();
+  char activeSegment[2] = {persistence_.activeSegment(), 0};
+  persistence["activeSegment"] =
+      persistence_.activeSegment() == '-' ? "" : activeSegment;
+  persistence["activeSegmentBytes"] = persistence_.activeSegmentBytes();
+
   const esp_partition_t* runningPartition = esp_ota_get_running_partition();
   const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
   const esp_partition_t* nextPartition = esp_ota_get_next_update_partition(nullptr);
@@ -810,7 +888,12 @@ void ServicePortal::startPetrolCalibration() {
   }
 
   engine_.startPetrolCalibration();
-  if (!petrolCalibrationStore_.save(engine_.petrolCalibration())) {
+  const bool legacyOk =
+      petrolCalibrationStore_.save(engine_.petrolCalibration());
+  const bool runtimeOk = persistence_.checkpoint(
+      engine_.trip(), engine_.petrolCalibration(),
+      configStore_.data().saveTrip, true);
+  if (!legacyOk || !runtimeOk) {
     server_.send(500, "application/json",
                  "{\"error\":\"calibration state save failed\"}");
     return;
@@ -892,7 +975,12 @@ void ServicePortal::applyPetrolCalibration() {
 
   engine_.finishPetrolCalibration(actualLiters, calculatedLiters,
                                   oldCorrection, newCorrection);
-  if (!petrolCalibrationStore_.save(engine_.petrolCalibration())) {
+  const bool legacyOk =
+      petrolCalibrationStore_.save(engine_.petrolCalibration());
+  const bool runtimeOk = persistence_.checkpoint(
+      engine_.trip(), engine_.petrolCalibration(),
+      configStore_.data().saveTrip, true);
+  if (!legacyOk || !runtimeOk) {
     server_.send(500, "application/json",
                  "{\"error\":\"calibration result save failed\"}");
     return;
@@ -971,6 +1059,387 @@ void ServicePortal::clearCanSnapshot() {
   server_.send(200, "application/json", "{\"ok\":true}");
 }
 
+void ServicePortal::sendAssetStatus() {
+  touch();
+  JsonDocument doc;
+  doc["ok"] = littleFs_.mounted();
+  doc["filesystemMounted"] = littleFs_.mounted();
+  doc["filesystemStatus"] = littleFs_.statusName();
+  doc["filesystemTotalBytes"] = littleFs_.totalBytes();
+  doc["filesystemUsedBytes"] = littleFs_.usedBytes();
+  doc["storageHealthy"] = assets_.storageHealthy();
+  doc["storeStatus"] = assets_.statusName();
+  doc["uploadInProgress"] = assetInProgress_;
+  doc["uploadReceivedBytes"] = assetReceivedSize_;
+  JsonObject limits = doc["limits"].to<JsonObject>();
+  limits["sourceImageMaxBytes"] = AssetStore::kMaxSourceImageBytes;
+  limits["backgroundWidth"] = AssetStore::kBackgroundWidth;
+  limits["backgroundHeight"] = AssetStore::kBackgroundHeight;
+  limits["backgroundPayloadBytes"] = AssetStore::kBackgroundPayloadBytes;
+  limits["logoMaxWidth"] = AssetStore::kLogoMaxWidth;
+  limits["logoMaxHeight"] = AssetStore::kLogoMaxHeight;
+  limits["logoMaxPayloadBytes"] = AssetStore::kLogoMaxPayloadBytes;
+  limits["pixelFormat"] = "RGB565_LE";
+  limits["uploadTimeoutMs"] = kAssetTotalTimeoutMs;
+
+  const auto addInfo = [&doc](const char* key, const VisualAssetInfo& info) {
+    JsonObject asset = doc[key].to<JsonObject>();
+    asset["present"] = info.present;
+    asset["enabled"] = info.enabled;
+    asset["valid"] = info.valid;
+    asset["width"] = info.width;
+    asset["height"] = info.height;
+    asset["payloadBytes"] = info.payloadBytes;
+    asset["crc32"] = info.payloadCrc32;
+    asset["generation"] = info.generation;
+    char bank[2] = {info.bank, 0};
+    asset["bank"] = info.bank == '-' ? "" : bank;
+    asset["error"] = info.error;
+  };
+  addInfo("background", assets_.info(VisualAssetType::Background));
+  addInfo("logo", assets_.info(VisualAssetType::Logo));
+
+  String output;
+  output.reserve(1024);
+  serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendAssetErrorResponse(
+    uint16_t httpStatus, const String& code, const String& message,
+    size_t receivedBytes, size_t expectedBytes) {
+  JsonDocument response;
+  response["ok"] = false;
+  response["status"] = httpStatus;
+  response["code"] = code.length() ? code : "asset_failed";
+  response["error"] = message.length() ? message : "Asset upload failed";
+  response["receivedBytes"] = receivedBytes;
+  response["expectedBytes"] = expectedBytes;
+  String output;
+  output.reserve(320);
+  serializeJson(response, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(httpStatus, "application/json", output);
+}
+
+void ServicePortal::failAsset(const char* code, const char* message,
+                              uint16_t httpStatus) {
+  if (assetInProgress_ || assets_.uploadInProgress()) assets_.abortUpload();
+  assetAllowed_ = false;
+  assetInProgress_ = false;
+  assetSuccess_ = false;
+  assetHttpStatus_ = httpStatus;
+  assetErrorCode_ = code ? code : "asset_failed";
+  assetError_ = message ? message : "Asset upload failed";
+}
+
+void ServicePortal::handleAssetPreflight() {
+  touch();
+  if (server_.header(kActionHeader) != "asset-upload") {
+    sendAssetErrorResponse(403, "confirmation_required",
+                           "Asset confirmation header required", 0, 0);
+    return;
+  }
+  if (otaInProgress_ || assetInProgress_) {
+    sendAssetErrorResponse(409, "storage_busy",
+                           "OTA or another asset upload is active", 0, 0);
+    return;
+  }
+  const uint32_t now = millis();
+  if (lastAssetAttemptAt_ != 0 &&
+      now - lastAssetAttemptAt_ < kAssetCooldownMs) {
+    sendAssetErrorResponse(429, "rate_limited",
+                           "Asset upload rate limited", 0, 0);
+    return;
+  }
+  if (telemetry_.rawSpeedKph.valid(now) &&
+      telemetry_.rawSpeedKph.value > 3.0f) {
+    sendAssetErrorResponse(409, "vehicle_moving",
+                           "Vehicle is moving", 0, 0);
+    return;
+  }
+  if (telemetry_.ecuVoltage.valid(now) &&
+      telemetry_.ecuVoltage.value < 11.3f) {
+    sendAssetErrorResponse(409, "low_voltage",
+                           "Supply voltage is too low", 0, 0);
+    return;
+  }
+  if (!server_.hasArg("plain") || server_.arg("plain").length() > 768) {
+    sendAssetErrorResponse(400, "invalid_preflight",
+                           "Asset preflight JSON body required", 0, 0);
+    return;
+  }
+
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain"))) {
+    sendAssetErrorResponse(400, "invalid_preflight",
+                           "Invalid asset preflight JSON", 0, 0);
+    return;
+  }
+  const char* typeName = request["type"] | "";
+  const VisualAssetType type =
+      strcmp(typeName, "logo") == 0 ? VisualAssetType::Logo
+                                     : VisualAssetType::Background;
+  if (strcmp(typeName, "logo") != 0 &&
+      strcmp(typeName, "background") != 0) {
+    sendAssetErrorResponse(422, "invalid_asset_type",
+                           "Asset type must be background or logo", 0, 0);
+    return;
+  }
+  if (!request["width"].is<uint16_t>() ||
+      !request["height"].is<uint16_t>() ||
+      !request["payloadBytes"].is<uint32_t>() ||
+      !request["crc32"].is<uint32_t>()) {
+    sendAssetErrorResponse(422, "invalid_asset_metadata",
+                           "Integer width, height, payloadBytes and crc32 are required",
+                           0, 0);
+    return;
+  }
+
+  VisualAssetUploadPlan plan;
+  const char* validationError = nullptr;
+  if (!assets_.prepareUpload(
+          type, request["width"].as<uint16_t>(),
+          request["height"].as<uint16_t>(),
+          request["payloadBytes"].as<uint32_t>(),
+          request["crc32"].as<uint32_t>(), plan, validationError)) {
+    sendAssetErrorResponse(422, "asset_rejected",
+                           validationError ? validationError :
+                                             "Asset metadata rejected",
+                           0, request["payloadBytes"].as<uint32_t>());
+    return;
+  }
+
+  assetPlan_ = plan;
+  assetExpectedSize_ = plan.payloadBytes;
+  assetReceivedSize_ = 0;
+  assetPreflightAt_ = now;
+  assetAllowed_ = true;
+  assetSuccess_ = false;
+  assetHttpStatus_ = 200;
+  assetErrorCode_ = "";
+  assetError_ = "";
+  lastAssetAttemptAt_ = now;
+  otaAllowed_ = false;
+
+  JsonDocument response;
+  response["accepted"] = true;
+  response["type"] = typeName;
+  response["width"] = plan.width;
+  response["height"] = plan.height;
+  response["payloadBytes"] = plan.payloadBytes;
+  response["crc32"] = plan.payloadCrc32;
+  response["generation"] = plan.generation;
+  char bank[2] = {plan.bank, 0};
+  response["bank"] = bank;
+  response["timeoutMs"] = kAssetTotalTimeoutMs;
+  String output;
+  serializeJson(response, output);
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::handleAssetBody(VisualAssetType type) {
+  handleAssetRaw(type, server_.raw());
+}
+
+void ServicePortal::handleAssetRaw(VisualAssetType type, HTTPRaw& raw) {
+  const char* expectedAction = type == VisualAssetType::Logo
+                                   ? "asset-logo"
+                                   : "asset-background";
+  if (raw.status == RAW_START) {
+    // Unlike an app OTA, an RGB565 asset is at most 115,200 bytes. Give the
+    // patched raw parser the same absolute deadline advertised by preflight so
+    // even a byte-by-byte trickle cannot hold loopTask for the OTA deadline.
+    raw.totalTimeoutMs = kAssetTotalTimeoutMs;
+    assetReceivedSize_ = 0;
+    assetSuccess_ = false;
+    assetHttpStatus_ = 200;
+    assetErrorCode_ = "";
+    assetError_ = "";
+    const uint32_t now = millis();
+    const bool preflightFresh =
+        assetPreflightAt_ != 0 &&
+        now - assetPreflightAt_ <= kAssetPreflightValidityMs;
+    if (!assetAllowed_ || !assetPlan_.valid ||
+        assetPlan_.type != type || !preflightFresh) {
+      failAsset("preflight_required",
+                "Matching asset preflight is missing or expired", 409);
+    } else if (otaInProgress_) {
+      failAsset("storage_busy", "OTA is active", 409);
+    } else if (server_.header(kActionHeader) != expectedAction) {
+      failAsset("confirmation_required",
+                "Matching asset confirmation header required", 403);
+    } else if (server_.header(kContentTypeHeader) !=
+               "application/octet-stream") {
+      failAsset("invalid_content_type",
+                "Asset body must be application/octet-stream", 415);
+    } else if (server_.clientContentLength() < 0 ||
+               static_cast<size_t>(server_.clientContentLength()) !=
+                   assetExpectedSize_) {
+      failAsset("invalid_content_length",
+                "Content-Length must exactly match RGB565 payload", 422);
+    } else {
+      const char* startError = nullptr;
+      if (!assets_.beginUpload(assetPlan_, startError)) {
+        failAsset("asset_open_failed",
+                  startError ? startError : "Unable to open inactive asset bank",
+                  500);
+      } else {
+        assetInProgress_ = true;
+      }
+    }
+    if (!assetInProgress_) {
+      raw.abortReason = RAW_ABORT_HANDLER;
+      raw.abortRequested = true;
+    }
+    return;
+  }
+
+  if (raw.status == RAW_WRITE) {
+    if (!assetInProgress_) {
+      raw.abortReason = RAW_ABORT_HANDLER;
+      raw.abortRequested = true;
+      return;
+    }
+    if (raw.elapsedMs > kAssetTotalTimeoutMs) {
+      failAsset("asset_total_timeout", "Asset upload deadline exceeded", 408);
+      raw.abortReason = RAW_ABORT_HANDLER;
+      raw.abortRequested = true;
+      return;
+    }
+    const char* writeError = nullptr;
+    if (!assets_.appendUpload(raw.buf, raw.currentSize, writeError)) {
+      failAsset("asset_write_failed",
+                writeError ? writeError : "Asset Flash write failed", 500);
+      raw.abortReason = RAW_ABORT_HANDLER;
+      raw.abortRequested = true;
+      return;
+    }
+    assetReceivedSize_ = assets_.uploadReceivedBytes();
+    feedLoopWDT();
+    return;
+  }
+
+  if (raw.status == RAW_END) {
+    if (!assetInProgress_) return;
+    const char* finishError = nullptr;
+    if (!assets_.finishUpload(finishError)) {
+      failAsset("asset_verification_failed",
+                finishError ? finishError : "Asset verification failed", 422);
+      return;
+    }
+    assetInProgress_ = false;
+    assetAllowed_ = false;
+    assetSuccess_ = true;
+    assetHttpStatus_ = 200;
+    assetReceivedSize_ = raw.totalSize;
+    touch();
+    return;
+  }
+
+  if (raw.status == RAW_ABORTED) {
+    if (assetInProgress_ || assets_.uploadInProgress()) assets_.abortUpload();
+    assetInProgress_ = false;
+    assetAllowed_ = false;
+    assetSuccess_ = false;
+    assetReceivedSize_ = raw.totalSize;
+    if (assetError_.length() == 0) {
+      switch (raw.abortReason) {
+        case RAW_ABORT_IDLE_TIMEOUT:
+          assetHttpStatus_ = 408;
+          assetErrorCode_ = "asset_idle_timeout";
+          assetError_ = "Asset upload idle timeout";
+          break;
+        case RAW_ABORT_TOTAL_TIMEOUT:
+          assetHttpStatus_ = 408;
+          assetErrorCode_ = "asset_total_timeout";
+          assetError_ = "Asset upload deadline exceeded";
+          break;
+        case RAW_ABORT_DISCONNECTED:
+          assetHttpStatus_ = 400;
+          assetErrorCode_ = "asset_disconnected";
+          assetError_ = "Client disconnected during asset upload";
+          break;
+        default:
+          assetHttpStatus_ = 400;
+          assetErrorCode_ = "asset_aborted";
+          assetError_ = "Asset upload aborted";
+          break;
+      }
+    }
+  }
+}
+
+void ServicePortal::handleAssetFinished(VisualAssetType type) {
+  touch();
+  if (!assetSuccess_ || assetPlan_.type != type) {
+    sendAssetErrorResponse(assetHttpStatus_, assetErrorCode_, assetError_,
+                           assetReceivedSize_, assetExpectedSize_);
+    return;
+  }
+  const VisualAssetInfo info = assets_.info(type);
+  JsonDocument response;
+  response["ok"] = true;
+  response["verified"] = info.valid;
+  response["enabled"] = info.enabled;
+  response["width"] = info.width;
+  response["height"] = info.height;
+  response["payloadBytes"] = info.payloadBytes;
+  response["crc32"] = info.payloadCrc32;
+  response["generation"] = info.generation;
+  response["rebootRequired"] = true;
+  String output;
+  serializeJson(response, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+  assetSuccess_ = false;
+  assetPlan_ = VisualAssetUploadPlan{};
+}
+
+void ServicePortal::handleAssetEnabled(VisualAssetType type) {
+  touch();
+  if (server_.header(kActionHeader) != "asset-settings" ||
+      !server_.hasArg("plain")) {
+    sendAssetErrorResponse(403, "confirmation_required",
+                           "Asset settings confirmation required", 0, 0);
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain")) ||
+      !request["enabled"].is<bool>()) {
+    sendAssetErrorResponse(422, "invalid_asset_settings",
+                           "Boolean enabled is required", 0, 0);
+    return;
+  }
+  const char* error = nullptr;
+  if (!assets_.setEnabled(type, request["enabled"].as<bool>(), error)) {
+    sendAssetErrorResponse(422, "asset_settings_failed",
+                           error ? error : "Unable to update asset manifest",
+                           0, 0);
+    return;
+  }
+  server_.send(200, "application/json",
+               "{\"ok\":true,\"rebootRequired\":true}");
+}
+
+void ServicePortal::handleAssetDelete(VisualAssetType type) {
+  touch();
+  if (server_.header(kActionHeader) != "asset-delete") {
+    sendAssetErrorResponse(403, "confirmation_required",
+                           "Asset delete confirmation required", 0, 0);
+    return;
+  }
+  const char* error = nullptr;
+  if (!assets_.remove(type, error)) {
+    sendAssetErrorResponse(500, "asset_delete_failed",
+                           error ? error : "Unable to delete asset", 0, 0);
+    return;
+  }
+  server_.send(200, "application/json",
+               "{\"ok\":true,\"rebootRequired\":true}");
+}
+
 bool ServicePortal::validateOtaCandidate(
     const String& filename, size_t imageSize, uint32_t now,
     OtaCandidateValidation& validation) const {
@@ -990,8 +1459,9 @@ bool ServicePortal::validateOtaCandidate(
     return false;
   };
 
-  if (otaInProgress_) {
-    return reject(409, "ota_busy", "Another OTA upload is already active");
+  if (otaInProgress_ || assetInProgress_) {
+    return reject(409, "ota_busy",
+                  "Another OTA or asset upload is already active");
   }
   if (imageSize < kMinOtaImageBytes) {
     return reject(422, "invalid_size",

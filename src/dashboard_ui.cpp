@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 #include <esp_log.h>
+#include "asset_store.h"
 #include "pins.h"
 #include "startup_logo.h"
 #include "ui_fonts.h"
@@ -70,7 +71,8 @@ uint16_t dimRgb565(uint16_t color, uint8_t level) {
 }  // namespace
 
 void DashboardUi::begin(const ConfigData& config, bool normalMode,
-                         float initialBrightnessPercent) {
+                         float initialBrightnessPercent, AssetStore* assets) {
+  assets_ = assets;
   // PWM is owned here, not by TFT_eSPI. Keep BLK dark until the first clean
   // background has replaced any power-on pixels; do not flash at 100% first.
   ledcSetup(0, 5000, 8);
@@ -125,9 +127,27 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode,
         if (backgroundCacheReady_) {
           const uint32_t startedUs = micros();
           drawCarbonBackground(backgroundCache_);
+          bool customBackground = false;
+          if (assets_) {
+            uint16_t width = 0;
+            uint16_t height = 0;
+            const char* assetError = nullptr;
+            auto* pixels = static_cast<uint16_t*>(backgroundCache_.getPointer());
+            customBackground = pixels && assets_->loadPixels(
+                VisualAssetType::Background, pixels, kFramebufferBytes, width,
+                height, assetError) &&
+                width == kDisplaySize && height == kDisplaySize;
+            if (!customBackground && assetError &&
+                strcmp(assetError, "asset_disabled") != 0) {
+              ESP_LOGW(kTag, "Custom background fallback: %s", assetError);
+              drawCarbonBackground(backgroundCache_);
+            }
+          }
           ESP_LOGI(kTag,
-                   "PSRAM background cache ready: %u bytes, build=%lu us",
+                   "PSRAM background cache ready: %u bytes, source=%s, "
+                   "build=%lu us",
                    static_cast<unsigned>(kFramebufferBytes),
+                   customBackground ? "custom" : "embedded",
                    static_cast<unsigned long>(micros() - startedUs));
         } else {
           ESP_LOGW(kTag,
@@ -150,28 +170,62 @@ void DashboardUi::begin(const ConfigData& config, bool normalMode,
 }
 
 void DashboardUi::drawStartupLogo() {
-  constexpr int16_t kLogoX = (240 - kHavalLogoWidth) / 2;
-  constexpr int16_t kLogoY = (240 - kHavalLogoHeight) / 2;
   constexpr uint8_t kFrames = 18;
   constexpr uint32_t kFadeDurationMs = 1500;
   constexpr uint32_t kTotalDurationMs = 2000;
-  uint16_t line[kHavalLogoWidth];
-  const uint32_t startedAt = millis();
+  uint16_t line[AssetStore::kLogoMaxWidth];
+  uint16_t logoWidth = kHavalLogoWidth;
+  uint16_t logoHeight = kHavalLogoHeight;
+  uint16_t* customPixels = nullptr;
 
-  // The image stays in Flash. Only one 432-byte scanline is held in RAM.
+  if (assets_ && psramFound()) {
+    const VisualAssetInfo info = assets_->info(VisualAssetType::Logo);
+    if (info.enabled && info.valid && info.payloadBytes > 0 &&
+        info.payloadBytes <= AssetStore::kLogoMaxPayloadBytes) {
+      customPixels = static_cast<uint16_t*>(ps_malloc(info.payloadBytes));
+      if (customPixels) {
+        const char* assetError = nullptr;
+        if (!assets_->loadPixels(VisualAssetType::Logo, customPixels,
+                                 info.payloadBytes, logoWidth, logoHeight,
+                                 assetError)) {
+          ESP_LOGW(kTag, "Custom logo fallback: %s",
+                   assetError ? assetError : "load_failed");
+          free(customPixels);
+          customPixels = nullptr;
+          logoWidth = kHavalLogoWidth;
+          logoHeight = kHavalLogoHeight;
+        }
+      } else {
+        ESP_LOGW(kTag, "Custom logo PSRAM allocation failed (%u bytes)",
+                 static_cast<unsigned>(info.payloadBytes));
+      }
+    }
+  }
+
+  const int16_t logoX = (kDisplaySize - logoWidth) / 2;
+  const int16_t logoY = (kDisplaySize - logoHeight) / 2;
+  const uint32_t startedAt = millis();
+  ESP_LOGI(kTag, "Startup logo source=%s size=%ux%u",
+           customPixels ? "custom" : "embedded", logoWidth, logoHeight);
+
+  // The embedded image stays in app Flash. A custom logo is read once into
+  // PSRAM and released immediately after the 2-second splash.
   tft_.setSwapBytes(true);
   for (uint8_t frame = 1; frame <= kFrames; ++frame) {
     const float progress = static_cast<float>(frame) / kFrames;
     const float eased = progress * progress * (3.0f - 2.0f * progress);
     const uint8_t level = static_cast<uint8_t>(255.0f * eased);
 
-    for (uint16_t y = 0; y < kHavalLogoHeight; ++y) {
-      const uint32_t rowOffset = static_cast<uint32_t>(y) * kHavalLogoWidth;
-      for (uint16_t x = 0; x < kHavalLogoWidth; ++x) {
-        const uint16_t color = pgm_read_word(&kHavalLogoRgb565[rowOffset + x]);
+    for (uint16_t y = 0; y < logoHeight; ++y) {
+      const uint32_t rowOffset = static_cast<uint32_t>(y) * logoWidth;
+      for (uint16_t x = 0; x < logoWidth; ++x) {
+        const uint16_t color = customPixels
+                                   ? customPixels[rowOffset + x]
+                                   : pgm_read_word(
+                                         &kHavalLogoRgb565[rowOffset + x]);
         line[x] = dimRgb565(color, level);
       }
-      tft_.pushImage(kLogoX, kLogoY + y, kHavalLogoWidth, 1, line);
+      tft_.pushImage(logoX, logoY + y, logoWidth, 1, line);
     }
 
     const uint32_t frameDeadline =
@@ -184,6 +238,7 @@ void DashboardUi::drawStartupLogo() {
       static_cast<int32_t>(startedAt + kTotalDurationMs - millis());
   if (remainingMs > 0) delay(remainingMs);
   tft_.setSwapBytes(false);
+  free(customPixels);
 }
 
 bool DashboardUi::createSmoothTextLayers() {

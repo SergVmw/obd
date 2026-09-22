@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.3.9 — 2026-09-22
+
+Следующий кандидат поверх неизменённых бинарных артефактов 0.3.8. Добавлены
+пользовательские визуальные ресурсы и software-only persistence при внезапном
+отключении питания. Аппаратное acceptance 0.3.7→0.3.8 остаётся отдельным gate;
+0.3.9 также не считается аппаратно подтверждённым до проверки на N16R8.
+
+### Пользовательский фон и логотип
+
+- Web UI принимает локальные PNG/JPEG/WebP, ограничивает тип, размер и число
+  декодированных пикселей, показывает preview и преобразует изображение в
+  little-endian RGB565.
+- Фон центрируется/crop/darken до строгих `240×240` и `115 200` байт; логотип
+  пропорционально вписывается в `220×80` и имеет ровно `width×height×2` байт.
+- ESP32 проверяет metadata, точный HTTP `Content-Length`, размер payload, CRC32,
+  полный file read-back и только затем переключает CRC-защищённый A/B manifest.
+- Raw-body transport не использует multipart, кормит TWDT, имеет 2-секундный
+  idle timeout и 30-секундный absolute deadline даже при byte trickle.
+- Dashboard читает ресурсы один раз при старте в PSRAM/current cache. Встроенные
+  carbon background и HAVAL logo остаются безусловным fallback; app-only OTA
+  не затрагивает LittleFS.
+
+### Persistence при обрыве питания
+
+- Введён канонический 140-байтный snapshot trip + petrol calibration с
+  magic/schema/monotonic sequence и внешним CRC32.
+- Dirty-only append выполняется каждые 20 секунд в два LittleFS-сегмента примерно
+  по 256 КиБ; append+flush+read-back, torn-tail recovery и безопасная A/B-ротация
+  не требуют раннего `POWER_FAIL` или hold-up питания.
+- Sequence-bearing NVS mirror обновляется каждые 60 секунд. При старте выбирается
+  новейшая валидная запись LittleFS/NVS; миграция `h2trip`/`h2petcal` сохранена.
+- Reset, старт/завершение калибровки, вход/выход сервиса, low voltage, reboot и
+  остановка двигателя форсируют checkpoint; legacy NVS stores также обновляются
+  для downgrade-совместимости.
+- Непустой не монтируемый LittleFS никогда не форматируется автоматически;
+  форматирование допускается только при доказанно полностью стёртом разделе.
+- System UI показывает mount/source/sequence/segment/CRC/tail/write age/counters
+  и failures. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
+
+### Проверки
+
+- Добавлены ASan/UBSan host-тесты интервалов, dirty-only writes, newest-source
+  selection, torn tail, corrupt CRC, NVS repair, monotonic factory reset и A/B
+  asset upload/read-back/fallback.
+- Browser fixture проверяет source validation, background/logo conversion,
+  payload byte count/CRC, raw headers/body, enable/delete и persistence panel.
+- Static gate связывает размеры/CRC/A-B/fallback/LittleFS policy с embedded UI;
+  PlatformIO N16R8, OTA, brightness, fonts и все прежние gates сохранены.
+
+Подробности: [`docs/CUSTOM_VISUAL_ASSETS_DESIGN.md`](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md)
+и [`docs/POWER_LOSS_PERSISTENCE_DESIGN.md`](docs/POWER_LOSS_PERSISTENCE_DESIGN.md).
+
 ## 0.3.8 — 2026-09-22
 
 Отдельный OTA-hardening кандидат для ESP32-S3 DevKitC-1 / N16R8. Аппаратно

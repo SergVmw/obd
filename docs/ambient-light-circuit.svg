@@ -5,7 +5,7 @@
 <rect width="960" height="720" fill="#fff"/>
 <g font-family="Arial, sans-serif" fill="#16312d">
 <text x="48" y="55" font-size="25" font-weight="700">H2 Gauge · датчик освещённости</text>
-<text x="48" y="85" font-size="15" fill="#59716b">Принципиальная схема · ESP32-S3 DevKitC-1 N16R8 · 0.3.8</text>
+<text x="48" y="85" font-size="15" fill="#59716b">Принципиальная схема · ESP32-S3 DevKitC-1 N16R8 · 0.3.9</text>
 </g>
 <g fill="none" stroke="#173e36" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter">
 <!-- 3.3 V supply and LDR symbol -->

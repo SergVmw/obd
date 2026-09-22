@@ -4,14 +4,17 @@
 #include "driver/gpio.h"
 
 #include "app_config.h"
+#include "asset_store.h"
 #include "brightness_manager.h"
 #include "can_monitor.h"
 #include "dashboard_ui.h"
 #include "input_manager.h"
+#include "littlefs_storage.h"
 #include "obd_client.h"
 #include "ota_diagnostics.h"
 #include "pins.h"
 #include "power_manager.h"
+#include "runtime_persistence.h"
 #include "service_portal.h"
 #include "telemetry.h"
 #include "version.h"
@@ -26,6 +29,9 @@ TripState trip;
 TripStore tripStore;
 PetrolCalibrationState petrolCalibration;
 PetrolCalibrationStore petrolCalibrationStore;
+LittleFsStorage littleFsStorage;
+AssetStore assetStore;
+RuntimePersistence persistence;
 TelemetryEngine telemetryEngine(telemetry);
 CanMonitor canMonitor;
 ObdClient obdClient(telemetry, configStore.data(), canMonitor);
@@ -36,21 +42,22 @@ PowerManager powerManager;
 BrightnessManager brightnessManager;
 OtaDiagnostics otaDiagnostics;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
-                            petrolCalibrationStore, canMonitor,
-                            brightnessManager, otaDiagnostics);
+                            petrolCalibrationStore, persistence, assetStore,
+                            littleFsStorage, canMonitor, brightnessManager,
+                            otaDiagnostics);
 
 bool serviceMode = false;
-uint32_t lastTripSaveAt = 0;
+bool engineWasRunning = false;
 uint32_t lastMemoryLogAt = 0;
 
 [[noreturn]] void enterLowVoltageSleep() {
   ESP_LOGW(kTag, "Entering low-voltage deep sleep at %.2f V",
            telemetry.ecuVoltage.value);
-  if (!tripStore.save(trip)) {
-    ESP_LOGE(kTag, "Forced trip checkpoint failed");
-  }
-  if (!petrolCalibrationStore.save(petrolCalibration)) {
-    ESP_LOGE(kTag, "Forced petrol calibration checkpoint failed");
+  const bool legacyTripOk = tripStore.save(trip);
+  const bool legacyCalibrationOk = petrolCalibrationStore.save(petrolCalibration);
+  if (!legacyTripOk || !legacyCalibrationOk ||
+      !persistence.checkpoint(trip, petrolCalibration, true, true)) {
+    ESP_LOGE(kTag, "Forced LittleFS/NVS runtime checkpoint failed");
   }
 
   brightnessManager.checkpoint();
@@ -74,8 +81,15 @@ void enterServiceMode() {
   if (serviceMode) return;
   serviceMode = true;
   obdClient.pause(true);
-  if (configStore.data().saveTrip) tripStore.save(trip);
-  if (petrolCalibration.active) petrolCalibrationStore.save(petrolCalibration);
+  const bool legacyTripOk =
+      !configStore.data().saveTrip || tripStore.save(trip);
+  const bool legacyCalibrationOk =
+      !petrolCalibration.active || petrolCalibrationStore.save(petrolCalibration);
+  if (!legacyTripOk || !legacyCalibrationOk ||
+      !persistence.checkpoint(trip, petrolCalibration,
+                              configStore.data().saveTrip, true)) {
+    ESP_LOGE(kTag, "Service-entry runtime checkpoint failed");
+  }
   brightnessManager.checkpoint();
   dashboard.releaseFramebuffer();
 
@@ -139,8 +153,19 @@ void setup() {
   }
 
   if (!configStore.begin()) ESP_LOGE(kTag, "Config NVS initialization/save failed");
-  tripStore.begin(trip);
-  petrolCalibrationStore.begin(petrolCalibration);
+  tripStore.begin(trip);  // legacy <=0.3.8 migration source
+  petrolCalibrationStore.begin(petrolCalibration);  // legacy migration source
+  if (!littleFsStorage.begin()) {
+    ESP_LOGE(kTag, "LittleFS unavailable: %s; NVS fallback remains active",
+             littleFsStorage.statusName());
+  }
+  if (!assetStore.begin(littleFsStorage)) {
+    ESP_LOGW(kTag, "Custom assets unavailable: %s",
+             assetStore.statusName());
+  }
+  if (!persistence.begin(littleFsStorage, trip, petrolCalibration)) {
+    ESP_LOGE(kTag, "Runtime persistence initialization failed");
+  }
   telemetryEngine.begin(&trip, &petrolCalibration);
   lpgInput.begin();
 
@@ -148,7 +173,7 @@ void setup() {
   button.begin();
   brightnessManager.begin(millis(), configStore.data());
   dashboard.begin(configStore.data(), !bootService,
-                   brightnessManager.state().currentPercent());
+                   brightnessManager.state().currentPercent(), &assetStore);
 
 #ifndef H2G_DEMO_MODE
   if (!obdClient.begin()) {
@@ -157,7 +182,6 @@ void setup() {
 #endif
   if (bootService) enterServiceMode();
 
-  lastTripSaveAt = millis();
   lastMemoryLogAt = millis();
 
   // Arduino's wrapper subscribes loopTask to the ESP-IDF Task Watchdog and
@@ -209,6 +233,24 @@ void loop() {
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
+  if (telemetry.rpm.valid(now)) {
+    const bool engineRunning = telemetry.rpm.value > 200.0f;
+    const bool engineStopped = telemetry.rpm.value < 50.0f;
+    if (engineWasRunning && engineStopped) {
+      const bool legacyTripOk =
+          !configStore.data().saveTrip || tripStore.save(trip);
+      const bool legacyCalibrationOk =
+          !petrolCalibration.active ||
+          petrolCalibrationStore.save(petrolCalibration);
+      if (!legacyTripOk || !legacyCalibrationOk ||
+          !persistence.checkpoint(trip, petrolCalibration,
+                                  configStore.data().saveTrip, true)) {
+        ESP_LOGE(kTag, "Engine-stop runtime checkpoint failed");
+      }
+    }
+    if (engineRunning) engineWasRunning = true;
+    else if (engineStopped) engineWasRunning = false;
+  }
   if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
     enterLowVoltageSleep();
   }
@@ -224,7 +266,11 @@ void loop() {
         dashboard.resetPeak();
       } else if (dashboard.page() == 1) {
         telemetryEngine.resetTrip();
-        tripStore.save(trip);
+        const bool legacyResetOk = tripStore.save(trip);
+        if (!legacyResetOk ||
+            !persistence.checkpoint(trip, petrolCalibration, true, true)) {
+          ESP_LOGE(kTag, "Trip-reset runtime checkpoint failed");
+        }
       }
     }
   } else if (event == ButtonEvent::ServiceHold) {
@@ -233,13 +279,8 @@ void loop() {
     if (!moving) enterServiceMode();
   }
 
-  if (now - lastTripSaveAt >= 60000UL) {
-    if (configStore.data().saveTrip) tripStore.save(trip);
-    if (petrolCalibration.active) {
-      petrolCalibrationStore.save(petrolCalibration);
-    }
-    lastTripSaveAt = now;
-  }
+  persistence.periodic(now, trip, petrolCalibration,
+                       configStore.data().saveTrip);
 
   if (now - lastMemoryLogAt >= 30000UL) {
     ESP_LOGI(kTag, "heap=%u min=%u OBD=%s responses=%lu timeouts=%lu",

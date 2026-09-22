@@ -83,6 +83,11 @@ class TripStore {
   bool save(TripState& trip);
   bool reset(TripState& trip);
 
+  // Shared by the LittleFS journal codec so every persistent representation
+  // uses the same canonical magic/checksum rules as the legacy NVS record.
+  static void seal(TripState& trip);
+  static bool valid(const TripState& trip);
+
  private:
   static uint32_t checksum(const TripState& trip);
   Preferences preferences_;
@@ -111,6 +116,9 @@ class PetrolCalibrationStore {
   bool begin(PetrolCalibrationState& state);
   bool save(PetrolCalibrationState& state);
   bool reset(PetrolCalibrationState& state);
+
+  static void seal(PetrolCalibrationState& state);
+  static bool valid(const PetrolCalibrationState& state);
 
  private:
   static uint32_t checksum(const PetrolCalibrationState& state);

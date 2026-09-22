@@ -5,6 +5,8 @@
 #include "app_config.h"
 #include "telemetry.h"
 
+class AssetStore;
+
 class DashboardUi {
  public:
   DashboardUi()
@@ -12,7 +14,7 @@ class DashboardUi {
         textMedium_(&tft_), textLarge_(&tft_) {}
 
   void begin(const ConfigData& config, bool normalMode,
-             float initialBrightnessPercent);
+             float initialBrightnessPercent, AssetStore* assets = nullptr);
   void render(uint32_t now, const TelemetryData& data,
               const TelemetryEngine& engine, const ConfigData& config);
   void nextPage(const ConfigData& config);
@@ -70,6 +72,7 @@ class DashboardUi {
   bool framebufferReady_ = false;
   bool backgroundCacheReady_ = false;
   bool smoothFontsReady_ = false;
+  AssetStore* assets_ = nullptr;
   uint8_t page_ = 0;
   uint32_t lastRenderAt_ = 0;
   uint32_t lastInteractionAt_ = 0;

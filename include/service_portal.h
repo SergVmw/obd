@@ -8,10 +8,12 @@
 #include <esp_image_format.h>
 #include <esp_ota_ops.h>
 #include "app_config.h"
+#include "asset_store.h"
 #include "brightness_manager.h"
 #include "can_monitor.h"
 #include "firmware_slots.h"
 #include "ota_diagnostics.h"
+#include "runtime_persistence.h"
 #include "telemetry.h"
 
 class ServicePortal {
@@ -19,11 +21,14 @@ class ServicePortal {
   ServicePortal(ConfigStore& configStore, TelemetryData& telemetry,
                 TelemetryEngine& engine, TripStore& tripStore,
                 PetrolCalibrationStore& petrolCalibrationStore,
-                CanMonitor& canMonitor, BrightnessManager& brightness,
+                RuntimePersistence& persistence, AssetStore& assets,
+                LittleFsStorage& littleFs, CanMonitor& canMonitor,
+                BrightnessManager& brightness,
                 OtaDiagnostics& otaDiagnostics)
       : configStore_(configStore), telemetry_(telemetry), engine_(engine),
         tripStore_(tripStore),
         petrolCalibrationStore_(petrolCalibrationStore),
+        persistence_(persistence), assets_(assets), littleFs_(littleFs),
         canMonitor_(canMonitor), brightness_(brightness),
         otaDiagnostics_(otaDiagnostics), server_(80) {}
 
@@ -45,6 +50,18 @@ class ServicePortal {
   void applyPetrolCalibration();
   void sendCanSnapshot();
   void clearCanSnapshot();
+  void sendAssetStatus();
+  void handleAssetPreflight();
+  void handleAssetBody(VisualAssetType type);
+  void handleAssetRaw(VisualAssetType type, HTTPRaw& raw);
+  void handleAssetFinished(VisualAssetType type);
+  void handleAssetEnabled(VisualAssetType type);
+  void handleAssetDelete(VisualAssetType type);
+  void failAsset(const char* code, const char* message,
+                 uint16_t httpStatus = 400);
+  void sendAssetErrorResponse(uint16_t httpStatus, const String& code,
+                              const String& message, size_t receivedBytes,
+                              size_t expectedBytes);
   struct OtaCandidateValidation {
     uint16_t httpStatus = 400;
     uint32_t retryAfterSeconds = 0;
@@ -88,6 +105,9 @@ class ServicePortal {
   TelemetryEngine& engine_;
   TripStore& tripStore_;
   PetrolCalibrationStore& petrolCalibrationStore_;
+  RuntimePersistence& persistence_;
+  AssetStore& assets_;
+  LittleFsStorage& littleFs_;
   CanMonitor& canMonitor_;
   BrightnessManager& brightness_;
   OtaDiagnostics& otaDiagnostics_;
@@ -100,8 +120,21 @@ class ServicePortal {
   uint32_t lastCanSnapshotAt_ = 0;
   uint32_t lastFactoryResetAt_ = 0;
   uint32_t lastLightResetAt_ = 0;
+  uint32_t lastAssetAttemptAt_ = 0;
   uint32_t lastOtaAttemptAt_ = 0;
   uint32_t rebootAt_ = 0;
+  bool assetAllowed_ = false;
+  bool assetInProgress_ = false;
+  bool assetSuccess_ = false;
+  VisualAssetUploadPlan assetPlan_{};
+  size_t assetExpectedSize_ = 0;
+  size_t assetReceivedSize_ = 0;
+  uint32_t assetPreflightAt_ = 0;
+  uint16_t assetHttpStatus_ = 200;
+  String assetErrorCode_;
+  String assetError_;
+  static constexpr uint32_t kAssetPreflightValidityMs = 30000UL;
+  static constexpr uint32_t kAssetTotalTimeoutMs = 30000UL;
   bool otaAllowed_ = false;
   bool otaInProgress_ = false;
   bool otaSuccess_ = false;

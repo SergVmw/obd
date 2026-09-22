@@ -3,7 +3,10 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 using std::size_t;
+using std::isnan;
+using std::max;
 enum gpio_num_t { GPIO_NUM_16 = 16, GPIO_NUM_17 = 17 };
 constexpr int INPUT = 0, OUTPUT = 1, INPUT_PULLUP = 2;
 constexpr int LOW = 0, HIGH = 1, ADC_11db = 3;
@@ -12,6 +15,7 @@ extern uint16_t hostAdc;
 extern int hostButton;
 inline uint32_t millis() { return hostMillis; }
 inline void delay(uint32_t ms) { hostMillis += ms; }
+inline void yield() {}
 inline void pinMode(uint8_t, int) {}
 inline int digitalRead(uint8_t) { return hostButton; }
 inline uint16_t analogRead(uint8_t) { return hostAdc; }
