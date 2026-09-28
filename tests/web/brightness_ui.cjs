@@ -47,7 +47,21 @@ const vm = require('node:vm');
     counts: { stored: 1, pending: 0, permanent: 0, total: 1 },
     codes: [{ code: 'P0301', raw: 0x0301, kind: 'stored', ecuId: '0x7E8',
       description: 'Пропуски зажигания: цилиндр 1', misfire: true }],
+    history: { count: 2, changeSequence: 7, truncated: false,
+      currentStateKnown: true, recoverySource: 'littlefs_journal',
+      journalHealthy: true, nvsHealthy: true, recordCrcValid: true,
+      entries: [
+        { code: 'P0301', raw: 0x0301, ecuId: '0x7E8',
+          description: 'Пропуски зажигания: цилиндр 1', misfire: true,
+          currentlyListed: true, historicalOnly: false, occurrenceCount: 2,
+          seenKinds: ['pending', 'stored'], lastKnownPresentKinds: ['stored'] },
+        { code: 'P0302', raw: 0x0302, ecuId: '0x7E8',
+          description: 'Пропуски зажигания: цилиндр 2', misfire: true,
+          currentlyListed: false, historicalOnly: true, occurrenceCount: 1,
+          seenKinds: ['pending'], lastKnownPresentKinds: [] },
+      ] },
     clear: { result: 'never', inProgress: false, available: true,
+      preclearScanComplete: false, snapshotPreserved: false,
       verifiedSpeedKph: null, verifiedRpm: null, verifiedVoltage: null,
       clearsPermanentCodes: false, resetsReadinessAndFreezeFrame: true },
   };
@@ -156,7 +170,7 @@ const vm = require('node:vm');
       if (url.pathname === '/api/diagnostics/dtc/clear') {
         dtcClearHeader = req.headers()['x-h2g-action'];
         dtcClearBody = req.postDataJSON();
-        return json({ ok: true, accepted: true, operation: 'verify_speed' });
+        return json({ ok: true, accepted: true, operation: 'preclear_scan' });
       }
       if (url.pathname === '/api/brightness/calibration/reset') {
         resetHeader = req.headers()['x-h2g-action'];
@@ -228,6 +242,9 @@ const vm = require('node:vm');
     await page.waitForFunction(() => document.getElementById('dtcRows').textContent.includes('P0301'));
     assert.match(await page.locator('#sDtc').textContent(), /ПРОПУСКИ P0301/);
     assert.match(await page.locator('#dtcState').textContent(), /Mode 03: OK/);
+    assert.match(await page.locator('#dtcHistoryRows').textContent(), /P0302/);
+    assert.match(await page.locator('#dtcHistoryRows').textContent(), /Исчез \/ история/);
+    assert.match(await page.locator('#dtcHistoryState').textContent(), /LittleFS: OK, NVS: OK, CRC: OK/);
     await page.click('.tab[data-tab="obd"]');
     await page.click('#dtcRefresh');
     assert.equal(dtcScanHeader, 'dtc-scan');
@@ -236,6 +253,8 @@ const vm = require('node:vm');
     await page.click('#dtcClear');
     assert.equal(dtcClearHeader, 'dtc-clear');
     assert.deepEqual(dtcClearBody, { confirmation: 'CLEAR_DTC', acknowledgeReadinessReset: true });
+    await page.waitForFunction(() => document.getElementById('msg').textContent.includes('сохраняет снимок'));
+    assert.match(await page.locator('#msg').textContent(), /перечитывает DTC, сохраняет снимок/);
     await page.click('.tab[data-tab="display"]');
 
     await page.waitForFunction(() => document.getElementById('backgroundInstalled').textContent.includes('Установленного файла нет'));

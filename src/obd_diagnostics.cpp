@@ -282,7 +282,7 @@ void ObdDiagnostics::tick(uint32_t now, bool automaticAllowed) {
 
   if (rescanDueAt_ != 0 && deadlineReached(now, rescanDueAt_)) {
     rescanDueAt_ = 0;
-    startScan(now, true);
+    startScan(now, false);
     return;
   }
   if (!automaticAllowed || !state_.milKnown ||
@@ -751,9 +751,10 @@ void ObdDiagnostics::completeScan(uint32_t now) {
     state_.clearPreScanComplete = true;
     if (!scanStatusUsableForClear(state_.storedStatus) ||
         !scanStatusUsableForClear(state_.pendingStatus) ||
-        !scanStatusUsableForClear(state_.permanentStatus)) {
+        !scanStatusUsableForClear(state_.permanentStatus) ||
+        state_.truncated) {
       failClear(now, DtcClearResult::PreclearScanFailed,
-                "fresh pre-clear DTC scan was incomplete; Mode 04 not sent");
+                "fresh pre-clear DTC scan was incomplete/truncated; Mode 04 not sent");
       return;
     }
     clearAfterScan_ = false;

@@ -22,7 +22,7 @@
 
 Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. На старте выбирается новейшая валидная sequence из LittleFS/NVS, torn tail игнорируется, а reset/calibration/service/low-voltage/reboot и остановка двигателя форсируют checkpoint. Непустой не монтируемый LittleFS никогда не форматируется автоматически. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
 
-Стирание DTC никогда не выполняется автоматически. Ручной Mode 04 доступен только в сервисе после точного подтверждения и непосредственной проверки speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Он сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+Стирание DTC никогда не выполняется автоматически. Каждый ручной Mode 04 сначала заново читает Mode 03/07/0A, немедленно сохраняет bounded-историю в CRC LittleFS journal + NVS, и только затем проверяет speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Неполный/truncated scan или невозможность durable checkpoint запрещают команду. Mode 04 сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
 **Аппаратные OTA подтверждены:** 20 сентября 2026 обычный app 0.3.7 успешно прошёл APP0→APP1 с автоматическим reboot и состоянием `valid`; 23 сентября 2026 упакованный app 0.3.9 успешно прошёл штатный web OTA из работающей 0.3.7. После автоматической перезагрузки сервис показал current/running/boot **0.3.9 в APP0**, **0.3.7 в APP1**, image state **`valid`**. Тем самым на N16R8 физически проверен и 332-байтный финальный raw-фрагмент 0.3.9. Точный бинарник 0.3.8 отдельно не устанавливался; проверки custom assets и random power cut для persistence остаются незакрытыми. Source-кандидат 0.4.0 ещё не упакован и не проходил аппаратную проверку Mode 03/07/0A и safety-gated Mode 04. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
 
@@ -35,7 +35,8 @@
 - обнаружение поддерживаемых Mode 01 PID;
 - PID 01 MIL/DTC-count каждые 500 мс в движении и latched Check Engine warning на GC9A01;
 - асинхронные Mode 03/07/0A, bounded ISO-TP, до 32 DTC, web-список и осторожные generic-расшифровки;
-- ручной Mode 04 только после web-confirmation и свежих safety checks speed/RPM/voltage;
+- reboot-persistent bounded history transient/changed DTC: dirty-only LittleFS 20 с + NVS 60 с;
+- ручной Mode 04 только после fresh pre-scan, durable snapshot, web-confirmation и свежих safety checks speed/RPM/voltage;
 - MAP, RPM, speed, MAF, throttle, STFT, LTFT, BARO, voltage, coolant, Fuel Rate и equivalence ratio;
 - расчёт относительного наддува;
 - бензиновый расход по PID 5E с резервом MAF;
@@ -206,7 +207,7 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine и Mode 04 guards, собирает только environment `esp32s3_n16r8`, отдельно сверяет неизменённые committed 0.3.9 release artifacts и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, reboot-persistent history recovery и обязательный pre-clear snapshot/Mode 04 guards, собирает только environment `esp32s3_n16r8`, отдельно сверяет неизменённые committed 0.3.9 release artifacts и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
 ## Последний упакованный release 0.3.9
 

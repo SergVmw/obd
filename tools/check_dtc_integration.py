@@ -9,6 +9,10 @@ client_h = (ROOT / "include/obd_client.h").read_text(encoding="utf-8")
 client = (ROOT / "src/obd_client.cpp").read_text(encoding="utf-8")
 diag_h = (ROOT / "include/obd_diagnostics.h").read_text(encoding="utf-8")
 diag = (ROOT / "src/obd_diagnostics.cpp").read_text(encoding="utf-8")
+history_h = (ROOT / "include/dtc_history_persistence.h").read_text(encoding="utf-8")
+history = (ROOT / "src/dtc_history_persistence.cpp").read_text(encoding="utf-8")
+history_snapshot = (ROOT / "src/dtc_history_snapshot.cpp").read_text(encoding="utf-8")
+main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
 portal_h = (ROOT / "include/service_portal.h").read_text(encoding="utf-8")
 portal = (ROOT / "src/service_portal.cpp").read_text(encoding="utf-8")
 dashboard = (ROOT / "src/dashboard_ui.cpp").read_text(encoding="utf-8")
@@ -44,11 +48,42 @@ assert "resetsReadinessAndFreezeFrame\"] = true" in portal
 assert "requestClear" not in re.sub(r"bool ObdDiagnostics::requestClear.*?\n}\n", "", diag, flags=re.S), \
     "Mode 04 must not be scheduled by automatic scan logic"
 
+# Every clear starts its own 03/07/0A scan, refuses incomplete categories, then
+# pauses until the exact captured history has reached durable storage.
+request_clear_body = re.search(
+    r"bool ObdDiagnostics::requestClear\(.*?\n}\n", diag, flags=re.S).group(0)
+assert "clearAfterScan_ = true" in request_clear_body
+assert "startScan(now, true)" in request_clear_body
+assert "beginRequest(Request::VerifySpeed)" not in request_clear_body
+complete_scan_body = re.search(
+    r"void ObdDiagnostics::completeScan\(.*?\n}\n", diag, flags=re.S).group(0)
+for token in ("storedStatus", "pendingStatus", "permanentStatus",
+              "PreclearScanFailed", "PreserveBeforeClear"):
+    assert token in complete_scan_body
+assert "DtcOperation::PreserveBeforeClear" in main
+checkpoint = main.index("dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())")
+confirmation = main.index("confirmDtcPreclearPreserved", checkpoint)
+assert checkpoint < confirmation
+assert "PreservationFailed" in diag and "clearSnapshotPreserved = true" in diag
+
+# Changed/transient codes have an independent CRC journal and NVS mirror. The
+# payload is fixed-size/bounded and factory reset includes it.
+assert "kJournalIntervalMs = 20000UL" in history_h
+assert "kNvsIntervalMs = 60000UL" in history_h
+assert "kMaxEntries = 32" in (ROOT / "include/dtc_history.h").read_text(encoding="utf-8")
+for token in ('"/dtc-history.a"', '"/dtc-history.b"', '"h2dtchist"',
+              "file.flush()", "verifyRecordAt", "syncNvs"):
+    assert token in history
+assert "storageCrc32" in history_snapshot
+assert "updateHistoryCategory" in diag and "clearHistoryPresence" in diag
+assert "dtcHistoryPersistence_.factoryReset" in portal
+
 for route in ("/api/diagnostics/dtc", "/api/diagnostics/dtc/scan",
               "/api/diagnostics/dtc/clear"):
     assert route in portal and route in html
 for element_id in ("sDtc", "dtcMil", "dtcStored", "dtcPending", "dtcPermanent",
-                   "dtcRows", "dtcRefresh", "dtcClearAck", "dtcClear"):
+                   "dtcRows", "dtcHistoryState", "dtcHistoryRows",
+                   "dtcRefresh", "dtcClearAck", "dtcClear"):
     assert f'id="{element_id}"' in html
 assert "CHECK ENGINE" in dashboard and "ПРОПУСКИ" in dashboard
 assert "milAlertLatched" in dashboard and "dtcMisfirePresent" in dashboard
@@ -57,4 +92,4 @@ assert "стирание никогда не выполняется автома
 compressed = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), \
     "embedded UI is stale"
-print("DTC integration: PID 01, Mode 03/07/0A ISO-TP, dashboard/web and gated manual Mode 04 OK")
+print("DTC integration: PID 01, bounded 03/07/0A, durable history, mandatory pre-clear preservation and gated Mode 04 OK")

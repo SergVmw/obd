@@ -4,9 +4,9 @@
 **Плата:** только ESP32-S3 DevKitC-1 / ESP32-S3-WROOM-1-N16R8  
 **PlatformIO environment:** `esp32s3_n16r8`  
 **Config schema:** 6  
-**Статус:** программно проверенный кандидат; аппаратная проверка assets, random power cut и OTA на N16R8 ещё требуется.
+**Статус:** web OTA 0.3.7→0.3.9 аппаратно подтверждён на N16R8 2026-09-23; проверки custom assets и random power cut ещё требуются.
 
-Аппаратно подтверждённым исходным релизом остаётся 0.3.7. Отдельный OTA-hardening gate 0.3.7→0.3.8 не закрывается и не подменяется выпуском 0.3.9. Уже собранные артефакты 0.3.8 не изменялись; после успешной упаковки 0.3.9 каталог `releases/` очищен согласно правилу «только актуальная версия».
+Аппаратно подтверждённым исходным релизом был 0.3.7. Упакованный app 0.3.9 успешно прошёл штатный web OTA из APP1 в APP0, server verification, boot read-back и автоматический reboot: current/running/boot — 0.3.9 в APP0, APP1 — 0.3.7, image state — `valid`. Тем самым физически проверен 332-байтный финальный raw-фрагмент. Точный бинарник 0.3.8 отдельно не устанавливался; его OTA-hardening path унаследован и аппаратно пройден в 0.3.9. После успешной упаковки 0.3.9 каталог `releases/` очищен согласно правилу «только актуальная версия».
 
 ## Файлы
 
@@ -97,15 +97,22 @@ h2-gauge-v0.3.9-esp32s3-n16r8.bin
 - Factory bootloader/partition/boot_app0 offsets, FF gaps и app payload с `0x10000`: **PASS**.
 - App размер не кратен 1 436: последний raw-фрагмент **332 байта** (`1 159 184 = 807 × 1 436 + 332`), поэтому parser regression не скрыта padding.
 
-## Обязательная аппаратная проверка 0.3.9
+## Аппаратный результат и оставшиеся проверки
 
-1. Обеспечить стабильное питание и остановленный автомобиль.
-2. Выбрать обычный app `h2-gauge-v0.3.9-esp32s3-n16r8.bin`.
-3. Дождаться metadata preflight, 100%, `verified:true`, `bootVerified:true` и автоматического reboot без RESET.
-4. Подтвердить current/running/boot = 0.3.9, противоположный slot, image state `valid` и сохранность config schema 6.
-5. Загрузить фон и логотип, проверить preview на GC9A01, reboot, enable/fallback/delete.
-6. Выполнить app0↔app1 OTA/rollback и подтвердить сохранность assets/journal.
-7. Провести серию random power cuts в начале/середине/конце append и при segment rotation.
-8. Подтвердить newest LittleFS/NVS recovery, torn-tail fallback и реальные bounds 20/60.
-9. Измерить typical/worst-case append+flush+read-back и отсутствие render/TWDT деградации.
-10. До этих проверок не называть 0.3.9 аппаратно подтверждённым релизом.
+Выполнено 2026-09-23:
+
+1. На работающей 0.3.7 выбран обычный app `h2-gauge-v0.3.9-esp32s3-n16r8.bin`.
+2. Metadata preflight, raw upload, server verification, boot selection/read-back и автоматический reboot завершились успешно.
+3. После старта подтверждены current/running/boot = **0.3.9 в APP0**, противоположный **APP1 = 0.3.7**, image state = **`valid`**.
+4. Физически пройден неполный финальный raw-фрагмент 332 байта без RESET/TWDT.
+
+Остаётся:
+
+1. Отдельно подтвердить сохранность всех config/trip/calibration данных после перехода, если это ещё не проверено.
+2. Загрузить фон и логотип, проверить preview на GC9A01, reboot, enable/fallback/delete.
+3. Выполнить обратный app0→app1 OTA и rollback-сценарий с проверкой сохранности assets/journal.
+4. Провести random power cuts в начале/середине/конце append и при segment rotation.
+5. Подтвердить newest LittleFS/NVS recovery, torn-tail fallback и реальные bounds 20/60.
+6. Измерить typical/worst-case append+flush+read-back и отсутствие render/TWDT деградации.
+
+Формулировка результата: **OTA 0.3.7→0.3.9 аппаратно подтверждён; assets и abrupt-power-loss persistence ожидают отдельной аппаратной приёмки.**

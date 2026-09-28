@@ -365,32 +365,57 @@ void testClearNegativeResponseAndBusyGate() {
 }
 
 void testClearRefusesIncompleteScanAndFailedPreservation() {
-  TelemetryData telemetry;
-  ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeEngineResponse(0x7E8);
-  CHECK(diagnostics.requestClear(1));
-  build(diagnostics, 1, 0x7E0, 1, 0x03);
-  accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 2);
-  build(diagnostics, 3, 0x7E0, 1, 0x07);
-  diagnostics.timeout(754);
-  build(diagnostics, 755, 0x7E0, 1, 0x0A);
-  accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 756);
-  CHECK(diagnostics.state().operation == DtcOperation::Idle);
-  CHECK(diagnostics.state().clearResult ==
-        DtcClearResult::PreclearScanFailed);
-  CHECK(diagnostics.state().clearPreScanComplete);
-  CHECK(!diagnostics.state().clearSnapshotPreserved);
-  CHECK(!diagnostics.hasPendingRequest());
-
-  CHECK(diagnostics.requestClear(1000));
-  finishEmptyScan(diagnostics, 1000);
-  CHECK(diagnostics.state().operation ==
-        DtcOperation::PreserveBeforeClear);
-  CHECK(!diagnostics.confirmPreclearPreserved(false, 1006));
-  CHECK(diagnostics.state().operation == DtcOperation::Idle);
-  CHECK(diagnostics.state().clearResult ==
-        DtcClearResult::PreservationFailed);
-  CHECK(!diagnostics.hasPendingRequest());
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    diagnostics.observeEngineResponse(0x7E8);
+    CHECK(diagnostics.requestClear(1));
+    build(diagnostics, 1, 0x7E0, 1, 0x03);
+    accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 2);
+    build(diagnostics, 3, 0x7E0, 1, 0x07);
+    diagnostics.timeout(754);
+    build(diagnostics, 755, 0x7E0, 1, 0x0A);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 756);
+    CHECK(diagnostics.state().pendingStatus == DtcCategoryStatus::Timeout);
+    CHECK(diagnostics.state().operation == DtcOperation::Idle);
+    CHECK(diagnostics.state().clearResult ==
+          DtcClearResult::PreclearScanFailed);
+    CHECK(diagnostics.state().clearPreScanComplete);
+    CHECK(!diagnostics.state().clearSnapshotPreserved);
+    CHECK(!diagnostics.hasPendingRequest());
+  }
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    diagnostics.observeEngineResponse(0x7E8);
+    CHECK(diagnostics.requestClear(1));
+    build(diagnostics, 1, 0x7E0, 1, 0x03);
+    diagnostics.transportFailed(2);
+    build(diagnostics, 3, 0x7E0, 1, 0x07);
+    accept(diagnostics, frame(0x7E8, {0x02, 0x47, 0x03}), 4);
+    build(diagnostics, 5, 0x7E0, 1, 0x0A);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 6);
+    CHECK(diagnostics.state().storedStatus ==
+          DtcCategoryStatus::TransportError);
+    CHECK(diagnostics.state().pendingStatus == DtcCategoryStatus::Malformed);
+    CHECK(diagnostics.state().clearResult ==
+          DtcClearResult::PreclearScanFailed);
+    CHECK(!diagnostics.hasPendingRequest());
+  }
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    diagnostics.observeEngineResponse(0x7E8);
+    CHECK(diagnostics.requestClear(1000));
+    finishEmptyScan(diagnostics, 1000);
+    CHECK(diagnostics.state().operation ==
+          DtcOperation::PreserveBeforeClear);
+    CHECK(!diagnostics.confirmPreclearPreserved(false, 1006));
+    CHECK(diagnostics.state().operation == DtcOperation::Idle);
+    CHECK(diagnostics.state().clearResult ==
+          DtcClearResult::PreservationFailed);
+    CHECK(!diagnostics.hasPendingRequest());
+  }
 }
 
 }  // namespace

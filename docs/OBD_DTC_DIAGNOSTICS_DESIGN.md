@@ -20,7 +20,9 @@
 - Mode `0A` — постоянные DTC;
 - single-frame и bounded ISO-TP multi-frame ответы;
 - физическая адресация основного engine ECU, определённого по ответам `0x7E8..0x7EF`;
-- до 32 уникальных записей и до 96 байт собранного ответа;
+- до 32 текущих кодов и до 96 байт собранного ответа;
+- отдельная bounded-история до 32 кодов с ECU, когда-либо наблюдавшимися категориями, последним известным присутствием, счётчиком появлений и change sequence;
+- история изменений сохраняется CRC-защищённым двухсегментным LittleFS journal каждые 20 секунд и NVS mirror каждые 60 секунд; перед Mode 04 обе стороны синхронизируются немедленно;
 - negative response/NRC, timeout, malformed sequence и transport error остаются видимыми в web status.
 
 Первое полное чтение запускается после обнаружения engine ECU. Затем здоровое состояние перепроверяется не чаще одного раза в 300 секунд, а состояние с MIL/DTC — раз в 60 секунд. Переход MIL OFF→ON или изменение сообщённого ECU числа DTC вызывает внеочередное чтение. Все запросы проходят через общий `maxRequestsPerSecond` и единственный outstanding OBD transaction.
@@ -47,9 +49,9 @@ Mode `04` — стирание emissions DTC. Команда доступна т
 4. предупреждение калибровки LPG;
 5. обычные `95/LPG` и OBD.
 
-Служебная физическая страница показывает MIL, сообщённое ECU число кодов, количества stored/pending/permanent, первый код, признак misfire, OBD timeout и CAN errors. Полный список и стирание находятся в web UI.
+Служебная физическая страница показывает MIL, сообщённое ECU число кодов, количества stored/pending/permanent, первый текущий код либо первый код истории, признак misfire, OBD timeout и CAN errors. Полный текущий список, сохранённая история и стирание находятся в web UI.
 
-MIL latch хранится только в RAM текущего запуска. ECU остаётся главным источником истины; прошивка не создаёт постоянный «вечный» код после того, как ECU и внешний сканер его удалили.
+MIL latch хранится только в RAM текущего запуска. Отдельная история DTC переживает reboot и сохраняет исчезнувший/transient код для последующего просмотра, но UI отличает текущий список от «последнего наблюдения». ECU остаётся главным источником истины: история не выдаётся за текущую активную неисправность после успешного полного сканирования.
 
 ## 5. Web API
 
@@ -73,18 +75,22 @@ GET возвращает:
 - статусы Mode 03/07/0A;
 - массив кодов с типом, raw value, ECU, misfire flag и осторожной расшифровкой;
 - operation/error/NRC/timeout;
-- состояние и измеренные safety-gate значения последнего Mode 04.
+- bounded history с `currentlyListed`, `historicalOnly`, `seenKinds`, `lastKnownPresentKinds`, occurrence/change sequence и состоянием CRC/LittleFS/NVS;
+- факт обязательного pre-clear scan и durable snapshot, состояние и измеренные safety-gate значения последнего Mode 04.
 
 ## 6. Защита стирания
 
-После подтверждения браузера ESP32 не отправляет Mode 04 сразу. Он физически и последовательно перечитывает у того же ECU:
+После подтверждения браузера ESP32 не отправляет Mode 04 сразу. Для каждого отдельного clear он физически и последовательно выполняет:
 
-1. PID `0D`: скорость должна быть `0 км/ч`;
-2. PID `0C`: двигатель должен быть остановлен (`RPM < 50`);
-3. PID `42`: напряжение ECU должно быть `11,5..16,5 В`;
-4. только затем отправляется физический запрос `01 04`.
+1. новое чтение Mode `03`, `07`, `0A` у того же ECU — старый scan не считается достаточным;
+2. отказ, если хотя бы одна категория завершилась timeout/malformed/transport error либо ответ был truncated;
+3. немедленный CRC journal + NVS checkpoint обновлённой истории; до подтверждения хотя бы одной read-back-проверенной durable-копии CAN-запросы приостановлены;
+4. PID `0D`: скорость должна быть `0 км/ч`;
+5. PID `0C`: двигатель должен быть остановлен (`RPM < 50`);
+6. PID `42`: напряжение ECU должно быть `11,5..16,5 В`;
+7. только затем отправляется физический запрос `01 04`.
 
-Любой timeout, malformed/negative response, движение, работающий двигатель или небезопасное напряжение отменяют команду. Повторное принятие clear ограничено cooldown 60 секунд.
+Явный `unsupported` для категории считается завершённым ответом ECU, но отображается пользователю. Любой незавершённый pre-scan, отказ обеих persistent-копий, timeout, malformed/negative response, движение, работающий двигатель или небезопасное напряжение отменяют команду. Повторное принятие clear ограничено cooldown 60 секунд.
 
 Успешный Mode 04:
 
@@ -101,9 +107,10 @@ GET возвращает:
 - Читается основной engine ECU, а не все возможные модули автомобиля. ABS/SRS/BCM и фирменные Haval-коды требуют адресов и протоколов соответствующих блоков.
 - Стандартные Mode 03/07/0A не заменяют Haval-specific расширенную диагностику и freeze-frame viewer.
 - Отдельного стандартизованного признака мигающей против постоянно горящей MIL нет.
-- Максимум 32 DTC и 96 байт собранного payload; truncation показывается явно.
+- Максимум 32 текущих DTC, 32 history entries и 96 байт собранного payload; truncation показывается явно, а truncated pre-clear scan запрещает Mode 04.
+- История bounded: при переполнении сначала вытесняется самая старая уже отсутствующая запись; `truncated` остаётся видимым. Это журнал наблюдений, не freeze-frame viewer и не замена ECU.
+- LittleFS DTC journal использует два сегмента по 64 КиБ, CRC/read-back и ротацию; NVS — отдельный namespace. Запись происходит только при изменении payload, а не на каждом poll.
 - Встроенная расшифровка ограничена проверенными generic-значениями. Неизвестные и manufacturer-specific коды не интерпретируются догадками.
-- DTC snapshot не пишется в NVS/LittleFS. Это исключает устаревшие предупреждения и износ; сохранённые ECU коды перечитываются после запуска.
 
 ## 8. Аппаратный acceptance checklist
 
@@ -113,17 +120,20 @@ GET возвращает:
 2. Сравнить Mode 03/07/0A с независимым проверенным сканером, не стирая коды.
 3. Проверить single-frame; multi-frame проверять только при реально достаточном числе кодов либо на bench ECU/simulator.
 4. Создать безопасный тестовый pending/confirmed code только штатной диагностической процедурой; не имитировать пропуски под высокой нагрузкой.
-5. Подтвердить красное предупреждение GC9A01 и полный список web UI.
-6. Попытаться clear при ненулевой скорости, работающем двигателе и низком/неизвестном напряжении — Mode 04 не должен появиться в CAN trace.
-7. При engine OFF, ignition ON сохранить код и freeze-frame внешним сканером, затем осознанно выполнить clear; подтвердить запрос/positive `0x44`, readiness reset и контрольное чтение.
-8. Проверить, что permanent code не заявляется как стёртый.
-9. После исправления причины пройти штатный drive cycle и подтвердить отсутствие возврата кода.
+5. Подтвердить красное предупреждение GC9A01, текущий список и history table web UI; дать pending-коду исчезнуть, перезагрузить ESP32 и проверить его восстановление из LittleFS/NVS как historical, а не current.
+6. Выполнить controlled power-cut проверки DTC journal в начале/середине/конце append и при ротации; подтвердить fallback на newest valid LittleFS/NVS record и bounds 20/60 секунд.
+7. На simulator/bench вызвать timeout, malformed и oversized/truncated ответ каждой pre-clear категории — Mode 04 не должен появиться в CAN trace.
+8. Попытаться clear при ненулевой скорости, работающем двигателе и низком/неизвестном напряжении — Mode 04 не должен появиться в CAN trace.
+9. При engine OFF, ignition ON сохранить код и freeze-frame внешним сканером, затем осознанно выполнить clear; в CAN trace подтвердить строго `03→07→0A→durable checkpoint→01/0D→01/0C→01/42→04`, positive `0x44`, readiness reset и контрольное чтение.
+10. Проверить, что permanent code не заявляется как стёртый.
+11. После исправления причины пройти штатный drive cycle и подтвердить отсутствие возврата кода.
 
-До прохождения пунктов 1–8 бинарник 0.4.0 не считать аппаратно подтверждённым для стирания DTC.
+До прохождения пунктов 1–10 бинарник 0.4.0 не считать аппаратно подтверждённым для стирания DTC.
 
 ## 9. Автоматические проверки
 
-- `tools/test_obd_diagnostics.py` — восемь ASan/UBSan host-групп: форматирование, MIL latch, discovery, single/multi-frame ISO-TP, bounded truncation, Mode 03/07/0A, negative/timeout и safety-gated Mode 04;
-- `tools/check_dtc_integration.py` — статическая связь scheduler, transport, dashboard, API, подтверждений и embedded UI;
-- browser fixture — отображение `P0301`, предупреждение misfire, scan header и точное clear confirmation body;
+- `tools/test_obd_diagnostics.py` — десять ASan/UBSan host-групп: форматирование, MIL latch, discovery, single/multi-frame ISO-TP, bounded truncation, transient history/restore, Mode 03/07/0A, negative/timeout, mandatory pre-clear scan/preservation и safety-gated Mode 04;
+- `tools/test_storage_recovery.py` — explicit LE/CRC snapshot, dirty-only 20/60 mirror, reboot, torn-tail/NVS recovery и dual-storage failure для DTC history;
+- `tools/check_dtc_integration.py` — статическая связь scheduler, transport, durable checkpoint перед safety probes/Mode 04, dashboard, API, подтверждений и embedded UI;
+- browser fixture — текущий `P0301`, исчезнувший historical `P0302`, состояние хранилищ, предупреждение misfire, scan header и точное clear confirmation body;
 - PlatformIO `esp32s3_n16r8` — полная firmware compile/link/size проверка.

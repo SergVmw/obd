@@ -88,7 +88,9 @@ OBD работает в read-only логике ISO 15765-4, 11-bit, началь
 
 После наблюдавшейся 2026-09-27 мигающей MIL под высокой нагрузкой добавлена bounded стандартная диагностика. PID 01 опрашивается каждые 500 мс в движении; любое MIL ON фиксируется в RAM до конца запуска. При первом обнаружении ECU, переходе MIL и изменении подтверждённого DTC count асинхронно читаются Mode 03 stored, Mode 07 pending и Mode 0A permanent. Поддержаны physical 11-bit engine ECU, single/multi-frame ISO-TP, до 32 кодов и 96 байт payload. На основном экране DTC имеет приоритет над LPG warning; `P0300..P0312` выделяются как пропуски.
 
-Mode 04 никогда не автоматический. Web endpoint требует точную фразу/acknowledgement и непосредственно перед командой физически перечитывает скорость PID 0D = 0, RPM PID 0C < 50 и ECU voltage PID 42 в диапазоне 11,5–16,5 В. Стирание сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC; после positive `0x44` выполняется контрольный scan. Полное решение, ограничения и аппаратный checklist: [`OBD_DTC_DIAGNOSTICS_DESIGN.md`](OBD_DTC_DIAGNOSTICS_DESIGN.md).
+Changed/transient history ограничена 32 кодами и отдельно хранит ECU, seen/last-present categories, occurrence count и change sequence. Dirty payload сохраняется через CRC/read-back LittleFS A/B journal с границей 20 секунд и отдельный NVS mirror 60 секунд; после reboot UI не выдаёт последнее наблюдение за подтверждённо текущий код.
+
+Mode 04 никогда не автоматический. Web endpoint требует точную фразу/acknowledgement. Каждый clear сначала заново читает 03/07/0A, отказывается при incomplete/truncated результате, немедленно делает durable history checkpoint и только затем физически перечитывает скорость PID 0D = 0, RPM PID 0C < 50 и ECU voltage PID 42 в диапазоне 11,5–16,5 В. Стирание сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC; после positive `0x44` выполняется контрольный scan. Полное решение, ограничения и аппаратный checklist: [`OBD_DTC_DIAGNOSTICS_DESIGN.md`](OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
 ### Ресурсная оценка Mode 22 — 2026-09-28
 
@@ -352,15 +354,15 @@ Clean build, H2 manifest `0.3.9 / esp32s3-n16r8`, host/static/browser gates, app
 Текущий непакетированный source-кандидат 0.4.0 после DTC-функции:
 
 ```text
-RAM: 52 180 / 327 680 bytes (15.9%)
-app Flash payload: 1 176 713 / 4 194 304 bytes (28.1%)
-app .bin: 1 177 136 bytes
-build SHA-256: ddcbbfea5a0e2def134888fc11baba9f7f964408b3228d0071527b78565d4423
-embedded web: 137 302 bytes HTML → 65 646 bytes deterministic gzip
-manifest: 0.4.0 / esp32s3-n16r8 at app offset 0x1c0d8
+RAM: 53 316 / 327 680 bytes (16.3%)
+app Flash payload: 1 187 797 / 4 194 304 bytes (28.3%)
+app .bin: 1 188 208 bytes
+build SHA-256: e5cf27be4cef4f39eec0c48f5472d75645a550fa27873c53dade6dd694144a87
+embedded web: 140 199 bytes HTML → 66 420 bytes deterministic gzip
+manifest: 0.4.0 / esp32s3-n16r8 at app offset 0x1c280
 ```
 
-Прошли восемь DTC host-групп, прежние 25 brightness, 11 OTA, persistence/storage recovery, все static/font gates, browser DTC/OTA/assets fixture и PlatformIO build. Это ещё не release: `releases/` намеренно остаётся неизменённым 0.3.9 до аппаратной проверки чтения DTC и осознанного Mode 04.
+Прошли десять DTC host-групп, прежние 25 brightness, 11 OTA, расширенный persistence/storage recovery, все static/font gates, browser current/history DTC/OTA/assets fixture и PlatformIO build. Это ещё не release: `releases/` намеренно остаётся неизменённым 0.3.9 до аппаратной проверки чтения DTC и осознанного Mode 04.
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -480,7 +482,8 @@ POST конфигурации проверяет целочисленные ди
 14. **Выполнено 2026-09-23 для 0.3.9:** штатный OTA из APP1/0.3.7 в APP0/0.3.9, автоматический reboot; подтверждены current/running/boot APP0/0.3.9, APP1/0.3.7 и state `valid`; финальный raw fragment 332 байта прошёл.
 15. **Ожидает выполнения для 0.3.9 assets:** загрузить фон/логотип, проверить preview на GC9A01, reboot, disable/delete, обратный OTA/rollback и random cut на стадиях A/B commit.
 16. **Ожидает выполнения для 0.3.9 persistence:** измерить append/flush/read-back, выполнить серию random cut в начале/середине/конце append и при rotation, подтвердить newest LittleFS/NVS recovery и реальные loss bounds 20/60.
-17. **Ожидает выполнения для 0.4.0 DTC read:** на стоящем Haval сравнить PID 01 и Mode 03/07/0A с независимым сканером, проверить ECU IDs, category status, DTC formatting, GC9A01 warning и отсутствие роста CAN errors/timeouts.
-18. **Ожидает отдельного осознанного выполнения для Mode 04:** сначала сохранить DTC/freeze-frame внешним сканером; доказать отказ при speed>0, RPM≥50 и unsafe/unknown voltage; затем engine OFF/ignition ON подтвердить request, positive `0x44`, readiness reset, контрольный scan и сохранение permanent DTC.
+17. **Ожидает выполнения для 0.4.0 DTC read/history:** на стоящем Haval сравнить PID 01 и Mode 03/07/0A с независимым сканером, проверить ECU IDs, category status, DTC formatting, GC9A01 warning и отсутствие роста CAN errors/timeouts; дать pending-коду исчезнуть, reboot и подтвердить historical recovery из LittleFS/NVS без ложного current-status.
+18. **Ожидает bench/simulator gate до Mode 04:** доказать, что timeout/malformed/truncated в каждой pre-clear категории и отказ обеих history-копий дают `preclear_scan_failed`/`preservation_failed`, а кадр Mode 04 отсутствует; выполнить random cut DTC journal и newest-valid recovery.
+19. **Ожидает отдельного осознанного выполнения для Mode 04:** сначала сохранить DTC/freeze-frame внешним сканером; доказать отказ при speed>0, RPM≥50 и unsafe/unknown voltage; затем engine OFF/ignition ON подтвердить fresh 03→07→0A, durable snapshot, request/positive `0x44`, readiness reset, контрольный scan и сохранение permanent DTC.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

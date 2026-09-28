@@ -19,6 +19,10 @@ Source-кандидат после аппаратно принятого release
 - DTC преобразуются в `P/C/B/Uxxxx`; встроены осторожные расшифровки части
   generic-кодов. Неизвестные и Haval-specific значения не интерпретируются
   догадками. `P0300..P0312` отдельно классифицируются как misfire.
+- Добавлена bounded history до 32 transient/changed кодов с source ECU,
+  seen/last-present category masks, occurrence count и change sequence. Она
+  сохраняется только при изменении через отдельные CRC/read-back LittleFS A/B
+  journal (20 с) и NVS mirror (60 с) и восстанавливается после reboot.
 
 ### Экран и web service
 
@@ -26,7 +30,8 @@ Source-кандидат после аппаратно принятого release
   `CHECK ENGINE`, либо жёлтый DTC без MIL; предупреждение доступно на основных
   страницах, а служебная физическая страница показывает сводку 03/07/0A.
 - Web OBD получил список codes/type/ECU/description, текущий и latched MIL,
-  category state, scan progress, NRC/error и асинхронное ручное чтение.
+  category state, scan progress, NRC/error, асинхронное ручное чтение и
+  отдельную таблицу current/historical DTC с состоянием CRC/LittleFS/NVS.
 - Добавлены `GET /api/diagnostics/dtc`, `POST .../scan` и `POST .../clear`;
   синхронный WebServer не блокируется в ожидании ECU.
 
@@ -34,23 +39,30 @@ Source-кандидат после аппаратно принятого release
 
 - Стирание никогда не автоматическое и требует action header, точного JSON
   confirmation, acknowledgement сброса readiness/freeze-frame и cooldown 60 с.
-- Непосредственно перед Mode 04 физически перечитываются speed PID 0D = 0,
-  RPM PID 0C < 50 и ECU voltage PID 42 = 11,5..16,5 В. Timeout, движение,
-  работающий двигатель, unsafe voltage, malformed или negative response
-  отменяют команду.
+- Каждый clear сначала принудительно выполняет fresh Mode 03/07/0A. Timeout,
+  malformed/transport error или truncation любой категории запрещает Mode 04.
+- После успешного pre-scan state machine останавливается до немедленного
+  read-back-проверенного history checkpoint; отказ обеих durable-копий запрещает
+  дальнейшие запросы. Затем физически перечитываются speed PID 0D = 0,
+  RPM PID 0C < 50 и ECU voltage PID 42 = 11,5..16,5 В. Движение, работающий
+  двигатель, unsafe voltage, malformed или negative response отменяют команду.
 - Positive `0x44` очищает локальные stored/pending и запускает контрольное
   чтение через 1,5 с. Permanent Mode 0A не заявляются как стёртые.
 
 ### Проверки
 
-- Добавлены восемь ASan/UBSan host-групп: formatting, MIL latch, ECU discovery,
-  single/multi-frame 03/07/0A, bounded truncation, negative/timeout и
+- Добавлены десять ASan/UBSan DTC host-групп: formatting, MIL latch, ECU
+  discovery, single/multi-frame 03/07/0A, bounded truncation, transient
+  history/restore, negative/timeout, mandatory pre-clear scan/preservation и
   success/refusal Mode 04.
-- Static gate связывает PID 01, transport, dashboard, API, confirmations и
-  embedded UI; browser fixture проверяет P0301/misfire, scan header и точное
-  clear body.
-- PlatformIO `esp32s3_n16r8` успешно собран: internal RAM 52 180 байт; app
-  Flash payload 1 176 713 байт; app binary 1 177 136 байт.
+- Storage recovery suite проверяет fixed LE/CRC history record, dirty-only
+  20/60 mirror, reboot, torn journal/NVS recovery и dual-storage failure.
+- Static gate связывает PID 01, transport, durable checkpoint, dashboard, API,
+  confirmations и embedded UI; browser fixture проверяет current/historical
+  DTC, storage health, P0301/misfire, scan header и точное clear body.
+- PlatformIO `esp32s3_n16r8` успешно собран: internal RAM 53 316 байт; app
+  Flash payload 1 187 797 байт; app binary 1 188 208 байт; manifest
+  `0.4.0 / esp32s3-n16r8` найден по offset `0x1c280`.
 
 Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
