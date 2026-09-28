@@ -1,11 +1,74 @@
 # Changelog
 
+## 0.4.0 — 2026-09-28
+
+Source-кандидат после аппаратно принятого release 0.3.9. Поводом стало наблюдение
+мигающей лампы Check Engine при высокой скорости 2026-09-27. Бинарник 0.4.0 ещё
+не упакован и не проходил аппаратное acceptance чтения/стирания на Haval.
+
+### Check Engine и чтение DTC
+
+- В polling добавлен Mode 01 PID 01 каждые 500 мс в движении: текущая MIL,
+  confirmed DTC count и RAM-latch любого увиденного MIL ON до перезапуска.
+- При первом ECU, переходе MIL и изменении DTC count асинхронно читаются stored
+  Mode 03, pending Mode 07 и permanent Mode 0A; здоровое/аварийное периодическое
+  перечитывание ограничено 300/60 секундами.
+- Bounded transport поддерживает single/multi-frame ISO-TP, physical engine ECU,
+  один outstanding transaction, 96-байтный response buffer, до 32 кодов,
+  sequence checks, timeout, malformed и negative response/NRC.
+- DTC преобразуются в `P/C/B/Uxxxx`; встроены осторожные расшифровки части
+  generic-кодов. Неизвестные и Haval-specific значения не интерпретируются
+  догадками. `P0300..P0312` отдельно классифицируются как misfire.
+
+### Экран и web service
+
+- Главная status row приоритетно показывает красные `ПРОПУСКИ P03xx!` или
+  `CHECK ENGINE`, либо жёлтый DTC без MIL; предупреждение доступно на основных
+  страницах, а служебная физическая страница показывает сводку 03/07/0A.
+- Web OBD получил список codes/type/ECU/description, текущий и latched MIL,
+  category state, scan progress, NRC/error и асинхронное ручное чтение.
+- Добавлены `GET /api/diagnostics/dtc`, `POST .../scan` и `POST .../clear`;
+  синхронный WebServer не блокируется в ожидании ECU.
+
+### Защищённый Mode 04
+
+- Стирание никогда не автоматическое и требует action header, точного JSON
+  confirmation, acknowledgement сброса readiness/freeze-frame и cooldown 60 с.
+- Непосредственно перед Mode 04 физически перечитываются speed PID 0D = 0,
+  RPM PID 0C < 50 и ECU voltage PID 42 = 11,5..16,5 В. Timeout, движение,
+  работающий двигатель, unsafe voltage, malformed или negative response
+  отменяют команду.
+- Positive `0x44` очищает локальные stored/pending и запускает контрольное
+  чтение через 1,5 с. Permanent Mode 0A не заявляются как стёртые.
+
+### Проверки
+
+- Добавлены восемь ASan/UBSan host-групп: formatting, MIL latch, ECU discovery,
+  single/multi-frame 03/07/0A, bounded truncation, negative/timeout и
+  success/refusal Mode 04.
+- Static gate связывает PID 01, transport, dashboard, API, confirmations и
+  embedded UI; browser fixture проверяет P0301/misfire, scan header и точное
+  clear body.
+- PlatformIO `esp32s3_n16r8` успешно собран: internal RAM 52 180 байт; app
+  Flash payload 1 176 713 байт; app binary 1 177 136 байт.
+
+Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+
 ## 0.3.9 — 2026-09-22
 
 Следующий кандидат поверх неизменённых бинарных артефактов 0.3.8. Добавлены
 пользовательские визуальные ресурсы и software-only persistence при внезапном
 отключении питания. Аппаратное acceptance 0.3.7→0.3.8 остаётся отдельным gate;
-0.3.9 также не считается аппаратно подтверждённым до проверки на N16R8.
+0.3.9 также не считался аппаратно подтверждённым до проверки на N16R8.
+
+### Аппаратный OTA-результат — 2026-09-23
+
+- Обычный app 0.3.9 успешно установлен штатным web OTA из работающей 0.3.7.
+- Source был APP1/0.3.7, target после автоматического reboot — APP0/0.3.9.
+- Сервис подтвердил current/running/boot = 0.3.9 в APP0, APP1 = 0.3.7,
+  running image state = `valid`.
+- Физически пройден 332-байтный финальный raw-фрагмент без ручного RESET/TWDT.
+- Custom assets и abrupt-power-loss persistence остаются отдельными аппаратными gates.
 
 ### Пользовательский фон и логотип
 

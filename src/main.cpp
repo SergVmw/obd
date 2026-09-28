@@ -8,6 +8,7 @@
 #include "brightness_manager.h"
 #include "can_monitor.h"
 #include "dashboard_ui.h"
+#include "dtc_history_persistence.h"
 #include "input_manager.h"
 #include "littlefs_storage.h"
 #include "obd_client.h"
@@ -32,6 +33,7 @@ PetrolCalibrationStore petrolCalibrationStore;
 LittleFsStorage littleFsStorage;
 AssetStore assetStore;
 RuntimePersistence persistence;
+DtcHistoryPersistence dtcHistoryPersistence;
 TelemetryEngine telemetryEngine(telemetry);
 CanMonitor canMonitor;
 ObdClient obdClient(telemetry, configStore.data(), canMonitor);
@@ -42,13 +44,28 @@ PowerManager powerManager;
 BrightnessManager brightnessManager;
 OtaDiagnostics otaDiagnostics;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
-                            petrolCalibrationStore, persistence, assetStore,
-                            littleFsStorage, canMonitor, brightnessManager,
+                            petrolCalibrationStore, persistence,
+                            dtcHistoryPersistence, assetStore, littleFsStorage,
+                            canMonitor, obdClient, brightnessManager,
                             otaDiagnostics);
 
 bool serviceMode = false;
 bool engineWasRunning = false;
 uint32_t lastMemoryLogAt = 0;
+
+void serviceDtcPersistence(uint32_t now) {
+  dtcHistoryPersistence.periodic(now, obdClient.dtcHistory());
+  if (obdClient.diagnosticsState().operation ==
+      DtcOperation::PreserveBeforeClear) {
+    const bool preserved =
+        dtcHistoryPersistence.checkpoint(obdClient.dtcHistory());
+    obdClient.confirmDtcPreclearPreserved(preserved, now);
+    if (!preserved) {
+      ESP_LOGE(kTag,
+               "Mode 04 refused: pre-clear DTC history checkpoint failed");
+    }
+  }
+}
 
 [[noreturn]] void enterLowVoltageSleep() {
   ESP_LOGW(kTag, "Entering low-voltage deep sleep at %.2f V",
@@ -58,6 +75,9 @@ uint32_t lastMemoryLogAt = 0;
   if (!legacyTripOk || !legacyCalibrationOk ||
       !persistence.checkpoint(trip, petrolCalibration, true, true)) {
     ESP_LOGE(kTag, "Forced LittleFS/NVS runtime checkpoint failed");
+  }
+  if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
+    ESP_LOGE(kTag, "Forced DTC history checkpoint failed");
   }
 
   brightnessManager.checkpoint();
@@ -89,6 +109,9 @@ void enterServiceMode() {
       !persistence.checkpoint(trip, petrolCalibration,
                               configStore.data().saveTrip, true)) {
     ESP_LOGE(kTag, "Service-entry runtime checkpoint failed");
+  }
+  if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
+    ESP_LOGE(kTag, "Service-entry DTC history checkpoint failed");
   }
   brightnessManager.checkpoint();
   dashboard.releaseFramebuffer();
@@ -166,6 +189,11 @@ void setup() {
   if (!persistence.begin(littleFsStorage, trip, petrolCalibration)) {
     ESP_LOGE(kTag, "Runtime persistence initialization failed");
   }
+  DtcHistoryData recoveredDtcHistory{};
+  if (!dtcHistoryPersistence.begin(littleFsStorage, recoveredDtcHistory)) {
+    ESP_LOGE(kTag, "DTC history persistence initialization failed");
+  }
+  obdClient.restoreDtcHistory(recoveredDtcHistory);
   telemetryEngine.begin(&trip, &petrolCalibration);
   lpgInput.begin();
 
@@ -216,6 +244,7 @@ void loop() {
     // Requests are paused, but RX stays active for the bounded CAN Monitor.
     obdClient.loop(now);
 #endif
+    serviceDtcPersistence(now);
     servicePortal.loop();
     if (event == ButtonEvent::ServiceHold) {
       brightnessManager.checkpoint();
@@ -230,6 +259,7 @@ void loop() {
 #else
   obdClient.loop(now);
 #endif
+  serviceDtcPersistence(now);
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);

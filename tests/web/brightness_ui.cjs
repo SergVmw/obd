@@ -10,6 +10,7 @@ const vm = require('node:vm');
   const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8');
   let saved = vm.runInNewContext('(' + html.match(/const DEFAULT_CONFIG=(.*);\n/)[1] + ')');
   let posts = 0, resetHeader = '', otaHeader = '', otaPreflightHeader = '';
+  let dtcScanHeader = '', dtcClearHeader = '', dtcClearBody = null;
   let otaBytes = 0, otaPreflights = 0, otaBehavior = 'jsonError';
   let otaPreflightReject = true, otaStatusError = null, offline = false;
   const assetPreflights = {}, assetBodies = {}, assetHeaders = {};
@@ -35,6 +36,21 @@ const vm = require('node:vm');
     delayRemainingMs: 0, pending: 'none', calibrationReady: false,
     observedMinAdc: 1790, observedMaxAdc: 1810, adcClipped: false, storageHealthy: true,
   };
+  const dtcFixture = {
+    ok: true, engineEcuId: '0x7E8',
+    mil: { known: true, commandedOn: false, latchedThisBoot: true,
+      ecuReportedDtcCount: 1, monitorAgeMs: 400 },
+    scan: { operation: 'idle', inProgress: false, manual: false,
+      storedStatus: 'complete', pendingStatus: 'complete', permanentStatus: 'complete',
+      completedAgeMs: 1200, count: 2, truncated: false, lastError: '',
+      lastNegativeService: 0, lastNegativeResponseCode: 0 },
+    counts: { stored: 1, pending: 0, permanent: 0, total: 1 },
+    codes: [{ code: 'P0301', raw: 0x0301, kind: 'stored', ecuId: '0x7E8',
+      description: 'Пропуски зажигания: цилиндр 1', misfire: true }],
+    clear: { result: 'never', inProgress: false, available: true,
+      verifiedSpeedKph: null, verifiedRpm: null, verifiedVoltage: null,
+      clearsPermanentCodes: false, resetsReadinessAndFreezeFrame: true },
+  };
   const launchOptions = { headless: true };
   if (process.env.H2G_CHROMIUM_EXECUTABLE) {
     launchOptions.executablePath = process.env.H2G_CHROMIUM_EXECUTABLE;
@@ -55,14 +71,17 @@ const vm = require('node:vm');
       }
       if (url.pathname === '/api/status') {
         if (offline) return route.fulfill({ status: 503, body: 'test offline' });
-        return json({ version: '0.3.9', target: 'ESP32-S3', obdConnected: false,
-          boostBar: null, fuelMode: '95', ota: { runningPartition: 'app0', runningAddress: 0x10000,
+        return json({ version: '0.4.0', target: 'ESP32-S3', obdConnected: false,
+          boostBar: null, fuelMode: '95', dtc: { milKnown: true, milCommandedOn: false,
+            milLatchedThisBoot: true, ecuReportedCount: 1, storedCount: 1,
+            pendingCount: 0, permanentCount: 0, firstCode: 'P0301', misfire: true,
+            scanInProgress: false }, ota: { runningPartition: 'app0', runningAddress: 0x10000,
             maxImageBytes: 2097152, probeBytes: 288, idleTimeoutMs: 2000, totalTimeoutMs: 180000,
             bootPartition: 'app0', bootAddress: 0x10000, nextPartition: 'app1', nextAddress: 0x410000,
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
             slots: [
               { partition: 'app0', address: 0x10000, descriptorReadable: true,
-                versionKnown: true, version: '0.3.9', versionSource: 'manifest',
+                versionKnown: true, version: '0.4.0', versionSource: 'manifest',
                 running: true, bootSelected: true, nextUpdate: false, state: 'valid' },
               { partition: 'app1', address: 0x410000, descriptorReadable: true,
                 versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
@@ -129,6 +148,16 @@ const vm = require('node:vm');
         assetState[assetDelete[1]] = { present: false, enabled: false, valid: false };
         return json({ ok: true, rebootRequired: true });
       }
+      if (url.pathname === '/api/diagnostics/dtc') return json(dtcFixture);
+      if (url.pathname === '/api/diagnostics/dtc/scan') {
+        dtcScanHeader = req.headers()['x-h2g-action'];
+        return json({ ok: true, accepted: true, operation: 'scanning' });
+      }
+      if (url.pathname === '/api/diagnostics/dtc/clear') {
+        dtcClearHeader = req.headers()['x-h2g-action'];
+        dtcClearBody = req.postDataJSON();
+        return json({ ok: true, accepted: true, operation: 'verify_speed' });
+      }
       if (url.pathname === '/api/brightness/calibration/reset') {
         resetHeader = req.headers()['x-h2g-action'];
         sample.observedMinAdc = sample.observedMaxAdc = null;
@@ -138,7 +167,7 @@ const vm = require('node:vm');
         otaPreflightHeader = req.headers()['x-h2g-action'];
         const body = req.postDataJSON();
         ++otaPreflights;
-        assert.equal(body.filename, 'h2-gauge-v0.3.9-esp32s3-n16r8.bin');
+        assert.equal(body.filename, 'h2-gauge-v0.4.0-esp32s3-n16r8.bin');
         assert.equal(body.size, 5000);
         assert.equal(body.probeHex.length, 576);
         assert.match(body.probeHex, /^(a5)+$/);
@@ -181,10 +210,10 @@ const vm = require('node:vm');
     });
     await page.goto('http://h2g.test/');
     await page.waitForFunction(() => document.getElementById('lightRaw').textContent === '1830');
-    assert.equal(await page.locator('#otaFirmware').textContent(), '0.3.9');
-    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.3.9');
+    assert.equal(await page.locator('#otaFirmware').textContent(), '0.4.0');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.4.0');
     assert.equal(await page.locator('#slotCurrentMeta').textContent(), 'app0 · запущена');
-    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.3.9');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.4.0');
     assert.match(await page.locator('#slotApp0Meta').textContent(), /запущен/);
     assert.equal(await page.locator('#slotApp0Card').getAttribute('class'), 'card slotCard running');
     assert.equal(await page.locator('#slotApp1Version').textContent(), '0.3.6');
@@ -196,6 +225,18 @@ const vm = require('node:vm');
     assert.match(await page.locator('#persistRuntime').textContent(), /CRC: OK/);
     assert.match(await page.locator('#persistRuntime').textContent(), /3[,.]7 с \/ 24 с/);
     assert.match(await page.locator('#persistRuntime').textContent(), /хвост целый/);
+    await page.waitForFunction(() => document.getElementById('dtcRows').textContent.includes('P0301'));
+    assert.match(await page.locator('#sDtc').textContent(), /ПРОПУСКИ P0301/);
+    assert.match(await page.locator('#dtcState').textContent(), /Mode 03: OK/);
+    await page.click('.tab[data-tab="obd"]');
+    await page.click('#dtcRefresh');
+    assert.equal(dtcScanHeader, 'dtc-scan');
+    await page.check('#dtcClearAck');
+    assert.equal(await page.locator('#dtcClear').isEnabled(), true);
+    await page.click('#dtcClear');
+    assert.equal(dtcClearHeader, 'dtc-clear');
+    assert.deepEqual(dtcClearBody, { confirmation: 'CLEAR_DTC', acknowledgeReadinessReset: true });
+    await page.click('.tab[data-tab="display"]');
 
     await page.waitForFunction(() => document.getElementById('backgroundInstalled').textContent.includes('Установленного файла нет'));
     await page.evaluate(() => chooseAsset('background', new File(['GIF89a'], 'bad.gif', { type: 'image/gif' })));
@@ -296,7 +337,7 @@ const vm = require('node:vm');
     await page.locator('#firmware').setInputFiles({ name: 'too-large.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2097153) });
     assert.equal(await page.locator('#install').isDisabled(), true);
     assert.match(await page.locator('#otaText').textContent(), /2\.00 МБ/);
-    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.3.9-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
+    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.4.0-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
     assert.equal(await page.locator('#install').isEnabled(), true);
     await page.click('#install');
     await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[invalid_image]'));
@@ -344,6 +385,6 @@ const vm = require('node:vm');
       await page.screenshot({ path: process.env.H2G_UI_SCREENSHOT });
     }
     assert.deepEqual(errors, []);
-    console.log('PASS browser: assets RGB565/CRC/raw controls, persistence diagnostics, brightness/live data, slot cards, OTA preflight/error recovery/install, validation/reset and 360–1280 px layouts');
+    console.log('PASS browser: DTC scan/clear guards, assets RGB565/CRC/raw controls, persistence diagnostics, brightness/live data, slot cards, OTA preflight/error recovery/install, validation/reset and 360–1280 px layouts');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

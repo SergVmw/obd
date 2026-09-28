@@ -289,6 +289,12 @@ void ServicePortal::setupRoutes() {
              [this]() { sendCanSnapshot(); });
   server_.on("/api/can/clear", HTTP_POST,
              [this]() { clearCanSnapshot(); });
+  server_.on("/api/diagnostics/dtc", HTTP_GET,
+             [this]() { sendDtcStatus(); });
+  server_.on("/api/diagnostics/dtc/scan", HTTP_POST,
+             [this]() { startDtcScan(); });
+  server_.on("/api/diagnostics/dtc/clear", HTTP_POST,
+             [this]() { clearDtcs(); });
 
   server_.on("/api/baro/capture", HTTP_POST, [this]() {
     touch();
@@ -336,8 +342,12 @@ void ServicePortal::setupRoutes() {
         petrolCalibrationStore_.reset(engine_.petrolCalibration());
     const bool runtimeOk = persistence_.factoryReset(
         engine_.trip(), engine_.petrolCalibration());
+    DtcHistoryData resetDtcHistory{};
+    const bool dtcHistoryOk =
+        dtcHistoryPersistence_.factoryReset(resetDtcHistory);
+    obdClient_.restoreDtcHistory(resetDtcHistory);
     if (!configOk || !lightOk || !legacyTripOk ||
-        !legacyCalibrationOk || !runtimeOk) {
+        !legacyCalibrationOk || !runtimeOk || !dtcHistoryOk) {
       server_.send(500, "application/json",
                    "{\"error\":\"factory reset storage failure\"}");
       return;
@@ -685,6 +695,24 @@ void ServicePortal::sendStatus() {
   doc["responses"] = telemetry_.obdResponseCount;
   doc["timeouts"] = telemetry_.obdTimeoutCount;
   doc["freeHeap"] = ESP.getFreeHeap();
+  JsonObject dtc = doc["dtc"].to<JsonObject>();
+  dtc["milKnown"] = telemetry_.milStatusKnown;
+  dtc["milCommandedOn"] = telemetry_.milCommandedOn;
+  dtc["milLatchedThisBoot"] = telemetry_.milAlertLatched;
+  dtc["ecuReportedCount"] = telemetry_.ecuReportedDtcCount;
+  dtc["storedCount"] = telemetry_.dtcStoredCount;
+  dtc["pendingCount"] = telemetry_.dtcPendingCount;
+  dtc["permanentCount"] = telemetry_.dtcPermanentCount;
+  dtc["misfire"] = telemetry_.dtcMisfirePresent;
+  dtc["historyCount"] = telemetry_.dtcHistoryCount;
+  dtc["historicalOnlyCount"] = telemetry_.dtcHistoricalOnlyCount;
+  dtc["historyTruncated"] = telemetry_.dtcHistoryTruncated;
+  char firstCode[6]{};
+  if (telemetry_.firstDtcRaw != 0) {
+    ObdDiagnostics::formatCode(telemetry_.firstDtcRaw, firstCode);
+  }
+  dtc["firstCode"] = firstCode;
+  dtc["scanInProgress"] = telemetry_.dtcScanInProgress;
 
   JsonObject persistence = doc["persistence"].to<JsonObject>();
   persistence["littlefsMounted"] = littleFs_.mounted();
@@ -724,6 +752,30 @@ void ServicePortal::sendStatus() {
   persistence["activeSegment"] =
       persistence_.activeSegment() == '-' ? "" : activeSegment;
   persistence["activeSegmentBytes"] = persistence_.activeSegmentBytes();
+
+  JsonObject dtcPersistence =
+      persistence["dtcHistory"].to<JsonObject>();
+  dtcPersistence["recordBytes"] = DtcHistorySnapshot::kRecordBytes;
+  dtcPersistence["journalIntervalMs"] =
+      DtcHistoryPersistence::kJournalIntervalMs;
+  dtcPersistence["nvsIntervalMs"] = DtcHistoryPersistence::kNvsIntervalMs;
+  dtcPersistence["journalHealthy"] =
+      dtcHistoryPersistence_.journalHealthy();
+  dtcPersistence["nvsHealthy"] = dtcHistoryPersistence_.nvsHealthy();
+  dtcPersistence["latestSequence"] =
+      dtcHistoryPersistence_.latestSequence();
+  dtcPersistence["journalSequence"] =
+      dtcHistoryPersistence_.journalSequence();
+  dtcPersistence["nvsSequence"] = dtcHistoryPersistence_.nvsSequence();
+  dtcPersistence["journalWrites"] = dtcHistoryPersistence_.journalWrites();
+  dtcPersistence["nvsWrites"] = dtcHistoryPersistence_.nvsWrites();
+  dtcPersistence["journalFailures"] =
+      dtcHistoryPersistence_.journalFailures();
+  dtcPersistence["nvsFailures"] = dtcHistoryPersistence_.nvsFailures();
+  dtcPersistence["latestRecordCrcValid"] =
+      dtcHistoryPersistence_.latestRecordCrcValid();
+  dtcPersistence["recoverySource"] =
+      dtcHistoryPersistence_.recoverySource();
 
   const esp_partition_t* runningPartition = esp_ota_get_running_partition();
   const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
@@ -846,7 +898,7 @@ void ServicePortal::sendStatus() {
   bl["storageHealthy"] = brightness_.storageHealthy();
 
   String output;
-  output.reserve(3072);
+  output.reserve(3584);
   serializeJson(doc, output);
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);
@@ -1057,6 +1109,236 @@ void ServicePortal::clearCanSnapshot() {
   canMonitor_.clear();
   lastCanSnapshotAt_ = 0;
   server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void ServicePortal::sendDtcStatus() {
+  touch();
+  const uint32_t now = millis();
+  const ObdDiagnosticsState& state = obdClient_.diagnosticsState();
+  JsonDocument doc;
+  doc["ok"] = true;
+  char ecu[12]{};
+  if (state.engineResponseId != 0) {
+    snprintf(ecu, sizeof(ecu), "0x%03X", state.engineResponseId);
+  }
+  doc["engineEcuId"] = ecu;
+
+  JsonObject mil = doc["mil"].to<JsonObject>();
+  mil["known"] = state.milKnown;
+  mil["commandedOn"] = state.milCommanded;
+  mil["latchedThisBoot"] = state.milLatched;
+  mil["ecuReportedDtcCount"] = state.ecuReportedDtcCount;
+  mil["monitorAgeMs"] = state.monitorUpdatedAt != 0
+                             ? static_cast<int64_t>(now - state.monitorUpdatedAt)
+                             : -1;
+  mil["firstSeenAtMs"] = state.firstMilSeenAt;
+  mil["lastSeenAtMs"] = state.lastMilSeenAt;
+
+  JsonObject scan = doc["scan"].to<JsonObject>();
+  scan["operation"] = ObdDiagnostics::operationName(state.operation);
+  scan["inProgress"] = state.operation == DtcOperation::Scanning;
+  scan["manual"] = state.manualOperation;
+  scan["storedStatus"] =
+      ObdDiagnostics::categoryStatusName(state.storedStatus);
+  scan["pendingStatus"] =
+      ObdDiagnostics::categoryStatusName(state.pendingStatus);
+  scan["permanentStatus"] =
+      ObdDiagnostics::categoryStatusName(state.permanentStatus);
+  scan["startedAtMs"] = state.scanStartedAt;
+  scan["completedAtMs"] = state.scanCompletedAt;
+  scan["completedAgeMs"] = state.scanCompletedAt != 0
+                                ? static_cast<int64_t>(now - state.scanCompletedAt)
+                                : -1;
+  scan["count"] = state.scanCount;
+  scan["truncated"] = state.truncated;
+  scan["lastError"] = state.lastError;
+  scan["lastNegativeService"] = state.lastNegativeService;
+  scan["lastNegativeResponseCode"] = state.lastNegativeResponseCode;
+
+  uint8_t storedCount = 0;
+  uint8_t pendingCount = 0;
+  uint8_t permanentCount = 0;
+  JsonArray codes = doc["codes"].to<JsonArray>();
+  for (size_t i = 0; i < state.entryCount; ++i) {
+    const DtcEntry& entry = state.entries[i];
+    if (entry.kind == DtcKind::Stored) ++storedCount;
+    else if (entry.kind == DtcKind::Pending) ++pendingCount;
+    else ++permanentCount;
+    JsonObject item = codes.add<JsonObject>();
+    char code[6];
+    char description[112];
+    ObdDiagnostics::formatCode(entry.raw, code);
+    ObdDiagnostics::describeCodeRu(entry.raw, description,
+                                   sizeof(description));
+    char codeEcu[12];
+    snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
+    item["code"] = code;
+    item["raw"] = entry.raw;
+    item["kind"] = ObdDiagnostics::kindName(entry.kind);
+    item["ecuId"] = codeEcu;
+    item["description"] = description;
+    item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
+  }
+  JsonObject counts = doc["counts"].to<JsonObject>();
+  counts["stored"] = storedCount;
+  counts["pending"] = pendingCount;
+  counts["permanent"] = permanentCount;
+  counts["total"] = state.entryCount;
+
+  const DtcHistoryData& historyState = obdClient_.dtcHistory();
+  const bool currentStateKnown =
+      state.scanCompletedAt != 0 &&
+      state.storedStatus == DtcCategoryStatus::Complete &&
+      state.pendingStatus == DtcCategoryStatus::Complete &&
+      state.permanentStatus == DtcCategoryStatus::Complete;
+  JsonObject history = doc["history"].to<JsonObject>();
+  history["count"] = historyState.entryCount;
+  history["changeSequence"] = historyState.changeSequence;
+  history["truncated"] = historyState.truncated;
+  history["currentStateKnown"] = currentStateKnown;
+  history["recoverySource"] = dtcHistoryPersistence_.recoverySource();
+  history["journalHealthy"] = dtcHistoryPersistence_.journalHealthy();
+  history["nvsHealthy"] = dtcHistoryPersistence_.nvsHealthy();
+  history["recordCrcValid"] =
+      dtcHistoryPersistence_.latestRecordCrcValid();
+  JsonArray historyEntries = history["entries"].to<JsonArray>();
+  for (size_t i = 0; i < historyState.entryCount; ++i) {
+    const DtcHistoryEntry& entry = historyState.entries[i];
+    bool currentlyListed = false;
+    for (size_t current = 0; current < state.entryCount; ++current) {
+      if (state.entries[current].raw == entry.raw &&
+          state.entries[current].ecuResponseId == entry.ecuResponseId) {
+        currentlyListed = true;
+        break;
+      }
+    }
+    JsonObject item = historyEntries.add<JsonObject>();
+    char code[6];
+    char codeEcu[12];
+    char description[112];
+    ObdDiagnostics::formatCode(entry.raw, code);
+    ObdDiagnostics::describeCodeRu(entry.raw, description,
+                                   sizeof(description));
+    snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
+    item["code"] = code;
+    item["raw"] = entry.raw;
+    item["ecuId"] = codeEcu;
+    item["description"] = description;
+    item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
+    item["currentlyListed"] = currentlyListed;
+    item["historicalOnly"] = currentStateKnown && !currentlyListed;
+    item["occurrenceCount"] = entry.occurrenceCount;
+    item["firstChangeSequence"] = entry.firstChangeSequence;
+    item["lastChangeSequence"] = entry.lastChangeSequence;
+    JsonArray seenKinds = item["seenKinds"].to<JsonArray>();
+    JsonArray lastKnownKinds = item["lastKnownPresentKinds"].to<JsonArray>();
+    if ((entry.seenKinds & DtcHistoryStored) != 0) seenKinds.add("stored");
+    if ((entry.seenKinds & DtcHistoryPending) != 0) seenKinds.add("pending");
+    if ((entry.seenKinds & DtcHistoryPermanent) != 0) {
+      seenKinds.add("permanent");
+    }
+    if ((entry.lastPresentKinds & DtcHistoryStored) != 0) {
+      lastKnownKinds.add("stored");
+    }
+    if ((entry.lastPresentKinds & DtcHistoryPending) != 0) {
+      lastKnownKinds.add("pending");
+    }
+    if ((entry.lastPresentKinds & DtcHistoryPermanent) != 0) {
+      lastKnownKinds.add("permanent");
+    }
+  }
+
+  JsonObject clear = doc["clear"].to<JsonObject>();
+  clear["result"] = ObdDiagnostics::clearResultName(state.clearResult);
+  clear["inProgress"] = state.clearResult == DtcClearResult::InProgress;
+  clear["startedAtMs"] = state.clearStartedAt;
+  clear["completedAtMs"] = state.clearCompletedAt;
+  clear["preclearScanComplete"] = state.clearPreScanComplete;
+  clear["snapshotPreserved"] = state.clearSnapshotPreserved;
+  clear["requiresFreshPreclearScan"] = true;
+  clear["requiresDurableSnapshot"] = true;
+  if (isfinite(state.verifiedSpeedKph)) {
+    clear["verifiedSpeedKph"] = state.verifiedSpeedKph;
+  } else {
+    clear["verifiedSpeedKph"] = nullptr;
+  }
+  if (isfinite(state.verifiedRpm)) clear["verifiedRpm"] = state.verifiedRpm;
+  else clear["verifiedRpm"] = nullptr;
+  if (isfinite(state.verifiedVoltage)) {
+    clear["verifiedVoltage"] = state.verifiedVoltage;
+  } else {
+    clear["verifiedVoltage"] = nullptr;
+  }
+  clear["requiresEngineOff"] = true;
+  clear["requiresVehicleStopped"] = true;
+  clear["clearsPermanentCodes"] = false;
+  clear["resetsReadinessAndFreezeFrame"] = true;
+  clear["available"] = state.operation == DtcOperation::Idle &&
+                         state.engineResponseId != 0;
+
+  String output;
+  output.reserve(12288);
+  serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::startDtcScan() {
+  touch();
+  if (obdClient_.diagnosticsState().operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  if (!requireAction("dtc-scan", lastDtcScanAt_, 2000)) return;
+  if (!obdClient_.requestDtcScan(millis())) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation could not be started\"}");
+    return;
+  }
+  server_.send(202, "application/json",
+               "{\"ok\":true,\"accepted\":true,\"operation\":\"scanning\"}");
+}
+
+void ServicePortal::clearDtcs() {
+  touch();
+  if (!server_.hasArg("plain")) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"JSON confirmation body required\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain"))) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+  const char* confirmation = request["confirmation"] | "";
+  const bool acknowledge = request["acknowledgeReadinessReset"] | false;
+  if (strcmp(confirmation, "CLEAR_DTC") != 0 || !acknowledge) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"exact DTC clear confirmation and readiness acknowledgement required\"}");
+    return;
+  }
+  const ObdDiagnosticsState& state = obdClient_.diagnosticsState();
+  if (state.operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  if (state.engineResponseId == 0) {
+    server_.send(412, "application/json",
+                 "{\"error\":\"engine ECU unknown; run DTC scan first\"}");
+    return;
+  }
+  if (!requireAction("dtc-clear", lastDtcClearAt_, 60000)) return;
+  if (!obdClient_.requestDtcClear(millis())) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"DTC clear verification could not be started\"}");
+    return;
+  }
+  server_.send(202, "application/json",
+               "{\"ok\":true,\"accepted\":true,\"operation\":\"preclear_scan\"}");
 }
 
 void ServicePortal::sendAssetStatus() {

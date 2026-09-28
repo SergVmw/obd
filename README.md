@@ -14,15 +14,17 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущий кандидат 0.3.9
+## Текущий source-кандидат 0.4.0
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.3.9** добавляет две функции поверх зафиксированного OTA-hardening 0.3.8: проверяемые пользовательские фон/логотип и software-only защиту trip/бензиновой калибровки от внезапного отключения питания. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI; для `app0/app1` показываются версия, running/boot/next роль и состояние образа.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.4.0** добавляет стандартную Check Engine/DTC диагностику поверх аппаратно принятого release 0.3.9. PID 01 отслеживает MIL и подтверждённый DTC count; асинхронно читаются stored Mode 03, pending Mode 07 и permanent Mode 0A с bounded ISO-TP. Главный GC9A01 показывает приоритетное предупреждение и первый код, а web UI — полный категоризированный список и осторожные расшифровки generic-кодов. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI.
 
 Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. Логотип пропорционально вписывается в `220×80`, а payload имеет ровно `width×height×2` байт. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest. Передача — raw body без multipart, с TWDT-safe чтением, 2-секундным idle timeout и отдельным 30-секундным абсолютным deadline. Встроенные carbon/HAVAL всегда остаются fallback; app-only OTA LittleFS не стирает.
 
 Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. На старте выбирается новейшая валидная sequence из LittleFS/NVS, torn tail игнорируется, а reset/calibration/service/low-voltage/reboot и остановка двигателя форсируют checkpoint. Непустой не монтируемый LittleFS никогда не форматируется автоматически. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
 
-**20 сентября 2026 исправление 0.3.7 подтверждено на приборе:** обычный app `.bin` прошёл штатный web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot стали APP1, image state — `valid`. Образ имел неполный последний raw-фрагмент 768 байт, поэтому проверен именно исправленный parser path. **Аппаратное acceptance 0.3.7→0.3.8 остаётся отдельным незакрытым gate; 0.3.9 также требует физической проверки после программной упаковки.** Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
+Стирание DTC никогда не выполняется автоматически. Ручной Mode 04 доступен только в сервисе после точного подтверждения и непосредственной проверки speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Он сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+
+**Аппаратные OTA подтверждены:** 20 сентября 2026 обычный app 0.3.7 успешно прошёл APP0→APP1 с автоматическим reboot и состоянием `valid`; 23 сентября 2026 упакованный app 0.3.9 успешно прошёл штатный web OTA из работающей 0.3.7. После автоматической перезагрузки сервис показал current/running/boot **0.3.9 в APP0**, **0.3.7 в APP1**, image state **`valid`**. Тем самым на N16R8 физически проверен и 332-байтный финальный raw-фрагмент 0.3.9. Точный бинарник 0.3.8 отдельно не устанавливался; проверки custom assets и random power cut для persistence остаются незакрытыми. Source-кандидат 0.4.0 ещё не упакован и не проходил аппаратную проверку Mode 03/07/0A и safety-gated Mode 04. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
 
 История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
@@ -31,6 +33,9 @@
 - TWAI ESP32-S3, автоматический bus-off recovery и RX budget 16 кадров/2 мс;
 - Task Watchdog для Arduino loopTask;
 - обнаружение поддерживаемых Mode 01 PID;
+- PID 01 MIL/DTC-count каждые 500 мс в движении и latched Check Engine warning на GC9A01;
+- асинхронные Mode 03/07/0A, bounded ISO-TP, до 32 DTC, web-список и осторожные generic-расшифровки;
+- ручной Mode 04 только после web-confirmation и свежих safety checks speed/RPM/voltage;
 - MAP, RPM, speed, MAF, throttle, STFT, LTFT, BARO, voltage, coolant, Fuel Rate и equivalence ratio;
 - расчёт относительного наддува;
 - бензиновый расход по PID 5E с резервом MAF;
@@ -201,9 +206,9 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, собирает только environment `esp32s3_n16r8`, сверяет committed 0.3.9 release artifacts и сохраняет `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine и Mode 04 guards, собирает только environment `esp32s3_n16r8`, отдельно сверяет неизменённые committed 0.3.9 release artifacts и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Release candidate 0.3.9
+## Последний упакованный release 0.3.9
 
 ```text
 releases/h2-gauge-v0.3.9-esp32s3-n16r8.bin
@@ -215,7 +220,7 @@ releases/h2-gauge-v0.3.9-esp32s3-n16r8-factory.bin
 SHA-256: 08917e028fb29841b54849f8266f8ba6512e36f671267581d543459cab7128bc
 ```
 
-Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **0.3.9 требует физической OTA/assets/random-cut проверки, а отдельный gate 0.3.7→0.3.8 остаётся незакрытым**. Полный release report: [`releases/README-v0.3.9.md`](releases/README-v0.3.9.md).
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **web OTA 0.3.7→0.3.9 аппаратно подтверждён 2026-09-23**, а custom assets и random-cut persistence ещё требуют физической проверки. Полный release report: [`releases/README-v0.3.9.md`](releases/README-v0.3.9.md).
 
 ## Flash и PSRAM
 

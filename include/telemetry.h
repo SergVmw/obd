@@ -47,6 +47,24 @@ struct TelemetryData {
   uint32_t canErrorCount = 0;
   uint16_t ecuResponseId = 0;
 
+  // Standard emissions diagnostics summary. Full categorized DTC data remains
+  // in ObdDiagnostics; these bounded fields are enough for the dashboard.
+  bool milStatusKnown = false;
+  bool milCommandedOn = false;
+  bool milAlertLatched = false;
+  uint8_t ecuReportedDtcCount = 0;
+  uint8_t dtcStoredCount = 0;
+  uint8_t dtcPendingCount = 0;
+  uint8_t dtcPermanentCount = 0;
+  uint16_t firstDtcRaw = 0;
+  bool dtcMisfirePresent = false;
+  bool dtcScanInProgress = false;
+  uint32_t dtcLastScanAt = 0;
+  uint8_t dtcHistoryCount = 0;
+  uint8_t dtcHistoricalOnlyCount = 0;
+  uint16_t firstHistoricalDtcRaw = 0;
+  bool dtcHistoryTruncated = false;
+
   float effectiveBaroKpa = 100.0f;
   float boostBar = 0.0f;
   float filteredBoostBar = 0.0f;

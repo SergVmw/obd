@@ -1,8 +1,8 @@
-# H2 Gauge 0.3.9 — актуальные проектные решения
+# H2 Gauge 0.4.0 — актуальные проектные решения
 
-**Дата актуализации:** 2026-09-22  
+**Дата актуализации:** 2026-09-28  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Штатный app `.bin` прошёл web OTA из APP0 в APP1, устройство автоматически перезагрузилось без RESET, running/boot — APP1, image state — `valid`; APP0 содержит 0.3.6.2, APP1 и текущая аппаратно принятая сборка — 0.3.7. Исправление последнего неполного raw-фрагмента доказано на реальном 768-байтном хвосте. 0.3.8 остаётся отдельным OTA-hardening кандидатом и требует физического gate. Следующий кандидат 0.3.9 добавляет custom visual assets и software-only journal 20/60; локальные программные проверки не заменяют тесты на физическом N16R8 и автомобиле.
+**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Затем 2026-09-23 упакованный обычный app 0.3.9 успешно прошёл штатный web OTA из работающей APP1/0.3.7 в APP0: server verification, boot read-back и автоматический reboot завершились без RESET; current/running/boot — APP0/0.3.9, APP1 — 0.3.7, image state — `valid`. Тем самым физически проверен 332-байтный финальный raw-фрагмент и унаследованный OTA-hardening path. Точный app 0.3.8 отдельно не устанавливался. Custom visual assets и software-only journal 20/60 реализованы в 0.3.9, но ещё требуют отдельных аппаратных visual/random-cut тестов. В source-кандидате 0.4.0 добавлена Check Engine/DTC диагностика; она прошла software gates, но ещё не упакована и не прошла аппаратную проверку чтения/стирания на Haval.
 
 ## 1. Назначение
 
@@ -83,6 +83,28 @@ Vref pin 5 → NC
 Возле VCC установить 100 нФ и рекомендуется 1 мкФ. TX/RX должны быть короткими. CAN-H/CAN-L вести витой парой. Дополнительный терминатор 120 Ом не устанавливать.
 
 OBD работает в read-only логике ISO 15765-4, 11-bit, начальная скорость 500 кбит/с. Производственные запросы — стандартный Mode 01. Mode 22/ISO-TP оставлен как отключённый framework; неподтверждённые Haval DID не добавляются.
+
+### Check Engine и DTC — кандидат 0.4.0
+
+После наблюдавшейся 2026-09-27 мигающей MIL под высокой нагрузкой добавлена bounded стандартная диагностика. PID 01 опрашивается каждые 500 мс в движении; любое MIL ON фиксируется в RAM до конца запуска. При первом обнаружении ECU, переходе MIL и изменении подтверждённого DTC count асинхронно читаются Mode 03 stored, Mode 07 pending и Mode 0A permanent. Поддержаны physical 11-bit engine ECU, single/multi-frame ISO-TP, до 32 кодов и 96 байт payload. На основном экране DTC имеет приоритет над LPG warning; `P0300..P0312` выделяются как пропуски.
+
+Mode 04 никогда не автоматический. Web endpoint требует точную фразу/acknowledgement и непосредственно перед командой физически перечитывает скорость PID 0D = 0, RPM PID 0C < 50 и ECU voltage PID 42 в диапазоне 11,5–16,5 В. Стирание сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC; после positive `0x44` выполняется контрольный scan. Полное решение, ограничения и аппаратный checklist: [`OBD_DTC_DIAGNOSTICS_DESIGN.md`](OBD_DTC_DIAGNOSTICS_DESIGN.md).
+
+### Ресурсная оценка Mode 22 — 2026-09-28
+
+Производительности N16R8 для нескольких низкочастотных Mode 22 DID достаточно. Финальная 0.3.9 использует 51 684 из 327 680 байт internal RAM (15,8%) и 1 158 765 из 4 194 304 байт app Flash (27,6%); background/assets работают из startup PSRAM cache, а journal пишет только dirty snapshot раз в 20 секунд. Уже реализованный transport держит единственный outstanding transaction, до восьми compile-time DID, максимум 48 байт ISO-TP payload и использует общий `maxRequestsPerSecond`/OBD timeout. Поэтому один-два DID с периодом 500–1000 мс не являются заметной CPU/RAM/Flash нагрузкой.
+
+Причина отключения — не производительность, а отсутствие подтверждённых для Haval H2 `requestId`, `responseId`, 16-bit DID, длины payload, byte order, формулы, единиц и validity conditions. Service `0x22 ReadDataByIdentifier` не является одним «PID 22»: каждый параметр имеет отдельный manufacturer DID. Случайный перебор DID запрещён.
+
+Безопасный порядок будущего включения: сначала service-only одиночный read на стоящем автомобиле, без brute-force scan; явно показать raw positive `0x62 DID ...`, negative response/timeout и CAN IDs; затем подтвердить значение при двух известных состояниях; только после этого добавить decoder. Первоначальный production limit — максимум два verified DID, не чаще 1 Гц каждый, default OFF, с сохранением приоритета MAP/RPM Mode 01. Частоту можно повышать только после измерения OBD timeouts, CAN errors и render latency.
+
+### Поиск сигнала складывания зеркал
+
+Складывание зеркал не следует заранее считать OBD PID или Mode 22 DID. Наиболее вероятный первый объект поиска — обычный body-CAN кадр/бит состояния либо короткая команда BCM/дверного модуля; возможен также локальный LIN или проводной сигнал, который вообще не проходит через доступную на OBD pins 6/14 шину.
+
+CAN Monitor 0.3.9 уже показывает сырой CAN ID, DLC и последний 8-байтный payload, count и age, пока обычный OBD polling в service mode остановлен. Но это агрегат максимум по 32 ID, а не хронологическая запись: повторный кадр того же ID заменяет предыдущий payload, поэтому короткую команду зеркал 1-секундный REST snapshot может пропустить.
+
+Безопасное развитие — отдельный RX-only capture в PSRAM: метка времени каждого кадра, ограниченная 5–10-секундная кольцевая запись, этапы baseline/action/after, поиск изменившихся байтов/битов и выгрузка CSV/candump. Запись не должна отправлять произвольные кадры, повторять команду или писать поток во Flash. Сначала необходимо повторить fold/unfold несколько раз и подтвердить один и тот же ID/бит. Если на OBD-шине кандидата нет, следующий шаг — определить архитектуру body CAN/LIN и доступ к правильной шине, а не перебирать Mode 22 DID.
 
 TWAI обрабатывает bus-off через штатный recovery. CAN Monitor первой версии предоставляет REST-снимки агрегированных кадров и не разрешает произвольную отправку из web UI.
 
@@ -327,6 +349,19 @@ SHA-256 factory: 08917e028fb29841b54849f8266f8ba6512e36f671267581d543459cab7128b
 
 Clean build, H2 manifest `0.3.9 / esp32s3-n16r8`, host/static/browser gates, app/build byte equality, checksums и factory layout проверены. В `releases/` оставлена только 0.3.9. Полный отчёт: [`../releases/README-v0.3.9.md`](../releases/README-v0.3.9.md).
 
+Текущий непакетированный source-кандидат 0.4.0 после DTC-функции:
+
+```text
+RAM: 52 180 / 327 680 bytes (15.9%)
+app Flash payload: 1 176 713 / 4 194 304 bytes (28.1%)
+app .bin: 1 177 136 bytes
+build SHA-256: ddcbbfea5a0e2def134888fc11baba9f7f964408b3228d0071527b78565d4423
+embedded web: 137 302 bytes HTML → 65 646 bytes deterministic gzip
+manifest: 0.4.0 / esp32s3-n16r8 at app offset 0x1c0d8
+```
+
+Прошли восемь DTC host-групп, прежние 25 brightness, 11 OTA, persistence/storage recovery, все static/font gates, browser DTC/OTA/assets fixture и PlatformIO build. Это ещё не release: `releases/` намеренно остаётся неизменённым 0.3.9 до аппаратной проверки чтения DTC и осознанного Mode 04.
+
 ### Реализованный PSRAM-кэш и render benchmark
 
 Статус: реализовано и проверено сборкой 2026-09-18; физический runtime-тест на GC9A01 ещё обязателен.
@@ -441,8 +476,11 @@ POST конфигурации проверяет целочисленные ди
 10. Измерить ток, падение 5 В, температуру закрытого корпуса и поведение под солнцем.
 11. Подтвердить BLK logic/active-HIGH, работу 20% ↔ 80%, ADC GPIO6, обучение и ручной четырёхкратный жест по [чек-листу яркости](BRIGHTNESS_GUIDE.md).
 12. **Выполнено 2026-09-20:** app-only мост 0.3.6.2 в APP0 → штатный web OTA обычного app 0.3.7 → server verification → автоматический reboot без RESET. Подтверждены current 0.3.7, APP0 0.3.6.2, APP1 0.3.7, running=boot APP1 и image state `valid`; последний 768-байтный raw fragment прошёл без TWDT.
-13. **Ожидает выполнения для 0.3.8:** с работающего 0.3.7 пройти metadata preflight, штатный OTA обычного app 0.3.8 и автоматический reboot; подтвердить running/boot 0.3.8, противоположный slot 0.3.7, state `valid` и сохранность schema 6/NVS.
-14. **Ожидает выполнения для 0.3.9 assets:** загрузить фон/логотип, проверить preview на GC9A01, reboot, disable/delete, app0↔app1 OTA/rollback и random cut на стадиях A/B commit.
-15. **Ожидает выполнения для 0.3.9 persistence:** измерить append/flush/read-back, выполнить серию random cut в начале/середине/конце append и при rotation, подтвердить newest LittleFS/NVS recovery и реальные loss bounds 20/60.
+13. **Точный бинарник 0.3.8 не устанавливался:** отдельный переход 0.3.7→0.3.8 остаётся невыполненным, если требуется принять именно архивный app 0.3.8.
+14. **Выполнено 2026-09-23 для 0.3.9:** штатный OTA из APP1/0.3.7 в APP0/0.3.9, автоматический reboot; подтверждены current/running/boot APP0/0.3.9, APP1/0.3.7 и state `valid`; финальный raw fragment 332 байта прошёл.
+15. **Ожидает выполнения для 0.3.9 assets:** загрузить фон/логотип, проверить preview на GC9A01, reboot, disable/delete, обратный OTA/rollback и random cut на стадиях A/B commit.
+16. **Ожидает выполнения для 0.3.9 persistence:** измерить append/flush/read-back, выполнить серию random cut в начале/середине/конце append и при rotation, подтвердить newest LittleFS/NVS recovery и реальные loss bounds 20/60.
+17. **Ожидает выполнения для 0.4.0 DTC read:** на стоящем Haval сравнить PID 01 и Mode 03/07/0A с независимым сканером, проверить ECU IDs, category status, DTC formatting, GC9A01 warning и отсутствие роста CAN errors/timeouts.
+18. **Ожидает отдельного осознанного выполнения для Mode 04:** сначала сохранить DTC/freeze-frame внешним сканером; доказать отказ при speed>0, RPM≥50 и unsafe/unknown voltage; затем engine OFF/ignition ON подтвердить request, positive `0x44`, readiness reset, контрольный scan и сохранение permanent DTC.
 
 N16R8 с Octal PSRAM имеет паспортный верхний предел окружающей температуры +65 °C без ECC. DevKitC-1 не является automotive-qualified платой.

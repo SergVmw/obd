@@ -11,7 +11,9 @@
 #include "asset_store.h"
 #include "brightness_manager.h"
 #include "can_monitor.h"
+#include "dtc_history_persistence.h"
 #include "firmware_slots.h"
+#include "obd_client.h"
 #include "ota_diagnostics.h"
 #include "runtime_persistence.h"
 #include "telemetry.h"
@@ -21,16 +23,18 @@ class ServicePortal {
   ServicePortal(ConfigStore& configStore, TelemetryData& telemetry,
                 TelemetryEngine& engine, TripStore& tripStore,
                 PetrolCalibrationStore& petrolCalibrationStore,
-                RuntimePersistence& persistence, AssetStore& assets,
-                LittleFsStorage& littleFs, CanMonitor& canMonitor,
-                BrightnessManager& brightness,
-                OtaDiagnostics& otaDiagnostics)
+                RuntimePersistence& persistence,
+                DtcHistoryPersistence& dtcHistoryPersistence,
+                AssetStore& assets, LittleFsStorage& littleFs,
+                CanMonitor& canMonitor, ObdClient& obdClient,
+                BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics)
       : configStore_(configStore), telemetry_(telemetry), engine_(engine),
         tripStore_(tripStore),
         petrolCalibrationStore_(petrolCalibrationStore),
-        persistence_(persistence), assets_(assets), littleFs_(littleFs),
-        canMonitor_(canMonitor), brightness_(brightness),
-        otaDiagnostics_(otaDiagnostics), server_(80) {}
+        persistence_(persistence), dtcHistoryPersistence_(dtcHistoryPersistence),
+        assets_(assets), littleFs_(littleFs), canMonitor_(canMonitor),
+        obdClient_(obdClient),
+        brightness_(brightness), otaDiagnostics_(otaDiagnostics), server_(80) {}
 
   bool begin();
   void loop();
@@ -50,6 +54,9 @@ class ServicePortal {
   void applyPetrolCalibration();
   void sendCanSnapshot();
   void clearCanSnapshot();
+  void sendDtcStatus();
+  void startDtcScan();
+  void clearDtcs();
   void sendAssetStatus();
   void handleAssetPreflight();
   void handleAssetBody(VisualAssetType type);
@@ -106,9 +113,11 @@ class ServicePortal {
   TripStore& tripStore_;
   PetrolCalibrationStore& petrolCalibrationStore_;
   RuntimePersistence& persistence_;
+  DtcHistoryPersistence& dtcHistoryPersistence_;
   AssetStore& assets_;
   LittleFsStorage& littleFs_;
   CanMonitor& canMonitor_;
+  ObdClient& obdClient_;
   BrightnessManager& brightness_;
   OtaDiagnostics& otaDiagnostics_;
   FirmwareSlots firmwareSlots_;
@@ -118,6 +127,8 @@ class ServicePortal {
   uint32_t startedAt_ = 0;
   uint32_t lastActivityAt_ = 0;
   uint32_t lastCanSnapshotAt_ = 0;
+  uint32_t lastDtcScanAt_ = 0;
+  uint32_t lastDtcClearAt_ = 0;
   uint32_t lastFactoryResetAt_ = 0;
   uint32_t lastLightResetAt_ = 0;
   uint32_t lastAssetAttemptAt_ = 0;

@@ -67,12 +67,20 @@ void ObdClient::loop(uint32_t now) {
   handleAlerts(now);
   receiveFrames(now);
 
-  if (paused_ || recovering_) return;
-
-  if (waiting_ && now - requestSentAt_ > config_.obdTimeoutMs) {
+  // Finish/expire an already transmitted request even if service mode paused
+  // ordinary polling after it was sent. Otherwise one stale transaction would
+  // block controlled service diagnostics indefinitely.
+  if (waiting_ && now - requestSentAt_ > pendingTimeoutMs_) {
     finishPending(true);
   }
-  if (waiting_) return;
+  if (waiting_ || recovering_) return;
+
+  diagnostics_.tick(now, !paused_);
+  // Automatic scans are never started while paused. An already active scan, or
+  // an explicitly requested service scan/clear, remains asynchronous and may
+  // finish while the web service is open.
+  if (sendDiagnostics(now)) return;
+  if (paused_) return;
 
   if (!discoveryDone_) {
     runDiscovery(now);
@@ -95,7 +103,7 @@ void ObdClient::handleAlerts(uint32_t now) {
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     ++telemetry_.canErrorCount;
-    waiting_ = false;
+    if (waiting_) finishPending(true);
     recovering_ = true;
     ESP_LOGE(kTag, "TWAI bus off; requesting recovery");
     const esp_err_t result = twai_initiate_recovery();
@@ -169,7 +177,9 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
 
   monitor_.record(message, true, now);
   waiting_ = true;
+  pendingRequest_ = PendingRequest::Mode01;
   pendingPid_ = pid;
+  pendingTimeoutMs_ = config_.obdTimeoutMs;
   requestSentAt_ = now;
   lastAnyRequestAt_ = now;
   return true;
@@ -193,7 +203,36 @@ bool ObdClient::sendMode22(uint32_t now) {
 
   monitor_.record(message, true, now);
   waiting_ = true;
-  pendingPid_ = 0xFF;  // Reserved internal marker for a Mode 22 transaction.
+  pendingRequest_ = PendingRequest::Mode22;
+  pendingPid_ = 0;
+  pendingTimeoutMs_ = config_.obdTimeoutMs;
+  requestSentAt_ = now;
+  lastAnyRequestAt_ = now;
+  return true;
+}
+
+bool ObdClient::sendDiagnostics(uint32_t now) {
+  if (!diagnostics_.hasPendingRequest()) return false;
+  const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
+                                  ? 1
+                                  : config_.maxRequestsPerSecond;
+  uint32_t minGap = 1000UL / maxRequests;
+  if (minGap < 20) minGap = 20;
+  if (now - lastAnyRequestAt_ < minGap) return false;
+
+  twai_message_t message{};
+  if (!diagnostics_.buildRequest(now, message)) return false;
+  if (twai_transmit(&message, pdMS_TO_TICKS(20)) != ESP_OK) {
+    ++telemetry_.canErrorCount;
+    diagnostics_.transportFailed(now);
+    return false;
+  }
+
+  monitor_.record(message, true, now);
+  waiting_ = true;
+  pendingRequest_ = PendingRequest::Diagnostics;
+  pendingPid_ = 0;
+  pendingTimeoutMs_ = ObdDiagnostics::kDiagnosticTimeoutMs;
   requestSentAt_ = now;
   lastAnyRequestAt_ = now;
   return true;
@@ -210,6 +249,23 @@ void ObdClient::receiveFrames(uint32_t now) {
     monitor_.record(message, false, now);
     twai_message_t flowControl{};
     bool needsFlowControl = false;
+    if (diagnostics_.handleFrame(message, now, flowControl,
+                                 needsFlowControl)) {
+      if (needsFlowControl) {
+        if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
+          ++telemetry_.canErrorCount;
+          diagnostics_.transportFailed(now);
+        } else {
+          monitor_.record(flowControl, true, now);
+        }
+      }
+      if (pendingRequest_ == PendingRequest::Diagnostics &&
+          !diagnostics_.waiting()) {
+        finishPending(false);
+      }
+      continue;
+    }
+
     if (mode22_.handleFrame(message, now, flowControl, needsFlowControl)) {
       if (needsFlowControl) {
         if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
@@ -219,7 +275,9 @@ void ObdClient::receiveFrames(uint32_t now) {
           monitor_.record(flowControl, true, now);
         }
       }
-      if (pendingPid_ == 0xFF && !mode22_.waiting()) finishPending(false);
+      if (pendingRequest_ == PendingRequest::Mode22 && !mode22_.waiting()) {
+        finishPending(false);
+      }
       continue;
     }
 
@@ -248,6 +306,11 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x40:
       if (message.data_length_code >= 7) storeSupportedMask(pid, &message.data[3]);
       break;
+    case 0x01:
+      if (message.data_length_code >= 7) {
+        diagnostics_.observeMonitorStatus(a, now, message.identifier);
+      }
+      break;
     case 0x05:
       telemetry_.coolantC.set(static_cast<float>(a) - 40.0f, now);
       break;
@@ -264,6 +327,7 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
     case 0x0C:
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
+      diagnostics_.observeEngineResponse(message.identifier);
       break;
     case 0x0D:
       telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
@@ -295,7 +359,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
   }
 
-  if (waiting_ && pid == pendingPid_) finishPending(false);
+  if (waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
+      pid == pendingPid_) {
+    finishPending(false);
+  }
 }
 
 void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data) {
@@ -382,7 +449,13 @@ void ObdClient::runPolling(uint32_t now) {
 
 void ObdClient::finishPending(bool timeout) {
   if (timeout) ++telemetry_.obdTimeoutCount;
-  if (pendingPid_ == 0xFF) mode22_.timeout();
+  if (pendingRequest_ == PendingRequest::Mode22 && timeout) {
+    mode22_.timeout();
+  } else if (pendingRequest_ == PendingRequest::Diagnostics && timeout) {
+    diagnostics_.timeout(millis());
+  }
   waiting_ = false;
+  pendingRequest_ = PendingRequest::None;
   pendingPid_ = 0;
+  pendingTimeoutMs_ = 0;
 }

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <esp_log.h>
 #include "asset_store.h"
+#include "obd_diagnostics.h"
 #include "pins.h"
 #include "startup_logo.h"
 #include "ui_fonts.h"
@@ -671,6 +672,39 @@ void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,
 
 void DashboardUi::drawStatusRow(const TelemetryData& data,
                                 const ConfigData& config, uint32_t now) {
+  const uint8_t capturedDtcCount = data.dtcStoredCount + data.dtcPendingCount +
+                                   data.dtcPermanentCount;
+  const bool engineFault = data.milCommandedOn || data.milAlertLatched ||
+                           data.ecuReportedDtcCount > 0 ||
+                           capturedDtcCount > 0;
+  if (engineFault) {
+    char warning[32];
+    char code[6]{};
+    if (data.firstDtcRaw != 0) {
+      ObdDiagnostics::formatCode(data.firstDtcRaw, code);
+    }
+    if (data.dtcMisfirePresent) {
+      snprintf(warning, sizeof(warning),
+               isRussian(config) ? "ПРОПУСКИ %s!" : "MISFIRE %s!",
+               code[0] ? code : "DTC");
+    } else if (data.milCommandedOn || data.milAlertLatched) {
+      snprintf(warning, sizeof(warning), "CHECK ENGINE%s%s",
+               code[0] ? " " : "!", code);
+    } else {
+      snprintf(warning, sizeof(warning), "DTC %s", code[0] ? code : "!");
+    }
+    const uint16_t color =
+        (data.milCommandedOn || data.milAlertLatched ||
+         data.dtcMisfirePresent)
+            ? config.colorDanger
+            : config.colorWarning;
+    sprite_.fillRoundRect(24, 201, 192, 20, 8, kPanel);
+    sprite_.drawRoundRect(24, 201, 192, 20, 8, color);
+    drawText(warning, 120, 211, MC_DATUM, color, FontRole::Small,
+             labelFont(config, true));
+    return;
+  }
+
   if (data.fuelTrimWarning) {
     sprite_.fillRoundRect(31, 201, 178, 20, 8, kPanel);
     sprite_.drawRoundRect(31, 201, 178, 20, 8, config.colorWarning);
@@ -777,8 +811,9 @@ void DashboardUi::drawTemperatures(const TelemetryData& data,
 
 void DashboardUi::drawDiagnostics(const TelemetryData& data,
                                   const ConfigData& config, uint32_t now) {
-  drawText(translated(config, "СЕРВИС OBD", "OBD SERVICE"), 120, 25,
-           MC_DATUM, kMuted, FontRole::Medium, labelFont(config, true));
+  drawText(translated(config, "ДИАГНОСТИКА OBD", "OBD DIAGNOSTICS"), 120,
+           25, MC_DATUM, kMuted, FontRole::Medium,
+           labelFont(config, true));
 
   char line[64];
   const uint16_t stateColor =
@@ -786,30 +821,72 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
   drawText(data.obdConnected(now)
                ? translated(config, "CAN ПОДКЛЮЧЕН", "CAN CONNECTED")
                : translated(config, "CAN НЕТ СВЯЗИ", "CAN OFFLINE"),
-           35, 63, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
+           31, 58, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
 
   snprintf(line, sizeof(line),
            isRussian(config) ? "ЭБУ: 0x%03X" : "ECU: 0x%03X",
            data.ecuResponseId);
-  drawText(line, 35, 91, ML_DATUM, config.colorText, FontRole::Small,
+  drawText(line, 31, 83, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
+
+  const uint16_t milColor =
+      (data.milCommandedOn || data.milAlertLatched)
+          ? config.colorDanger
+          : (data.milStatusKnown ? config.colorBoost : kMuted);
   snprintf(line, sizeof(line),
-           isRussian(config) ? "ОТВЕТЫ: %lu" : "Responses: %lu",
-           static_cast<unsigned long>(data.obdResponseCount));
-  drawText(line, 35, 119, ML_DATUM, config.colorText, FontRole::Small,
+           isRussian(config) ? "CHECK ENGINE: %s · ЭБУ %u"
+                             : "CHECK ENGINE: %s · ECU %u",
+           data.milStatusKnown
+               ? ((data.milCommandedOn || data.milAlertLatched) ? "ON" : "OFF")
+               : "?",
+           data.ecuReportedDtcCount);
+  drawText(line, 31, 108, ML_DATUM, milColor, FontRole::Small,
            labelFont(config));
+
   snprintf(line, sizeof(line),
-           isRussian(config) ? "ТАЙМАУТЫ: %lu" : "Timeouts: %lu",
-           static_cast<unsigned long>(data.obdTimeoutCount));
-  drawText(line, 35, 147, ML_DATUM, config.colorText, FontRole::Small,
+           isRussian(config) ? "DTC: СОХР %u · ОЖИД %u · ПОСТ %u"
+                             : "DTC: STO %u · PEN %u · PERM %u",
+           data.dtcStoredCount, data.dtcPendingCount,
+           data.dtcPermanentCount);
+  drawText(line, 31, 133, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
+
+  if (data.firstDtcRaw != 0) {
+    char code[6];
+    ObdDiagnostics::formatCode(data.firstDtcRaw, code);
+    snprintf(line, sizeof(line),
+             data.dtcMisfirePresent
+                 ? (isRussian(config) ? "КОД: %s · ПРОПУСКИ"
+                                      : "CODE: %s · MISFIRE")
+                 : (isRussian(config) ? "КОД: %s" : "CODE: %s"),
+             code);
+  } else if (data.firstHistoricalDtcRaw != 0) {
+    char code[6];
+    ObdDiagnostics::formatCode(data.firstHistoricalDtcRaw, code);
+    snprintf(line, sizeof(line),
+             isRussian(config) ? "ИСТОРИЯ: %s · %u" : "HISTORY: %s · %u",
+             code, data.dtcHistoricalOnlyCount);
+  } else {
+    strlcpy(line,
+            data.dtcScanInProgress
+                ? translated(config, "КОДЫ: ЧТЕНИЕ...", "CODES: READING...")
+                : translated(config, "КОДЫ: НЕТ", "CODES: NONE"),
+            sizeof(line));
+  }
+  drawText(line, 31, 158, ML_DATUM,
+           data.dtcMisfirePresent ? config.colorDanger : config.colorWarning,
+           FontRole::Small, labelFont(config));
+
   snprintf(line, sizeof(line),
-           isRussian(config) ? "ОШИБКИ CAN: %lu" : "CAN errors: %lu",
+           isRussian(config) ? "ТАЙМАУТ/CAN: %lu/%lu"
+                             : "TIMEOUT/CAN: %lu/%lu",
+           static_cast<unsigned long>(data.obdTimeoutCount),
            static_cast<unsigned long>(data.canErrorCount));
-  drawText(line, 35, 175, ML_DATUM, config.colorText, FontRole::Small,
+  drawText(line, 31, 183, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
-  drawText(translated(config, "ТОЛЬКО ЧТЕНИЕ", "Read-only Mode 01"), 35,
-           205, ML_DATUM, kMuted, FontRole::Small, labelFont(config));
+  drawText(translated(config, "КОДЫ 03/07/0A · СТИРАНИЕ В WEB",
+                        "DTC 03/07/0A · CLEAR IN WEB"),
+           31, 210, ML_DATUM, kMuted, FontRole::Small, labelFont(config));
 }
 
 void DashboardUi::showService(const String& ssid, const String& ip,

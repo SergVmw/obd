@@ -10,6 +10,8 @@
 #include "LittleFS.h"
 #include "Preferences.h"
 #include "asset_store.h"
+#include "dtc_history_persistence.h"
+#include "dtc_history_snapshot.h"
 #include "persistence_snapshot.h"
 #include "runtime_persistence.h"
 #include "storage_crc32.h"
@@ -246,6 +248,107 @@ void testFactoryResetSequenceDefeatsUndeletedStaleSegment() {
   assert(bootCalibration.active == 0);
 }
 
+DtcHistoryData dtcHistoryWith(uint16_t raw, uint8_t kinds,
+                              uint32_t changeSequence = 1) {
+  DtcHistoryData history{};
+  history.entryCount = 1;
+  history.changeSequence = changeSequence;
+  history.entries[0].raw = raw;
+  history.entries[0].ecuResponseId = 0x7E8;
+  history.entries[0].seenKinds = kinds;
+  history.entries[0].lastPresentKinds = kinds;
+  history.entries[0].occurrenceCount = 1;
+  history.entries[0].firstChangeSequence = changeSequence;
+  history.entries[0].lastChangeSequence = changeSequence;
+  return history;
+}
+
+std::vector<uint8_t> dtcRecord(uint32_t sequence,
+                               const DtcHistoryData& history) {
+  std::vector<uint8_t> bytes(DtcHistorySnapshot::kRecordBytes);
+  assert(DtcHistorySnapshot::encode(sequence, history, bytes.data(),
+                                    bytes.size()));
+  return bytes;
+}
+
+void testDtcHistorySnapshotAndDurableMirror() {
+  resetEnvironment();
+  DtcHistoryData history =
+      dtcHistoryWith(0x0301, DtcHistoryStored | DtcHistoryPending, 7);
+  history.entries[0].occurrenceCount = 3;
+  const auto encoded = dtcRecord(12, history);
+  DtcHistorySnapshot::Decoded decoded;
+  assert(DtcHistorySnapshot::decode(encoded.data(), encoded.size(), decoded));
+  assert(decoded.sequence == 12);
+  assert(decoded.history.changeSequence == 7);
+  assert(decoded.history.entryCount == 1);
+  assert(decoded.history.entries[0].raw == 0x0301);
+  assert(decoded.history.entries[0].occurrenceCount == 3);
+  auto corrupt = encoded;
+  corrupt[31] ^= 0x80;
+  assert(!DtcHistorySnapshot::valid(corrupt.data(), corrupt.size()));
+
+  LittleFsStorage storage = mountedStorage();
+  DtcHistoryData recovered{};
+  DtcHistoryPersistence persistence;
+  assert(persistence.begin(storage, recovered));
+  assert(recovered.entryCount == 0);
+  assert(persistence.latestSequence() == 1);
+  assert(LittleFS.files["/dtc-history.a"].size() ==
+         DtcHistorySnapshot::kRecordBytes);
+
+  hostMillis += DtcHistoryPersistence::kJournalIntervalMs;
+  persistence.periodic(hostMillis, history);
+  assert(persistence.latestSequence() == 2);
+  assert(persistence.journalSequence() == 2);
+  assert(persistence.nvsSequence() == 1);
+  assert(persistence.checkpoint(history));
+  assert(persistence.nvsSequence() == 2);
+
+  DtcHistoryData afterReboot{};
+  DtcHistoryPersistence rebooted;
+  assert(rebooted.begin(storage, afterReboot));
+  assert(afterReboot.entryCount == 1);
+  assert(afterReboot.entries[0].raw == 0x0301);
+  assert(afterReboot.entries[0].seenKinds ==
+         (DtcHistoryStored | DtcHistoryPending));
+  assert(rebooted.latestRecordCrcValid());
+
+  afterReboot.changeSequence = 8;
+  afterReboot.entries[0].lastPresentKinds = 0;
+  afterReboot.entries[0].lastChangeSequence = 8;
+  hostfs::maxWritePerCall = 0;
+  Preferences::failWrite = true;
+  assert(!rebooted.checkpoint(afterReboot));
+  hostfs::maxWritePerCall = std::numeric_limits<size_t>::max();
+  Preferences::failWrite = false;
+  assert(rebooted.checkpoint(afterReboot));
+}
+
+void testDtcHistoryTornJournalFallsBackToNvs() {
+  resetEnvironment();
+  const DtcHistoryData oldHistory =
+      dtcHistoryWith(0x0300, DtcHistoryStored, 3);
+  DtcHistoryData newestHistory =
+      dtcHistoryWith(0x0302, DtcHistoryPending, 4);
+  std::vector<uint8_t> segment = dtcRecord(9, oldHistory);
+  const auto torn = dtcRecord(10, newestHistory);
+  segment.insert(segment.end(), torn.begin(), torn.begin() + 73);
+  LittleFS.files["/dtc-history.a"] = segment;
+  Preferences::storage["h2dtchist/snapshot"] = dtcRecord(10, newestHistory);
+
+  LittleFsStorage storage = mountedStorage();
+  DtcHistoryData recovered{};
+  DtcHistoryPersistence persistence;
+  assert(persistence.begin(storage, recovered));
+  assert(std::string(persistence.recoverySource()) == "nvs_mirror");
+  assert(persistence.latestSequence() == 10);
+  assert(recovered.entries[0].raw == 0x0302);
+  assert(persistence.activeSegment() == 'B');
+  assert(LittleFS.files["/dtc-history.b"].size() ==
+         DtcHistorySnapshot::kRecordBytes);
+}
+
 std::vector<uint8_t> pattern(size_t length, uint8_t seed) {
   std::vector<uint8_t> bytes(length);
   for (size_t i = 0; i < length; ++i) {
@@ -360,6 +463,8 @@ int main() {
   testTornTailAndNewestNvsRecovery();
   testJournalNewerRepairsNvsAndCorruptCrcFallsBack();
   testFactoryResetSequenceDefeatsUndeletedStaleSegment();
+  testDtcHistorySnapshotAndDurableMirror();
+  testDtcHistoryTornJournalFallsBackToNvs();
   testAssetValidationAbAndFallback();
   std::cout << "storage recovery tests passed\n";
   return 0;

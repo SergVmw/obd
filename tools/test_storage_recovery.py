@@ -17,6 +17,8 @@ with tempfile.TemporaryDirectory(prefix="h2g-storage-recovery-") as tmp:
         str(ROOT / "tests/host/storage_recovery_tests.cpp"),
         str(ROOT / "src/runtime_persistence.cpp"),
         str(ROOT / "src/persistence_snapshot.cpp"),
+        str(ROOT / "src/dtc_history_persistence.cpp"),
+        str(ROOT / "src/dtc_history_snapshot.cpp"),
         str(ROOT / "src/asset_store.cpp"),
         str(ROOT / "src/storage_crc32.cpp"),
         str(ROOT / "src/telemetry.cpp"),
