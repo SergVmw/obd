@@ -6,6 +6,7 @@
 #include "can_monitor.h"
 #include "mode22.h"
 #include "obd_diagnostics.h"
+#include "obd_request_timing.h"
 #include "telemetry.h"
 #include "pins.h"
 
@@ -27,6 +28,9 @@ class ObdClient {
   bool requestDtcClear(uint32_t now) { return diagnostics_.requestClear(now); }
   bool confirmDtcPreclearPreserved(bool success, uint32_t now) {
     return diagnostics_.confirmPreclearPreserved(success, now);
+  }
+  bool confirmDtcPostClearPreserved(bool success, uint32_t now) {
+    return diagnostics_.confirmPostClearPreserved(success, now);
   }
   const ObdDiagnosticsState& diagnosticsState() const {
     return diagnostics_.state();
@@ -77,6 +81,7 @@ class ObdClient {
   uint8_t pendingPid_ = 0;
   uint32_t pendingTimeoutMs_ = 0;
   uint32_t requestSentAt_ = 0;
+  ObdRequestTiming diagnosticTiming_;
   uint32_t lastAnyRequestAt_ = 0;
 
   bool discoveryDone_ = false;
@@ -85,7 +90,9 @@ class ObdClient {
   uint32_t supportedMasks_[3]{};
   bool maskKnown_[3]{};
 
-  static constexpr uint8_t kDiscoveryPids_[3] = {0x00, 0x20, 0x40};
+  // RPM is discovered first so the first valid PID 0C response binds the
+  // engine ECU before support masks or normal telemetry are accepted.
+  static constexpr uint8_t kDiscoveryPids_[4] = {0x0C, 0x00, 0x20, 0x40};
   PollItem poll_[13] = {
       {0x01, 500, 0},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100, 0},   // MAP

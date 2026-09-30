@@ -19,6 +19,7 @@ enum class DtcCategoryStatus : uint8_t {
   Timeout = 4,
   Malformed = 5,
   TransportError = 6,
+  NegativeResponse = 7,
 };
 
 enum class DtcOperation : uint8_t {
@@ -29,6 +30,7 @@ enum class DtcOperation : uint8_t {
   VerifyRpm = 4,
   VerifyVoltage = 5,
   Clearing = 6,
+  PreserveAfterClear = 7,
 };
 
 enum class DtcClearResult : uint8_t {
@@ -63,6 +65,7 @@ struct ObdDiagnosticsState {
   bool milLatched = false;
   uint8_t ecuReportedDtcCount = 0;
   uint16_t engineResponseId = 0;
+  bool engineEcuLocked = false;
   uint32_t monitorUpdatedAt = 0;
   uint32_t firstMilSeenAt = 0;
   uint32_t lastMilSeenAt = 0;
@@ -84,6 +87,11 @@ struct ObdDiagnosticsState {
   uint32_t clearCompletedAt = 0;
   bool clearPreScanComplete = false;
   bool clearSnapshotPreserved = false;
+  bool postClearVerificationPending = false;
+  bool postClearScanComplete = false;
+  bool postClearSnapshotPreserved = false;
+  bool responsePending = false;
+  uint8_t responsePendingCount = 0;
   float verifiedSpeedKph = NAN;
   float verifiedRpm = NAN;
   float verifiedVoltage = NAN;
@@ -104,14 +112,17 @@ class ObdDiagnostics {
   void restoreHistory(const DtcHistoryData& history);
   void resetHistory();
 
-  void observeMonitorStatus(uint8_t statusByte, uint32_t now,
+  bool observeMonitorStatus(uint8_t statusByte, uint32_t now,
                             uint32_t responseId);
-  void observeEngineResponse(uint32_t responseId);
-  void tick(uint32_t now, bool automaticAllowed);
+  bool observeEngineResponse(uint32_t responseId);
+  bool acceptsEngineResponse(uint32_t responseId) const;
+  void tick(uint32_t now, bool periodicScanAllowed);
 
   bool requestScan(uint32_t now);
   bool requestClear(uint32_t now);
   bool confirmPreclearPreserved(bool success, uint32_t now);
+  bool confirmPostClearPreserved(bool success, uint32_t now);
+  bool takeResponsePendingEvent();
   bool hasPendingRequest() const { return requestPending_ && !waiting_; }
   bool manualWorkActive() const {
     return state_.manualOperation && state_.operation != DtcOperation::Idle;
@@ -133,13 +144,17 @@ class ObdDiagnostics {
   static const char* clearResultName(DtcClearResult result);
 
   static constexpr uint32_t kDiagnosticTimeoutMs = 750;
+  static constexpr uint32_t kResponsePendingTimeoutMs = 5000;
+  static constexpr uint32_t kDiagnosticAbsoluteTimeoutMs = 15000;
+  static constexpr uint8_t kMaxResponsePending = 8;
   static constexpr uint32_t kHealthyScanIntervalMs = 300000;
   static constexpr uint32_t kFaultScanIntervalMs = 60000;
 
  private:
   enum class Request : uint8_t {
     None = 0,
-    DiscoverMonitor,
+    DiscoverEngineRpm,
+    ReadMonitor,
     ReadStored,
     ReadPending,
     ReadPermanent,
@@ -164,6 +179,7 @@ class ObdDiagnostics {
   void completeScan(uint32_t now);
   void failClear(uint32_t now, DtcClearResult result, const char* error);
   void completeClear(uint32_t now);
+  void handleResponsePending(uint32_t now);
   void processPayload(const uint8_t* payload, size_t length, uint32_t now);
   bool processVerificationPayload(const uint8_t* payload, size_t length,
                                   uint32_t now);
@@ -176,7 +192,6 @@ class ObdDiagnostics {
   DtcHistoryEntry* findHistory(uint16_t raw, uint16_t responseId);
   DtcHistoryEntry& allocateHistory(uint16_t raw, uint16_t responseId);
   uint32_t nextHistoryChange();
-  void clearHistoryPresence(uint8_t kindMask);
   void publishSummary();
   DtcCategoryStatus& categoryStatus(DtcKind kind);
   void resetAssembly();
@@ -190,9 +205,12 @@ class ObdDiagnostics {
   bool waiting_ = false;
   uint32_t requestId_ = 0;
   uint32_t responseId_ = 0;
-  uint32_t rescanDueAt_ = 0;
+  uint32_t postClearScanDueAt_ = 0;
   bool automaticScanRequested_ = false;
   bool clearAfterScan_ = false;
+  bool postClearScanActive_ = false;
+  bool responsePendingEvent_ = false;
+  uint8_t currentResponsePendingCount_ = 0;
 
   static constexpr size_t kResponseCapacity = 96;
   uint8_t response_[kResponseCapacity]{};

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "obd_diagnostics.h"
+#include "obd_request_timing.h"
 
 uint32_t hostMillis = 0;
 uint16_t hostAdc = 0;
@@ -67,6 +68,42 @@ void finishEmptyPreclear(ObdDiagnostics& diagnostics, uint32_t now) {
   CHECK(diagnostics.state().clearSnapshotPreserved);
 }
 
+void testP2StarAndAbsoluteDeadline() {
+  ObdRequestTiming timing;
+  timing.start(100, ObdDiagnostics::kDiagnosticTimeoutMs,
+               ObdDiagnostics::kDiagnosticAbsoluteTimeoutMs);
+  CHECK(!timing.expired(849));
+  CHECK(timing.expired(850));
+
+  timing.start(100, ObdDiagnostics::kDiagnosticTimeoutMs,
+               ObdDiagnostics::kDiagnosticAbsoluteTimeoutMs);
+  timing.noteResponsePending(700,
+                             ObdDiagnostics::kResponsePendingTimeoutMs);
+  CHECK(timing.inactivityMs() ==
+        ObdDiagnostics::kResponsePendingTimeoutMs);
+  CHECK(!timing.expired(5699));
+  CHECK(timing.expired(5700));
+
+  // Repeated activity can move P2*, but never the absolute epoch.
+  timing.start(100, ObdDiagnostics::kDiagnosticTimeoutMs,
+               ObdDiagnostics::kDiagnosticAbsoluteTimeoutMs);
+  timing.noteResponsePending(700,
+                             ObdDiagnostics::kResponsePendingTimeoutMs);
+  timing.noteResponsePending(5600,
+                             ObdDiagnostics::kResponsePendingTimeoutMs);
+  timing.noteResponsePending(10500,
+                             ObdDiagnostics::kResponsePendingTimeoutMs);
+  CHECK(!timing.expired(15099));
+  CHECK(timing.expired(15100));
+
+  // Unsigned elapsed arithmetic remains correct through millis() wrap.
+  timing.start(0xFFFFFF00UL, 750, 15000);
+  CHECK(!timing.expired(0x00000100UL));
+  CHECK(timing.expired(0x000001EEUL));
+  timing.stop();
+  CHECK(!timing.expired(0xFFFFFFFFUL));
+}
+
 void testCodeFormatting() {
   char code[6];
   ObdDiagnostics::formatCode(0x0301, code);
@@ -90,7 +127,8 @@ void testCodeFormatting() {
 void testAutomaticSingleFrameScanAndMilLatch() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeMonitorStatus(0x81, 100, 0x7E8);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0x81, 100, 0x7E8));
   CHECK(telemetry.milStatusKnown && telemetry.milCommandedOn);
   CHECK(telemetry.milAlertLatched && telemetry.ecuReportedDtcCount == 1);
 
@@ -125,12 +163,33 @@ void testManualDiscoveryAndMultiframe() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
   CHECK(diagnostics.requestScan(10));
-  build(diagnostics, 10, 0x7DF, 2, 0x01, 0x01);
-  accept(diagnostics,
-         frame(0x7E8, {0x06, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00}), 11);
-  CHECK(diagnostics.state().engineResponseId == 0x7E8);
+  build(diagnostics, 10, 0x7DF, 2, 0x01, 0x0C);
 
-  build(diagnostics, 12, 0x7E0, 1, 0x03);
+  // Functional traffic from another ECU cannot bind or abort discovery.
+  twai_message_t flow{};
+  bool needsFlowControl = false;
+  CHECK(!diagnostics.handleFrame(
+      frame(0x7E9, {0x03, 0x7F, 0x01, 0x12}), 11, flow,
+      needsFlowControl));
+  CHECK(!diagnostics.handleFrame(
+      frame(0x7E9, {0x03, 0x41, 0x0D, 0x00}), 11, flow,
+      needsFlowControl));
+  CHECK(!diagnostics.state().engineEcuLocked);
+
+  accept(diagnostics,
+         frame(0x7E8, {0x04, 0x41, 0x0C, 0x00, 0x00}), 11);
+  CHECK(diagnostics.state().engineResponseId == 0x7E8);
+  CHECK(diagnostics.state().engineEcuLocked);
+  CHECK(!diagnostics.observeEngineResponse(0x7E9));
+
+  build(diagnostics, 12, 0x7E0, 2, 0x01, 0x01);
+  CHECK(!diagnostics.handleFrame(
+      frame(0x7E9, {0x06, 0x41, 0x01, 0x80, 0x00, 0x00, 0x00}), 12,
+      flow, needsFlowControl));
+  accept(diagnostics,
+         frame(0x7E8, {0x06, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00}), 12);
+
+  build(diagnostics, 13, 0x7E0, 1, 0x03);
   // ISO-TP payload: 43 03 00 03 01 01 71 04 20 (four DTCs).
   accept(diagnostics,
          frame(0x7E8, {0x10, 0x09, 0x43, 0x03, 0x00, 0x03, 0x01, 0x01}),
@@ -148,10 +207,28 @@ void testManualDiscoveryAndMultiframe() {
   CHECK(telemetry.dtcMisfirePresent);
 }
 
+void testCompleteFirstFrameNeedsNoFlowControl() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.requestScan(1));
+  build(diagnostics, 1, 0x7E0, 1, 0x03);
+  // Although a five-byte payload should normally use a Single Frame, a peer
+  // may encode it as FF. The complete declared payload needs no redundant FC.
+  accept(diagnostics,
+         frame(0x7E8, {0x10, 0x05, 0x43, 0x03, 0x01, 0x00, 0x00, 0xAA}),
+         2, false);
+  CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Complete);
+  CHECK(diagnostics.state().entryCount == 1);
+  CHECK(diagnostics.state().entries[0].raw == 0x0301);
+  CHECK(diagnostics.hasPendingRequest());
+}
+
 void testUnsupportedAndTimeoutAreBounded() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeMonitorStatus(0, 1, 0x7E8);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
   accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x11}), 3);
@@ -166,10 +243,74 @@ void testUnsupportedAndTimeoutAreBounded() {
   CHECK(diagnostics.state().lastNegativeResponseCode == 0x11);
 }
 
+void testResponsePendingAndFinalNrcClassification() {
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.requestScan(10));
+    build(diagnostics, 10, 0x7E0, 1, 0x03);
+
+    accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x78}), 20);
+    CHECK(diagnostics.waiting());
+    CHECK(!diagnostics.hasPendingRequest());  // Mode 03 is not retransmitted.
+    CHECK(diagnostics.state().responsePending);
+    CHECK(diagnostics.state().responsePendingCount == 1);
+    CHECK(diagnostics.takeResponsePendingEvent());
+    CHECK(!diagnostics.takeResponsePendingEvent());
+
+    // The final response completes the same request after NRC 0x78.
+    accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 1000);
+    CHECK(!diagnostics.state().responsePending);
+    CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Complete);
+    build(diagnostics, 1001, 0x7E0, 1, 0x07);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x47}), 1002);
+    build(diagnostics, 1003, 0x7E0, 1, 0x0A);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 1004);
+    CHECK(diagnostics.state().operation == DtcOperation::Idle);
+  }
+
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.requestScan(1));
+    build(diagnostics, 1, 0x7E0, 1, 0x03);
+    accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x22}), 2);
+    CHECK(diagnostics.state().storedStatus ==
+          DtcCategoryStatus::NegativeResponse);
+    CHECK(diagnostics.state().storedStatus != DtcCategoryStatus::Unsupported);
+    build(diagnostics, 3, 0x7E0, 1, 0x07);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x47}), 4);
+    build(diagnostics, 5, 0x7E0, 1, 0x0A);
+    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 6);
+  }
+
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.requestScan(1));
+    build(diagnostics, 1, 0x7E0, 1, 0x03);
+    for (uint8_t count = 1; count <= ObdDiagnostics::kMaxResponsePending;
+         ++count) {
+      accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x78}),
+             10 + count);
+      CHECK(diagnostics.waiting());
+      CHECK(diagnostics.takeResponsePendingEvent());
+    }
+    accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x78}), 30);
+    CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Timeout);
+    CHECK(!diagnostics.waiting());
+    CHECK(diagnostics.hasPendingRequest());  // bounded failure advances scan
+  }
+}
+
 void testTransientHistorySurvivesARescanAndRestore() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeMonitorStatus(0, 1, 0x7E8);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
   accept(diagnostics, frame(0x7E8, {0x01, 0x43}), 3);
@@ -205,7 +346,8 @@ void testTransientHistorySurvivesARescanAndRestore() {
 void testOversizeResponseIsTruncatedWithoutOverflow() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeMonitorStatus(0, 1, 0x7E8);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
 
@@ -251,7 +393,8 @@ void testOversizeResponseIsTruncatedWithoutOverflow() {
 void testClearSafetyAndSuccessfulMode04() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeMonitorStatus(0x81, 10, 0x7E8);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0x81, 10, 0x7E8));
   diagnostics.tick(11, true);
   build(diagnostics, 11, 0x7E0, 1, 0x03);
   accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 12);
@@ -294,14 +437,27 @@ void testClearSafetyAndSuccessfulMode04() {
   CHECK(!telemetry.milAlertLatched && !telemetry.milStatusKnown);
   CHECK(telemetry.dtcPermanentCount == 1);
   CHECK(state.clearPreScanComplete && state.clearSnapshotPreserved);
+  // A positive 0x44 is not proof that the fault disappeared. Preserve the
+  // pre-clear presence bits until the explicit post-clear scan observes them.
   CHECK(diagnostics.history().entries[0].lastPresentKinds ==
-        DtcHistoryPermanent);
+        (DtcHistoryStored | DtcHistoryPermanent));
+  CHECK(state.postClearVerificationPending);
+  CHECK(!state.postClearScanComplete);
 
   diagnostics.tick(1613, false);
   CHECK(diagnostics.state().operation == DtcOperation::Idle);
-  diagnostics.tick(1614, false);
+  diagnostics.tick(1614, false);  // manual continuation runs while paused
   CHECK(diagnostics.state().operation == DtcOperation::Scanning);
+  CHECK(diagnostics.state().manualOperation);
   finishEmptyScan(diagnostics, 1614);
+  CHECK(diagnostics.state().operation ==
+        DtcOperation::PreserveAfterClear);
+  CHECK(diagnostics.state().postClearScanComplete);
+  CHECK(!diagnostics.state().postClearVerificationPending);
+  CHECK(diagnostics.history().entries[0].lastPresentKinds == 0);
+  CHECK(diagnostics.confirmPostClearPreserved(true, 1620));
+  CHECK(diagnostics.state().operation == DtcOperation::Idle);
+  CHECK(diagnostics.state().postClearSnapshotPreserved);
 }
 
 void testClearRejectsMovingEngineAndUnsafeVoltage() {
@@ -421,16 +577,19 @@ void testClearRefusesIncompleteScanAndFailedPreservation() {
 }  // namespace
 
 int main() {
+  testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
   testAutomaticSingleFrameScanAndMilLatch();
   testManualDiscoveryAndMultiframe();
+  testCompleteFirstFrameNeedsNoFlowControl();
   testUnsupportedAndTimeoutAreBounded();
+  testResponsePendingAndFinalNrcClassification();
   testTransientHistorySurvivesARescanAndRestore();
   testOversizeResponseIsTruncatedWithoutOverflow();
   testClearSafetyAndSuccessfulMode04();
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::puts("OBD diagnostics tests: 10 groups passed");
+  std::puts("OBD diagnostics tests: 13 groups passed");
   return 0;
 }

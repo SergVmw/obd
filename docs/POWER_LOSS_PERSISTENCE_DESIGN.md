@@ -1,6 +1,6 @@
 # Мгновенное отключение питания и сохранение рабочих данных — архитектура 0.3.9
 
-**Статус:** software-only схема `LittleFS 20 с + NVS 60 с` реализована и покрыта локальными host/static gates в кандидате 0.3.9; серия физических random-cut тестов на N16R8 ещё требуется. Пользователь уточнил, что отдельного `ACC_OFF/POWER_FAIL` и гарантированного hold-up 50–200 мс, скорее всего, не будет. Аппаратные варианты ниже оставлены только как справочные и не являются обязательным условием.
+**Статус:** software-only схема `LittleFS 20 с + NVS 60 с` реализована в 0.3.9; в 0.4.1 уточнена forced-checkpoint semantics и добавлена fault injection write/readback boundaries. Серия физических random-cut тестов на N16R8 ещё требуется. Пользователь уточнил, что отдельного `ACC_OFF/POWER_FAIL` и гарантированного hold-up 50–200 мс, скорее всего, не будет. Аппаратные варианты ниже оставлены только как справочные и не являются обязательным условием.
 
 ## Зафиксированное ограничение software-only
 
@@ -17,6 +17,7 @@
 - два чередующихся journal segment по 256 КиБ с безопасной ротацией;
 - при boot выбирается запись с наибольшим valid sequence из LittleFS и NVS;
 - combined NVS mirror с той же sequence записывается раз в 60 секунд и служит fallback/migration path;
+- forced checkpoint пытается синхронизировать обе запрошенные копии, но считается durable при write/readback хотя бы одной; health/counters отказавшего backend остаются видимыми, а total failure возвращается только когда не сохранилась ни одна копия;
 - LittleFS никогда не форматируется автоматически при обычной ошибке mount; первичная инициализация допустима только для доказанно полностью стёртого раздела;
 - background/logo используют отдельные A/B-файлы в том же LittleFS и не конфликтуют с journal paths.
 
@@ -281,7 +282,7 @@ I²C FRAM (например, подходящая automotive/temperature вер�
 - два bounded segment с безопасной ротацией и dirty-only writes;
 - blank-only auto-format policy;
 - mount/write/CRC/age/source diagnostics в service UI/REST;
-- host coverage для интервалов, NVS repair, torn tail, corrupt CRC и monotonic reset;
+- host coverage для интервалов, NVS repair, torn/partial tail, corrupt CRC/readback, monotonic reset, LittleFS-only/NVS-only durable checkpoint и отказа обеих копий;
 - отсутствие journal writes во время OTA/service raw upload;
 - app-only partition layout, сохраняющий LittleFS.
 

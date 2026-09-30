@@ -65,6 +65,16 @@ void serviceDtcPersistence(uint32_t now) {
                "Mode 04 refused: pre-clear DTC history checkpoint failed");
     }
   }
+  if (obdClient.diagnosticsState().operation ==
+      DtcOperation::PreserveAfterClear) {
+    const bool preserved =
+        dtcHistoryPersistence.checkpoint(obdClient.dtcHistory());
+    obdClient.confirmDtcPostClearPreserved(preserved, now);
+    if (!preserved) {
+      ESP_LOGE(kTag,
+               "Post-clear DTC verification checkpoint failed");
+    }
+  }
 }
 
 [[noreturn]] void enterLowVoltageSleep() {

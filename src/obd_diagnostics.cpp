@@ -153,6 +153,7 @@ const char* ObdDiagnostics::categoryStatusName(DtcCategoryStatus status) {
     case DtcCategoryStatus::Timeout: return "timeout";
     case DtcCategoryStatus::Malformed: return "malformed";
     case DtcCategoryStatus::TransportError: return "transport_error";
+    case DtcCategoryStatus::NegativeResponse: return "negative_response";
     default: return "unknown";
   }
 }
@@ -166,6 +167,7 @@ const char* ObdDiagnostics::operationName(DtcOperation operation) {
     case DtcOperation::VerifyRpm: return "verify_rpm";
     case DtcOperation::VerifyVoltage: return "verify_voltage";
     case DtcOperation::Clearing: return "clearing";
+    case DtcOperation::PreserveAfterClear: return "preserve_after_clear";
     default: return "unknown";
   }
 }
@@ -215,7 +217,8 @@ uint8_t ObdDiagnostics::serviceForRequest(Request request) {
     case Request::ReadPending: return 0x07;
     case Request::ReadPermanent: return 0x0A;
     case Request::Clear: return 0x04;
-    case Request::DiscoverMonitor:
+    case Request::DiscoverEngineRpm:
+    case Request::ReadMonitor:
     case Request::VerifySpeed:
     case Request::VerifyRpm:
     case Request::VerifyVoltage:
@@ -227,7 +230,8 @@ uint8_t ObdDiagnostics::serviceForRequest(Request request) {
 
 uint8_t ObdDiagnostics::pidForRequest(Request request) {
   switch (request) {
-    case Request::DiscoverMonitor: return 0x01;
+    case Request::DiscoverEngineRpm: return 0x0C;
+    case Request::ReadMonitor: return 0x01;
     case Request::VerifySpeed: return 0x0D;
     case Request::VerifyRpm: return 0x0C;
     case Request::VerifyVoltage: return 0x42;
@@ -249,17 +253,27 @@ void ObdDiagnostics::resetHistory() {
   publishSummary();
 }
 
-void ObdDiagnostics::observeEngineResponse(uint32_t responseId) {
-  if (!validEngineResponseId(responseId)) return;
+bool ObdDiagnostics::observeEngineResponse(uint32_t responseId) {
+  if (!validEngineResponseId(responseId)) return false;
+  if (state_.engineEcuLocked && state_.engineResponseId != responseId) {
+    return false;
+  }
   state_.engineResponseId = static_cast<uint16_t>(responseId);
+  state_.engineEcuLocked = true;
+  telemetry_.ecuResponseId = state_.engineResponseId;
+  return true;
 }
 
-void ObdDiagnostics::observeMonitorStatus(uint8_t statusByte, uint32_t now,
+bool ObdDiagnostics::acceptsEngineResponse(uint32_t responseId) const {
+  return state_.engineEcuLocked && state_.engineResponseId == responseId;
+}
+
+bool ObdDiagnostics::observeMonitorStatus(uint8_t statusByte, uint32_t now,
                                           uint32_t responseId) {
+  if (!acceptsEngineResponse(responseId)) return false;
   const bool wasKnown = state_.milKnown;
   const bool wasMil = state_.milCommanded;
   const uint8_t oldCount = state_.ecuReportedDtcCount;
-  observeEngineResponse(responseId);
 
   state_.milKnown = true;
   state_.milCommanded = (statusByte & 0x80U) != 0;
@@ -275,18 +289,24 @@ void ObdDiagnostics::observeMonitorStatus(uint8_t statusByte, uint32_t now,
     automaticScanRequested_ = true;
   }
   publishSummary();
+  return true;
 }
 
-void ObdDiagnostics::tick(uint32_t now, bool automaticAllowed) {
+void ObdDiagnostics::tick(uint32_t now, bool periodicScanAllowed) {
   if (state_.operation != DtcOperation::Idle) return;
 
-  if (rescanDueAt_ != 0 && deadlineReached(now, rescanDueAt_)) {
-    rescanDueAt_ = 0;
-    startScan(now, false);
+  // This is the explicitly requested verification tail of manual Mode 04, not
+  // a periodic automatic scan. It must continue while ordinary polling is
+  // paused in Wi-Fi service mode.
+  if (postClearScanDueAt_ != 0 &&
+      deadlineReached(now, postClearScanDueAt_)) {
+    postClearScanDueAt_ = 0;
+    postClearScanActive_ = true;
+    startScan(now, true);
     return;
   }
-  if (!automaticAllowed || !state_.milKnown ||
-      !validEngineResponseId(state_.engineResponseId)) {
+  if (!periodicScanAllowed || !state_.milKnown ||
+      !state_.engineEcuLocked) {
     return;
   }
 
@@ -306,20 +326,27 @@ bool ObdDiagnostics::requestScan(uint32_t now) {
     setError("diagnostic operation already in progress");
     return false;
   }
-  rescanDueAt_ = 0;
+  if (state_.postClearVerificationPending) {
+    postClearScanActive_ = true;
+  }
+  postClearScanDueAt_ = 0;
   startScan(now, true);
   return true;
 }
 
 bool ObdDiagnostics::requestClear(uint32_t now) {
-  if (state_.operation != DtcOperation::Idle) {
+  if (state_.operation != DtcOperation::Idle ||
+      state_.postClearVerificationPending) {
     state_.clearResult = DtcClearResult::Busy;
-    setError("diagnostic operation already in progress");
+    setError(state_.postClearVerificationPending
+                 ? "post-clear verification is still pending"
+                 : "diagnostic operation already in progress");
     return false;
   }
-  if (!validEngineResponseId(state_.engineResponseId)) {
+  if (!state_.engineEcuLocked ||
+      !validEngineResponseId(state_.engineResponseId)) {
     state_.clearResult = DtcClearResult::NoEcu;
-    setError("engine ECU address is unknown; read DTCs first");
+    setError("engine ECU is not locked by RPM response; read DTCs first");
     return false;
   }
 
@@ -328,6 +355,11 @@ bool ObdDiagnostics::requestClear(uint32_t now) {
   state_.clearCompletedAt = 0;
   state_.clearPreScanComplete = false;
   state_.clearSnapshotPreserved = false;
+  state_.postClearVerificationPending = false;
+  state_.postClearScanComplete = false;
+  state_.postClearSnapshotPreserved = false;
+  postClearScanDueAt_ = 0;
+  postClearScanActive_ = false;
   state_.verifiedSpeedKph = NAN;
   state_.verifiedRpm = NAN;
   state_.verifiedVoltage = NAN;
@@ -356,6 +388,26 @@ bool ObdDiagnostics::confirmPreclearPreserved(bool success, uint32_t now) {
   return true;
 }
 
+bool ObdDiagnostics::confirmPostClearPreserved(bool success, uint32_t) {
+  if (state_.operation != DtcOperation::PreserveAfterClear) return false;
+  state_.postClearSnapshotPreserved = success;
+  state_.operation = DtcOperation::Idle;
+  state_.manualOperation = false;
+  if (!success) {
+    setError("post-clear DTC history checkpoint failed; retry is periodic");
+  } else {
+    setError("");
+  }
+  publishSummary();
+  return success;
+}
+
+bool ObdDiagnostics::takeResponsePendingEvent() {
+  const bool pending = responsePendingEvent_;
+  responsePendingEvent_ = false;
+  return pending;
+}
+
 void ObdDiagnostics::startScan(uint32_t now, bool manual) {
   state_.operation = DtcOperation::Scanning;
   state_.manualOperation = manual;
@@ -366,13 +418,16 @@ void ObdDiagnostics::startScan(uint32_t now, bool manual) {
   state_.truncated = false;
   state_.lastNegativeService = 0;
   state_.lastNegativeResponseCode = 0;
+  state_.responsePending = false;
+  state_.responsePendingCount = 0;
   setError("");
 
-  if (validEngineResponseId(state_.engineResponseId)) {
+  if (state_.engineEcuLocked &&
+      validEngineResponseId(state_.engineResponseId)) {
     state_.storedStatus = DtcCategoryStatus::Reading;
     beginRequest(Request::ReadStored);
   } else {
-    beginRequest(Request::DiscoverMonitor);
+    beginRequest(Request::DiscoverEngineRpm);
   }
   publishSummary();
 }
@@ -381,14 +436,21 @@ void ObdDiagnostics::beginRequest(Request request) {
   request_ = request;
   requestPending_ = true;
   waiting_ = false;
+  responsePendingEvent_ = false;
+  currentResponsePendingCount_ = 0;
+  state_.responsePending = false;
   resetAssembly();
 }
 
 bool ObdDiagnostics::buildRequest(uint32_t, twai_message_t& message) {
   if (!hasPendingRequest() || request_ == Request::None) return false;
 
-  const bool discovery = request_ == Request::DiscoverMonitor;
-  if (!discovery && !validEngineResponseId(state_.engineResponseId)) return false;
+  const bool discovery = request_ == Request::DiscoverEngineRpm;
+  if (!discovery &&
+      (!state_.engineEcuLocked ||
+       !validEngineResponseId(state_.engineResponseId))) {
+    return false;
+  }
   requestId_ = discovery ? kFunctionalRequestId
                          : static_cast<uint32_t>(state_.engineResponseId - 8U);
   responseId_ = discovery ? 0 : state_.engineResponseId;
@@ -418,9 +480,11 @@ bool ObdDiagnostics::buildRequest(uint32_t, twai_message_t& message) {
 void ObdDiagnostics::transportFailed(uint32_t now) {
   waiting_ = false;
   requestPending_ = false;
+  state_.responsePending = false;
   resetAssembly();
   if (state_.operation == DtcOperation::Scanning) {
-    if (request_ == Request::DiscoverMonitor) {
+    if (request_ == Request::DiscoverEngineRpm ||
+        request_ == Request::ReadMonitor) {
       state_.storedStatus = DtcCategoryStatus::TransportError;
       state_.pendingStatus = DtcCategoryStatus::TransportError;
       state_.permanentStatus = DtcCategoryStatus::TransportError;
@@ -439,8 +503,10 @@ void ObdDiagnostics::timeout(uint32_t now) {
   waiting_ = false;
   requestPending_ = false;
   resetAssembly();
+  state_.responsePending = false;
   if (state_.operation == DtcOperation::Scanning) {
-    if (request_ == Request::DiscoverMonitor) {
+    if (request_ == Request::DiscoverEngineRpm ||
+        request_ == Request::ReadMonitor) {
       state_.storedStatus = DtcCategoryStatus::Timeout;
       state_.pendingStatus = DtcCategoryStatus::Timeout;
       state_.permanentStatus = DtcCategoryStatus::Timeout;
@@ -464,7 +530,7 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     return false;
   }
 
-  const bool discovery = request_ == Request::DiscoverMonitor;
+  const bool discovery = request_ == Request::DiscoverEngineRpm;
   if (discovery) {
     if (!validEngineResponseId(message.identifier)) return false;
   } else if (message.identifier != responseId_) {
@@ -482,7 +548,17 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     const uint8_t first = message.data[1];
     const bool matchingNegative = payloadLength >= 3 && first == 0x7F &&
                                   message.data[2] == requestedService;
-    if (first != expectedService && !matchingNegative) return false;
+    if (discovery) {
+      // A functional request can produce replies from several ECUs. Only a
+      // structurally valid RPM reply identifies the engine ECU; unrelated
+      // positive replies and NRCs must not win the race or terminate discovery.
+      if (first != expectedService || payloadLength < 4 ||
+          message.data[2] != pidForRequest(request_)) {
+        return false;
+      }
+    } else if (first != expectedService && !matchingNegative) {
+      return false;
+    }
 
     if (discovery) responseId_ = message.identifier;
     responseStored_ = payloadLength < kResponseCapacity
@@ -496,6 +572,10 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
   }
 
   if (pciType == 0x1) {
+    // PID 0C is a four-byte payload and must fit in a Single Frame. Reject a
+    // functional First Frame so responses from multiple ECUs cannot share one
+    // ISO-TP assembly context before the engine ECU is locked.
+    if (discovery) return false;
     if (message.data_length_code < 3) return false;
     const size_t payloadLength =
         (static_cast<size_t>(message.data[0] & 0x0FU) << 8) |
@@ -517,14 +597,16 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     }
     nextSequence_ = 1;
 
-    flowControl = {};
-    flowControl.identifier = requestId_;
-    flowControl.extd = 0;
-    flowControl.rtr = 0;
-    flowControl.data_length_code = 8;
-    flowControl.data[0] = 0x30;  // Continue To Send, no block/delay limit.
-    needsFlowControl = true;
-    if (responseConsumed_ >= responseExpected_) {
+    if (responseConsumed_ < responseExpected_) {
+      flowControl = {};
+      flowControl.identifier = requestId_;
+      flowControl.extd = 0;
+      flowControl.rtr = 0;
+      // ISO 15765-4 classic CAN uses DLC 8; the unused FC bytes are padding.
+      flowControl.data_length_code = 8;
+      flowControl.data[0] = 0x30;  // Continue To Send, no block/delay limit.
+      needsFlowControl = true;
+    } else {
       processPayload(response_, responseStored_, now);
     }
     return true;
@@ -559,6 +641,43 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
   return false;
 }
 
+void ObdDiagnostics::handleResponsePending(uint32_t now) {
+  if (currentResponsePendingCount_ != UINT8_MAX) {
+    ++currentResponsePendingCount_;
+  }
+  if (state_.responsePendingCount != UINT8_MAX) {
+    ++state_.responsePendingCount;
+  }
+  waiting_ = true;
+  requestPending_ = false;
+  state_.responsePending = true;
+  resetAssembly();
+
+  if (currentResponsePendingCount_ > kMaxResponsePending) {
+    state_.responsePending = false;
+    if (state_.operation == DtcOperation::Scanning) {
+      if (request_ == Request::DiscoverEngineRpm ||
+          request_ == Request::ReadMonitor) {
+        state_.storedStatus = DtcCategoryStatus::Timeout;
+        state_.pendingStatus = DtcCategoryStatus::Timeout;
+        state_.permanentStatus = DtcCategoryStatus::Timeout;
+        setError("too many ECU response-pending messages during discovery");
+        completeScan(now);
+      } else {
+        setError("too many ECU response-pending messages");
+        advanceScan(now, DtcCategoryStatus::Timeout);
+      }
+    } else {
+      failClear(now, DtcClearResult::Timeout,
+                "too many ECU response-pending messages");
+    }
+    return;
+  }
+
+  responsePendingEvent_ = true;
+  publishSummary();
+}
+
 void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
                                     uint32_t now) {
   if (payload == nullptr || length == 0) return;
@@ -567,20 +686,34 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
 
   if (payload[0] == 0x7F) {
     if (length < 3 || payload[1] != requestedService) return;
+    const uint8_t negativeResponseCode = payload[2];
     state_.lastNegativeService = payload[1];
-    state_.lastNegativeResponseCode = payload[2];
+    state_.lastNegativeResponseCode = negativeResponseCode;
+    if (negativeResponseCode == 0x78) {
+      handleResponsePending(now);
+      return;
+    }
+
     waiting_ = false;
+    state_.responsePending = false;
     resetAssembly();
+    const bool unsupported = negativeResponseCode == 0x11 ||
+                             negativeResponseCode == 0x12;
+    const DtcCategoryStatus categoryResult =
+        unsupported ? DtcCategoryStatus::Unsupported
+                    : DtcCategoryStatus::NegativeResponse;
     if (state_.operation == DtcOperation::Scanning) {
-      if (request_ == Request::DiscoverMonitor) {
-        state_.storedStatus = DtcCategoryStatus::Unsupported;
-        state_.pendingStatus = DtcCategoryStatus::Unsupported;
-        state_.permanentStatus = DtcCategoryStatus::Unsupported;
-        setError("engine ECU rejected diagnostic discovery");
+      if (request_ == Request::DiscoverEngineRpm ||
+          request_ == Request::ReadMonitor) {
+        state_.storedStatus = categoryResult;
+        state_.pendingStatus = categoryResult;
+        state_.permanentStatus = categoryResult;
+        setError(unsupported ? "engine ECU rejected diagnostic discovery"
+                             : "engine ECU returned a negative discovery response");
         completeScan(now);
       } else {
-        removeCategory(kindForRequest(request_));
-        advanceScan(now, DtcCategoryStatus::Unsupported);
+        if (unsupported) removeCategory(kindForRequest(request_));
+        advanceScan(now, categoryResult);
       }
     } else {
       failClear(now, DtcClearResult::NegativeResponse,
@@ -591,12 +724,18 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
 
   if (payload[0] != expectedService) return;
   waiting_ = false;
+  state_.responsePending = false;
+  if (state_.lastNegativeResponseCode == 0x78) {
+    state_.lastNegativeService = 0;
+    state_.lastNegativeResponseCode = 0;
+  }
   // payload normally points into response_. Do not clear the assembly buffer
   // until the current payload has been decoded; every completion/advance path
   // below resets it before the next request.
   const bool assemblyTruncated = responseExpected_ > kResponseCapacity;
 
-  if (request_ == Request::DiscoverMonitor ||
+  if (request_ == Request::DiscoverEngineRpm ||
+      request_ == Request::ReadMonitor ||
       request_ == Request::VerifySpeed || request_ == Request::VerifyRpm ||
       request_ == Request::VerifyVoltage) {
     if (!processVerificationPayload(payload, length, now)) {
@@ -619,10 +758,6 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
     return;
   }
 
-  if (length < 1) {
-    advanceScan(now, DtcCategoryStatus::Malformed);
-    return;
-  }
   size_t dtcBytes = length - 1U;
   if ((dtcBytes & 1U) != 0U) {
     if (!assemblyTruncated) {
@@ -649,9 +784,20 @@ bool ObdDiagnostics::processVerificationPayload(const uint8_t* payload,
   const uint8_t pid = pidForRequest(request_);
   if (length < 3 || payload[0] != 0x41 || payload[1] != pid) return false;
 
-  if (request_ == Request::DiscoverMonitor) {
-    if (length < 6 || !validEngineResponseId(responseId_)) return false;
-    observeMonitorStatus(payload[2], now, responseId_);
+  if (request_ == Request::DiscoverEngineRpm) {
+    if (length < 4 || !observeEngineResponse(responseId_)) return false;
+    const float rpm =
+        ((static_cast<uint16_t>(payload[2]) << 8) | payload[3]) / 4.0f;
+    telemetry_.rpm.set(rpm, now);
+    // PID 01 is now requested physically from the ECU that proved it owns RPM.
+    beginRequest(Request::ReadMonitor);
+    return true;
+  }
+
+  if (request_ == Request::ReadMonitor) {
+    if (length < 6 || !observeMonitorStatus(payload[2], now, responseId_)) {
+      return false;
+    }
     state_.storedStatus = DtcCategoryStatus::Reading;
     beginRequest(Request::ReadStored);
     return true;
@@ -724,6 +870,8 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
     setError("one or more DTC responses were malformed");
   } else if (status == DtcCategoryStatus::TransportError) {
     setError("one or more DTC requests could not be transmitted");
+  } else if (status == DtcCategoryStatus::NegativeResponse) {
+    setError("one or more DTC services returned a negative response");
   }
 
   if (request_ == Request::ReadStored) {
@@ -747,6 +895,8 @@ void ObdDiagnostics::completeScan(uint32_t now) {
   ++state_.scanCount;
   automaticScanRequested_ = false;
 
+  state_.responsePending = false;
+
   if (clearAfterScan_) {
     state_.clearPreScanComplete = true;
     if (!scanStatusUsableForClear(state_.storedStatus) ||
@@ -761,6 +911,16 @@ void ObdDiagnostics::completeScan(uint32_t now) {
     state_.operation = DtcOperation::PreserveBeforeClear;
     state_.manualOperation = true;
     setError("");
+    publishSummary();
+    return;
+  }
+
+  if (postClearScanActive_) {
+    postClearScanActive_ = false;
+    state_.postClearVerificationPending = false;
+    state_.postClearScanComplete = true;
+    state_.operation = DtcOperation::PreserveAfterClear;
+    state_.manualOperation = true;
     publishSummary();
     return;
   }
@@ -780,7 +940,11 @@ void ObdDiagnostics::failClear(uint32_t now, DtcClearResult result,
   state_.manualOperation = false;
   state_.clearResult = result;
   state_.clearCompletedAt = now;
+  state_.responsePending = false;
   clearAfterScan_ = false;
+  postClearScanDueAt_ = 0;
+  postClearScanActive_ = false;
+  state_.postClearVerificationPending = false;
   setError(error);
   publishSummary();
 }
@@ -788,7 +952,9 @@ void ObdDiagnostics::failClear(uint32_t now, DtcClearResult result,
 void ObdDiagnostics::completeClear(uint32_t now) {
   removeCategory(DtcKind::Stored);
   removeCategory(DtcKind::Pending);
-  clearHistoryPresence(DtcHistoryStored | DtcHistoryPending);
+  // Do not claim the fault disappeared merely because Mode 04 was accepted.
+  // The durable pre-clear history remains the last observation until the
+  // explicit post-clear Mode 03/07/0A scan confirms each category.
   state_.storedStatus = DtcCategoryStatus::NotScanned;
   state_.pendingStatus = DtcCategoryStatus::NotScanned;
   // Permanent DTCs are intentionally retained: SAE service 04 cannot erase
@@ -807,9 +973,13 @@ void ObdDiagnostics::completeClear(uint32_t now) {
   requestPending_ = false;
   request_ = Request::None;
   clearAfterScan_ = false;
+  state_.responsePending = false;
+  state_.postClearVerificationPending = true;
+  state_.postClearScanComplete = false;
+  state_.postClearSnapshotPreserved = false;
   setError("");
   resetAssembly();
-  rescanDueAt_ = now + 1500U;
+  postClearScanDueAt_ = now + 1500U;
   publishSummary();
 }
 
@@ -953,15 +1123,6 @@ void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
       entry->firstChangeSequence = change;
     }
     entry->lastChangeSequence = change;
-  }
-}
-
-void ObdDiagnostics::clearHistoryPresence(uint8_t kinds) {
-  for (size_t i = 0; i < history_.entryCount; ++i) {
-    DtcHistoryEntry& entry = history_.entries[i];
-    if ((entry.lastPresentKinds & kinds) == 0) continue;
-    entry.lastPresentKinds &= static_cast<uint8_t>(~kinds);
-    entry.lastChangeSequence = nextHistoryChange();
   }
 }
 

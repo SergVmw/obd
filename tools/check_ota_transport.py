@@ -154,7 +154,7 @@ assert 'ota["slots"]' in portal and 'slot["version"]' in portal
 assert "H2G_FIRMWARE_MANIFEST" in manifest
 assert "readManifest" in slots and "esp_partition_read" in slots
 assert "kV036ElfSha256" in slots and 'return "0.3.6"' in slots
-assert 'H2G_FW_VERSION "0.4.0"' in version
+assert 'H2G_FW_VERSION "0.4.1"' in version
 for token in ("slotCurrentVersion", "slotApp0Version", "slotApp1Version"):
     assert token in html
 
