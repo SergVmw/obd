@@ -209,7 +209,7 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, NRC 0x78/P2*/absolute deadline, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards, собирает только environment `esp32s3_n16r8`, проверяет manifest, SHA-256 и factory layout committed release 0.4.1 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, NRC 0x78/P2*/absolute deadline, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards, собирает только environment `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.1 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
 
 ## Упакованный release 0.4.1
 

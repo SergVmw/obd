@@ -42,8 +42,12 @@ SHA-256 не заменялись in-place. Аппаратно подтверж�
 - OTA app: 1 190 288 байта, SHA-256 `cd2f6f0b…af1d41`; factory:
   1 255 824 байт, SHA-256 `8263b8e2…513291`; финальный raw fragment 1280 байт.
 - В `releases/` оставлены только app/factory/checksums/report 0.4.1.
+- GCC `-ffile-prefix-map` нормализует `$PROJECT_DIR` и `$PROJECT_CORE_DIR` между
+  локальной машиной и GitHub runner. Строгая CI-проверка build/app byte equality
+  теперь воспроизводима без изменения размеров или SHA-256 release binaries.
 
-Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md)
+Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md),
+[`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md)
 и [`releases/README-v0.4.1.md`](releases/README-v0.4.1.md).
 
 ## 0.4.0 — 2026-09-28 (отозван, не устанавливать)

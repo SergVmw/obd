@@ -87,6 +87,7 @@ Mode 04 не стирает permanent DTC напрямую. Если post-clear 
 - PlatformIO `esp32s3_n16r8` build: RAM 53 340 байт, application flash 1 189 877 байт;
 - H2 manifest: `0.4.1 / esp32s3-n16r8`, app offset `0x1c280`;
 - packaged app byte-for-byte совпадает с build output;
+- path-reproducibility проверена чистыми сборками из разных project и PlatformIO core directories; обе дали тот же app SHA-256 `cd2f6f0b…af1d41`;
 - factory layout, SHA-256 и размер OTA partition проверены;
 - app size не выровнен искусственно: финальный raw fragment — 1280 байт.
 
