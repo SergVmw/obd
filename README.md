@@ -14,9 +14,9 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущий release 0.4.1
+## Текущий release 0.4.2
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.4.1** — исправленный выпуск Check Engine/DTC диагностики поверх аппаратно принятого release 0.3.9. Отозванный пакет 0.4.0 не устанавливался на автомобиль и не должен использоваться. Engine ECU теперь однократно определяется по первому валидному ответу PID `0C`; PID 01, physical Mode 03/07/0A и ручной Mode 04 принимаются только от этого ECU. NRC `0x78` обрабатывается как промежуточный ResponsePending с P2*=5 с, абсолютным пределом 15 с и максимум восемью pending-ответами без повторной передачи команды. Главный GC9A01 показывает приоритетное предупреждение и первый код, а web UI — полный категоризированный список и осторожные расшифровки generic-кодов. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.4.2** — corrective release Check Engine/DTC диагностики поверх аппаратно принятого 0.3.9. Она не позволяет truncated DTC-ответу объявлять исчезнувшими коды из отброшенного хвоста, помечает API current-state неизвестным при truncation, принимает одну read-back-подтверждённую durable-копию factory reset и сохраняет post-clear scan при точном `uint32_t` rollover deadline в ноль. Бинарники 0.4.1 не подменялись; опубликованы новая версия и новые SHA-256. Отозванный 0.4.0 не устанавливался на автомобиль и не должен использоваться. Engine ECU однократно определяется по первому валидному ответу PID `0C`; PID 01, physical Mode 03/07/0A и ручной Mode 04 принимаются только от этого ECU. NRC `0x78` обрабатывается как промежуточный ResponsePending с P2*=5 с, абсолютным пределом 15 с и максимум восемью pending-ответами без повторной передачи команды. Главный GC9A01 показывает приоритетное предупреждение и первый код, а web UI — полный категоризированный список и осторожные расшифровки generic-кодов. Номер запущенной сборки и содержимое обоих OTA-слотов видны на физическом экране «СЕРВИС» и в верхней части web UI.
 
 Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. Логотип пропорционально вписывается в `220×80`, а payload имеет ровно `width×height×2` байт. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest. Передача — raw body без multipart, с TWDT-safe чтением, 2-секундным idle timeout и отдельным 30-секундным абсолютным deadline. Встроенные carbon/HAVAL всегда остаются fallback; app-only OTA LittleFS не стирает.
 
@@ -24,7 +24,7 @@
 
 Стирание DTC никогда не выполняется автоматически. Каждый ручной Mode 04 сначала заново читает Mode 03/07/0A, немедленно сохраняет bounded-историю в CRC LittleFS journal + NVS, и только затем проверяет speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Неполный/truncated scan или невозможность durable checkpoint запрещают команду. Положительный `0x44` сам по себе не удаляет признаки ранее наблюдавшихся кодов: через 1,5 с обязательное post-clear чтение продолжается как часть ручной операции даже при paused periodic polling, после чего результат немедленно checkpoint-ится. Mode 04 сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
-**Статус релиза:** OTA-путь до 0.3.9 аппаратно подтверждён 2026-09-23: штатный web OTA из работающей 0.3.7, server verification, boot read-back, automatic reboot и неполный 332-байтный raw fragment прошли успешно. Релиз **0.4.1 программно проверен и упакован**, но сам бинарник 0.4.1 ещё не устанавливался на автомобиль; Mode 03/07/0A, persistent DTC history и особенно safety-gated Mode 04 требуют отдельной аппаратной приёмки. Пакет 0.4.0 отозван после review и удалён из `releases/`, его опубликованные hashes не переиспользовались. Первую проверку 0.4.1 выполнять только в read-only режиме. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
+**Статус релиза:** OTA-путь до 0.3.9 аппаратно подтверждён 2026-09-23: штатный web OTA из работающей 0.3.7, server verification, boot read-back, automatic reboot и неполный 332-байтный raw fragment прошли успешно. Релиз **0.4.2 программно проверен и упакован**, но сам бинарник 0.4.2 ещё не устанавливался на автомобиль; Mode 03/07/0A, persistent DTC history и особенно safety-gated Mode 04 требуют отдельной аппаратной приёмки. Пакет 0.4.0 отозван; 0.4.1 заменён новой версией после аудита без подмены его hashes. Первую проверку 0.4.2 выполнять только в read-only режиме. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
 
 История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
@@ -209,21 +209,21 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, NRC 0x78/P2*/absolute deadline, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards, собирает только environment `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.1 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards, собирает только environment `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.2 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
 
-## Упакованный release 0.4.1
+## Упакованный release 0.4.2
 
 ```text
-releases/h2-gauge-v0.4.1-esp32s3-n16r8.bin
-Размер: 1 190 288 байта
-SHA-256: cd2f6f0bc966972997c8a91465aaf3b549a5084f11bc9a577a21c31776af1d41
+releases/h2-gauge-v0.4.2-esp32s3-n16r8.bin
+Размер: 1 190 368 байт
+SHA-256: 163ea6714fdca4fdca5c7ab75b0e687650547689cab13ad339e185f0add8dd1b
 
-releases/h2-gauge-v0.4.1-esp32s3-n16r8-factory.bin
-Размер: 1 255 824 байт
-SHA-256: 8263b8e2cc46058fd41c6de480d52a45f4cdffffac84f515a1fc19c6de513291
+releases/h2-gauge-v0.4.2-esp32s3-n16r8-factory.bin
+Размер: 1 255 904 байта
+SHA-256: 7bd7cdaeb7d1381d61a0ea3010758fa166672a761db19b1b07f1ae9ab90f5d5c
 ```
 
-Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, DTC history, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums, app/build byte equality и factory layout проверены. 0.4.1 ещё требует аппаратной приёмки DTC-функции. Полный release report: [`releases/README-v0.4.1.md`](releases/README-v0.4.1.md).
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, DTC history, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums, app/build byte equality и factory layout проверены. 0.4.2 ещё требует аппаратной приёмки DTC-функции. Полный release report: [`releases/README-v0.4.2.md`](releases/README-v0.4.2.md).
 
 ## Flash и PSRAM
 

@@ -1,8 +1,8 @@
-# H2 Gauge 0.4.1 — актуальные проектные решения
+# H2 Gauge 0.4.2 — актуальные проектные решения
 
 **Дата актуализации:** 2026-09-30  
 **Единственная аппаратная цель:** ESP32-S3 DevKitC-1 compatible с модулем ESP32-S3-WROOM-1-N16R8.  
-**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Затем 2026-09-23 упакованный обычный app 0.3.9 успешно прошёл штатный web OTA из работающей APP1/0.3.7 в APP0: server verification, boot read-back и автоматический reboot завершились без RESET; current/running/boot — APP0/0.3.9, APP1 — 0.3.7, image state — `valid`. Тем самым физически проверен 332-байтный финальный raw-фрагмент и унаследованный OTA-hardening path. Точный app 0.3.8 отдельно не устанавливался. Custom visual assets и software-only journal 20/60 реализованы в 0.3.9, но ещё требуют отдельных аппаратных visual/random-cut тестов. Release 0.4.1 содержит исправленную Check Engine/DTC диагностику; он прошёл software gates и упакован, но ещё не устанавливался и не прошёл аппаратную проверку чтения/стирания на Haval. Исходный 0.4.0 отозван после review, удалён из `releases/` и не должен устанавливаться; его hashes не заменялись.
+**Состояние:** OTA 0.3.7 аппаратно подтверждён 2026-09-20. Затем 2026-09-23 упакованный обычный app 0.3.9 успешно прошёл штатный web OTA из работающей APP1/0.3.7 в APP0: server verification, boot read-back и автоматический reboot завершились без RESET; current/running/boot — APP0/0.3.9, APP1 — 0.3.7, image state — `valid`. Тем самым физически проверен 332-байтный финальный raw-фрагмент и унаследованный OTA-hardening path. Точный app 0.3.8 отдельно не устанавливался. Custom visual assets и software-only journal 20/60 реализованы в 0.3.9, но ещё требуют отдельных аппаратных visual/random-cut тестов. Release 0.4.2 содержит Check Engine/DTC диагностику и corrective fixes дополнительного аудита 0.4.1; он прошёл software gates и упакован, но ещё не устанавливался и не прошёл аппаратную проверку чтения/стирания на Haval. Бинарники 0.4.1 не подменялись. Исходный 0.4.0 отозван, не устанавливался и не должен использоваться.
 
 ## 1. Назначение
 
@@ -84,13 +84,13 @@ Vref pin 5 → NC
 
 OBD работает в read-only логике ISO 15765-4, 11-bit, начальная скорость 500 кбит/с. Производственные запросы — стандартный Mode 01. Mode 22/ISO-TP оставлен как отключённый framework; неподтверждённые Haval DID не добавляются.
 
-### Check Engine и DTC — исправленный release 0.4.1
+### Check Engine и DTC — corrective release 0.4.2
 
 После наблюдавшейся 2026-09-27 мигающей MIL под высокой нагрузкой добавлена bounded стандартная диагностика. Неизвестный engine ECU определяется только первым валидным functional PID `0C`; затем PID 01, обычная telemetry, physical Mode 03 stored, Mode 07 pending, Mode 0A permanent и Mode 04 принимаются только от locked ECU. Ответ другого `0x7E8..0x7EF` target не меняет. PID 01 опрашивается каждые 500 мс в движении; любое MIL ON фиксируется в RAM до конца запуска. Поддержаны single/multi-frame ISO-TP, до 32 кодов и 96 байт payload. NRC `0x78` продолжает тот же запрос без retransmit под P2*=5 с, absolute 15 с и count≤8; только `0x11/0x12` считаются unsupported, остальные final NRC имеют отдельный negative status. На основном экране DTC имеет приоритет над LPG warning; `P0300..P0312` выделяются как пропуски.
 
-Changed/transient history ограничена 32 кодами и отдельно хранит ECU, seen/last-present categories, occurrence count и change sequence. Dirty payload сохраняется через CRC/read-back LittleFS A/B journal с границей 20 секунд и отдельный NVS mirror 60 секунд; после reboot UI не выдаёт последнее наблюдение за подтверждённо текущий код.
+Changed/transient history ограничена 32 кодами и отдельно хранит ECU, seen/last-present categories, occurrence count и change sequence. Усечённый response добавляет фактически увиденные DTC, но не снимает presence с кодов, которые могли оказаться в отброшенном хвосте; `currentStateKnown` требует неусечённого scan и статуса `Complete` для всех трёх категорий, а `Unsupported` не доказывает отсутствие кода. Dirty payload сохраняется через CRC/read-back LittleFS A/B journal с границей 20 секунд и отдельный NVS mirror 60 секунд; после reboot UI не выдаёт последнее наблюдение за подтверждённо текущий код.
 
-Mode 04 никогда не автоматический. Web endpoint требует точную фразу/acknowledgement. Каждый clear сначала заново читает 03/07/0A, отказывается при incomplete/truncated/final-NRC результате, немедленно делает durable history checkpoint и только затем физически перечитывает скорость PID 0D = 0, RPM PID 0C < 50 и ECU voltage PID 42 в диапазоне 11,5–16,5 В. Positive `0x44` не очищает historical-presence: через 1,5 с запускается обязательный manual post-clear scan даже при paused periodic polling, после чего main немедленно checkpoint-ит результат. Стирание сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Полное решение, ограничения и аппаратный checklist: [`OBD_DTC_DIAGNOSTICS_DESIGN.md`](OBD_DTC_DIAGNOSTICS_DESIGN.md).
+Mode 04 никогда не автоматический. Web endpoint требует точную фразу/acknowledgement. Каждый clear сначала заново читает 03/07/0A, отказывается при incomplete/truncated/final-NRC результате, немедленно делает durable history checkpoint и только затем физически перечитывает скорость PID 0D = 0, RPM PID 0C < 50 и ECU voltage PID 42 в диапазоне 11,5–16,5 В. Positive `0x44` не очищает historical-presence: через 1,5 с запускается обязательный manual post-clear scan даже при paused periodic polling, после чего main немедленно checkpoint-ит результат. Отдельный schedule-флаг не путает валидный deadline `0` после `uint32_t` rollover с отсутствием задания. Behavioral path включает `7F 04 78` → `44` без retransmit. Стирание сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Полное решение, ограничения и аппаратный checklist: [`OBD_DTC_DIAGNOSTICS_DESIGN.md`](OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
 ### Ресурсная оценка Mode 22 — 2026-09-28
 
@@ -366,7 +366,7 @@ manifest: 0.4.0 / esp32s3-n16r8 at app offset 0x1c280
 
 Исходный пакет прошёл прежние gates, но review обнаружил ошибки NRC 0x78, multi-ECU binding, post-clear persistence и checkpoint semantics. 0.4.0 не устанавливался, был отозван и удалён из `releases/`; его приведённые выше hashes сохранены только как исторические и не переиспользовались.
 
-Исправленный и упакованный release 0.4.1:
+Исторически упакованный release 0.4.1, заменённый после дополнительного аудита без подмены бинарников:
 
 ```text
 RAM: 53 340 / 327 680 bytes (16.3%)
@@ -379,7 +379,22 @@ embedded web: 140 742 bytes HTML → 66 542 bytes deterministic gzip
 manifest: 0.4.1 / esp32s3-n16r8 at app offset 0x1c280
 ```
 
-Пройдены 13 DTC host-групп, 13 OTA diagnostics, brightness/persistence/storage fault-injection suites, static/font/browser gates, PlatformIO build, app/build byte equality, SHA-256 и factory layout. Fault injection отдельно проверяет partial/corrupt readback, LittleFS-only/NVS-only checkpoint и dual failure. В `releases/` оставлены только четыре файла 0.4.1; полный отчёт: [`../releases/README-v0.4.1.md`](../releases/README-v0.4.1.md). Аппаратная приёмка чтения DTC и осознанного Mode 04 остаётся открытой.
+Дополнительный аудит обнаружил неавторитетное снятие DTC presence при truncated response, ложный `currentStateKnown`, избыточное требование NVS rewrite в runtime factory reset и zero-sentinel rollover post-clear schedule. Production fixes выпущены отдельно как 0.4.2.
+
+Текущий упакованный release 0.4.2:
+
+```text
+RAM: 53 340 / 327 680 bytes (16.3%)
+app Flash payload: 1 189 945 / 4 194 304 bytes (28.4%)
+app .bin: 1 190 368 bytes; final raw fragment 1 360 bytes
+SHA-256 app: 163ea6714fdca4fdca5c7ab75b0e687650547689cab13ad339e185f0add8dd1b
+factory .bin: 1 255 904 bytes
+SHA-256 factory: 7bd7cdaeb7d1381d61a0ea3010758fa166672a761db19b1b07f1ae9ab90f5d5c
+embedded web: 140 742 bytes HTML → 66 542 bytes deterministic gzip
+manifest: 0.4.2 / esp32s3-n16r8 at app offset 0x1c280
+```
+
+Пройдены 15 DTC host-групп, 13 OTA diagnostics, brightness/persistence/storage fault-injection suites, static/font/browser gates, clean PlatformIO build, app/build byte equality, SHA-256 и factory layout. Новые regressions проверяют truncated-tail presence, exact-zero rollover, `7F 04 78` → `44` и journal-only factory reset после успешного NVS clear. В `releases/` оставлены только четыре файла 0.4.2; полный отчёт: [`../releases/README-v0.4.2.md`](../releases/README-v0.4.2.md). Аппаратная приёмка чтения DTC и осознанного Mode 04 остаётся открытой.
 
 ### Реализованный PSRAM-кэш и render benchmark
 
@@ -465,7 +480,7 @@ Asset raw parser использует общий 2-секундный idle watch
 
 Trip и petrol calibration кодируются в единый канонический record 140 байт: header magic/schema/bytes/monotonic sequence, sealed 64-byte `TripState`, sealed 56-byte `PetrolCalibrationState`, outer CRC32. Dirty-only checkpoint каждые 20 секунд append-ится в `/trip-journal.a` или `.b`; каждый сегмент ограничен 256 КиБ. Append считается успешным только после `flush()` и exact read-back. Boot scan идёт по полным CRC-valid records до первого torn/corrupt tail; при ротации старый active segment не удаляется до записи нового valid record.
 
-Combined NVS mirror `h2persist/snapshot` получает ту же sequence каждые 60 секунд. Boot выбирает newest valid LittleFS/NVS record с wrap-safe ordering, затем синхронизирует отставшую сторону. Если новых records нет, исходные `h2trip`/`h2petcal` мигрируют в sequence 1; legacy stores продолжают обновляться на forced lifecycle checkpoints для downgrade compatibility. Factory reset создаёт sequence новее найденной до очистки, поэтому не удалившийся stale segment не воскресит старый trip.
+Combined NVS mirror `h2persist/snapshot` получает ту же sequence каждые 60 секунд. Boot выбирает newest valid LittleFS/NVS record с wrap-safe ordering, затем синхронизирует отставшую сторону. Если новых records нет, исходные `h2trip`/`h2petcal` мигрируют в sequence 1; legacy stores продолжают обновляться на forced lifecycle checkpoints для downgrade compatibility. Factory reset создаёт sequence новее найденной до очистки, поэтому не удалившийся stale segment не воскресит старый trip. Старые LittleFS/NVS namespaces должны успешно очиститься; после этого reset считается durable, если хотя бы одна новая копия прошла write/read-back. Отказ NVS rewrite после успешного NVS clear не отменяет подтверждённый LittleFS journal.
 
 Forced checkpoints выполняются для trip reset, start/apply calibration, service entry/reboot/timeout, engine stop и low-voltage sleep. В service mode/OTA operational state не меняется и periodic journal не выполняется. UI/REST показывают mount status, recovery source, latest/journal/NVS sequence, active segment/bytes/tail/rotation, CRC validity, write age/counts/failures. Непустой не монтируемый LittleFS не форматируется; auto-format разрешён только после полного raw scan, доказавшего erased `0xFF` partition. Нормальное loss window 0–20 секунд, fallback 0–60 секунд. Полная архитектура/endurance: [`POWER_LOSS_PERSISTENCE_DESIGN.md`](POWER_LOSS_PERSISTENCE_DESIGN.md).
 
@@ -499,7 +514,7 @@ POST конфигурации проверяет целочисленные ди
 14. **Выполнено 2026-09-23 для 0.3.9:** штатный OTA из APP1/0.3.7 в APP0/0.3.9, автоматический reboot; подтверждены current/running/boot APP0/0.3.9, APP1/0.3.7 и state `valid`; финальный raw fragment 332 байта прошёл.
 15. **Ожидает выполнения для 0.3.9 assets:** загрузить фон/логотип, проверить preview на GC9A01, reboot, disable/delete, обратный OTA/rollback и random cut на стадиях A/B commit.
 16. **Ожидает выполнения для 0.3.9 persistence:** измерить append/flush/read-back, выполнить серию random cut в начале/середине/конце append и при rotation, подтвердить newest LittleFS/NVS recovery и реальные loss bounds 20/60.
-17. **Ожидает выполнения для 0.4.1 DTC read/history:** на стоящем Haval подтвердить PID 0C engine lock, сравнить physical PID 01 и Mode 03/07/0A с независимым сканером, проверить неизменность ECU target при ответах нескольких модулей, category status, DTC formatting, GC9A01 warning и отсутствие роста CAN errors/timeouts; дать pending-коду исчезнуть, reboot и подтвердить historical recovery из LittleFS/NVS без ложного current-status.
+17. **Ожидает выполнения для 0.4.2 DTC read/history:** на стоящем Haval подтвердить PID 0C engine lock, сравнить physical PID 01 и Mode 03/07/0A с независимым сканером, проверить неизменность ECU target при ответах нескольких модулей, category status, DTC formatting, GC9A01 warning и отсутствие роста CAN errors/timeouts; дать pending-коду исчезнуть, reboot и подтвердить historical recovery из LittleFS/NVS без ложного current-status.
 18. **Ожидает bench/simulator gate до Mode 04:** доказать, что timeout/malformed/truncated в каждой pre-clear категории и отказ обеих history-копий дают `preclear_scan_failed`/`preservation_failed`, а кадр Mode 04 отсутствует; выполнить random cut DTC journal и newest-valid recovery.
 19. **Ожидает отдельного осознанного выполнения для Mode 04:** сначала сохранить DTC/freeze-frame внешним сканером; доказать отказ при speed>0, RPM≥50 и unsafe/unknown voltage; затем engine OFF/ignition ON подтвердить fresh 03→07→0A, durable snapshot, request/positive `0x44`, readiness reset, контрольный scan и сохранение permanent DTC.
 

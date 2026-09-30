@@ -31,6 +31,17 @@ assert "ObdDiagnosticsState::kMaxEntries" in diag
 assert "flowControl.data[0] = 0x30" in diag
 assert "responseConsumed_ < responseExpected_" in diag, \
     "Flow Control must be sent only when Consecutive Frames are still needed"
+assert "!assemblyTruncated" in diag and "bool authoritative" in diag_h
+assert "if (authoritative)" in diag, \
+    "A truncated DTC prefix must not clear unseen historical codes"
+current_known_match = re.search(
+    r"const bool currentStateKnown\s*=\s*(.*?);", portal, re.S)
+assert current_known_match, "DTC history current-state invariant is missing"
+current_known = current_known_match.group(1)
+assert "!state.truncated" in current_known
+assert current_known.count("DtcCategoryStatus::Complete") == 3
+assert "DtcCategoryStatus::Unsupported" not in current_known, \
+    "Unsupported does not prove that an old code is absent"
 
 # Engine ownership is established only by a valid functional PID 0C response;
 # all subsequent diagnostic services and normal PID data are bound to that ECU.
@@ -93,9 +104,14 @@ assert "PreservationFailed" in diag and "clearSnapshotPreserved = true" in diag
 complete_clear_body = re.search(
     r"void ObdDiagnostics::completeClear\(.*?\n}\n", diag, flags=re.S).group(0)
 assert "postClearVerificationPending = true" in complete_clear_body
+assert "postClearScanScheduled_ = true" in complete_clear_body
 assert "postClearScanDueAt_" in complete_clear_body
+assert "postClearScanScheduled_" in diag_h
 assert "clearHistoryPresence" not in complete_clear_body
-assert "postClearScanDueAt_" in diag and "startScan(now, true)" in diag
+manual_tail = diag.index("if (postClearScanScheduled_")
+periodic_guard = diag.index("if (!periodicScanAllowed", manual_tail)
+assert manual_tail < periodic_guard, \
+    "The explicit post-clear tail must continue while periodic polling is paused"
 assert "DtcOperation::PreserveAfterClear" in complete_scan_body
 assert "DtcOperation::PreserveAfterClear" in main
 post_operation = main.index("DtcOperation::PreserveAfterClear")
@@ -132,4 +148,5 @@ assert "стирание никогда не выполняется автома
 compressed = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), \
     "embedded UI is stale"
-print("DTC integration: PID 0C engine lock, physical 03/07/0A, NRC 0x78 P2*/absolute bounds, pre/post-clear preservation and gated Mode 04 OK")
+print("DTC integration: PID 0C engine lock, physical 03/07/0A, NRC 0x78, "
+      "truncated-history/API invariants, post-clear schedule and gated Mode 04 OK")

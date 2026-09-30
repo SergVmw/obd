@@ -1190,7 +1190,7 @@ void ServicePortal::sendDtcStatus() {
 
   const DtcHistoryData& historyState = obdClient_.dtcHistory();
   const bool currentStateKnown =
-      state.scanCompletedAt != 0 &&
+      state.scanCompletedAt != 0 && !state.truncated &&
       state.storedStatus == DtcCategoryStatus::Complete &&
       state.pendingStatus == DtcCategoryStatus::Complete &&
       state.permanentStatus == DtcCategoryStatus::Complete;

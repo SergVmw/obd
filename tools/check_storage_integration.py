@@ -31,6 +31,9 @@ required = {
     "NVS readback": "loadNvsRecord(readback)" in runtime,
     "checkpoint accepts either durable copy":
         "return journalOk || (writeNvs && nvsOk);" in runtime,
+    "factory reset accepts either rewritten durable copy":
+        "(journalOk || nvsOk);" in runtime and
+        "(journalOk || nvsOk) && nvsOk" not in runtime,
     "table-driven CRC": "kCrc32Nibble" in text("src/storage_crc32.cpp") and
         "for (uint8_t bit" not in text("src/storage_crc32.cpp"),
     "newest generation recovery": "sequenceNewer" in runtime,
@@ -75,4 +78,5 @@ except Exception as exc:
 if decoded != web:
     raise SystemExit("src/web_ui_gz.h is stale; run tools/embed_web.py")
 
-print("Storage integration: 20/60 journal, NVS fallback, LittleFS safety, A/B RGB565 assets, exact dimensions/bytes/CRC and embedded fallbacks OK")
+print("Storage integration: 20/60 journal, factory-reset durable-copy semantics, "
+      "NVS fallback, LittleFS safety and A/B RGB565 assets OK")

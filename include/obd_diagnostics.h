@@ -184,11 +184,12 @@ class ObdDiagnostics {
   bool processVerificationPayload(const uint8_t* payload, size_t length,
                                   uint32_t now);
   bool replaceCategory(DtcKind kind, const uint8_t* bytes, size_t length,
-                       uint16_t responseId);
+                       uint16_t responseId, bool authoritative);
   void removeCategory(DtcKind kind);
   void appendCode(DtcKind kind, uint16_t raw, uint16_t responseId);
   void updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
-                             size_t length, uint16_t responseId);
+                             size_t length, uint16_t responseId,
+                             bool authoritative);
   DtcHistoryEntry* findHistory(uint16_t raw, uint16_t responseId);
   DtcHistoryEntry& allocateHistory(uint16_t raw, uint16_t responseId);
   uint32_t nextHistoryChange();
@@ -206,6 +207,7 @@ class ObdDiagnostics {
   uint32_t requestId_ = 0;
   uint32_t responseId_ = 0;
   uint32_t postClearScanDueAt_ = 0;
+  bool postClearScanScheduled_ = false;
   bool automaticScanRequested_ = false;
   bool clearAfterScan_ = false;
   bool postClearScanActive_ = false;

@@ -381,6 +381,9 @@ bool RuntimePersistence::factoryReset(
   const bool nvsOk = syncNvs();
   lastJournalAttemptAt_ = millis();
   lastNvsAttemptAt_ = millis();
+  // The old NVS value was removed successfully above. The reset is durable
+  // once either newly written backend has been read back; a failed redundant
+  // NVS rewrite must not turn a valid LittleFS reset into a false HTTP error.
   return latestValid_ && filesCleared && nvsCleared &&
-         (journalOk || nvsOk) && nvsOk;
+         (journalOk || nvsOk);
 }

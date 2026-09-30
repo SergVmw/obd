@@ -96,6 +96,7 @@ void resetEnvironment() {
   Preferences::storage.clear();
   Preferences::failWrite = false;
   Preferences::failBegin = false;
+  Preferences::failPutOnly() = false;
   Preferences::writes = 0;
   hostfs::maxWritePerCall = std::numeric_limits<size_t>::max();
   hostfs::failFlush = false;
@@ -318,6 +319,38 @@ void testFactoryResetSequenceDefeatsUndeletedStaleSegment() {
   assert(bootCalibration.active == 0);
 }
 
+void testFactoryResetAcceptsJournalWhenNvsRewriteFails() {
+  resetEnvironment();
+  LittleFsStorage storage = mountedStorage();
+  TripState trip = tripWith(42.0);
+  PetrolCalibrationState calibration = calibrationWith(42.0);
+  RuntimePersistence persistence;
+  assert(persistence.begin(storage, trip, calibration));
+
+  // NVS clear succeeds, then the replacement putBytes fails. The newer reset
+  // snapshot is still durable in the read-back-verified LittleFS journal.
+  Preferences::failPutOnly() = true;
+  TripState resetTrip{};
+  PetrolCalibrationState resetCalibration{};
+  assert(persistence.factoryReset(resetTrip, resetCalibration));
+  assert(persistence.latestSequence() == 2);
+  assert(persistence.journalSequence() == 2);
+  assert(persistence.nvsSequence() == 0);
+  assert(persistence.journalHealthy());
+  assert(!persistence.nvsHealthy());
+  assert(Preferences::storage.count("h2persist/snapshot") == 0);
+
+  Preferences::failPutOnly() = false;
+  TripState recovered = tripWith(999.0);
+  PetrolCalibrationState recoveredCalibration = calibrationWith(999.0);
+  RuntimePersistence rebooted;
+  assert(rebooted.begin(storage, recovered, recoveredCalibration));
+  assert(rebooted.latestSequence() == 2);
+  assert(recovered.totalDistanceKm == 0.0);
+  assert(recoveredCalibration.active == 0);
+  assert(rebooted.nvsSequence() == 2);  // startup repairs the missing mirror
+}
+
 DtcHistoryData dtcHistoryWith(uint16_t raw, uint8_t kinds,
                               uint32_t changeSequence = 1) {
   DtcHistoryData history{};
@@ -534,6 +567,7 @@ int main() {
   testTornTailAndNewestNvsRecovery();
   testJournalNewerRepairsNvsAndCorruptCrcFallsBack();
   testFactoryResetSequenceDefeatsUndeletedStaleSegment();
+  testFactoryResetAcceptsJournalWhenNvsRewriteFails();
   testDtcHistorySnapshotAndDurableMirror();
   testDtcHistoryTornJournalFallsBackToNvs();
   testAssetValidationAbAndFallback();

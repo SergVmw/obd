@@ -11,6 +11,10 @@ class Preferences {
   static bool failWrite;
   static bool failBegin;
   static size_t writes;
+  static bool& failPutOnly() {
+    static bool value = false;
+    return value;
+  }
   bool begin(const char* ns, bool = false) { prefix_ = std::string(ns) + "/"; return !failBegin; }
   size_t getBytesLength(const char* key) { return storage[prefix_ + key].size(); }
   size_t getBytes(const char* key, void* dst, size_t len) {
@@ -20,7 +24,7 @@ class Preferences {
     return data.size();
   }
   size_t putBytes(const char* key, const void* src, size_t len) {
-    if (failWrite) return 0;
+    if (failWrite || failPutOnly()) return 0;
     const auto* p = static_cast<const uint8_t*>(src);
     storage[prefix_ + key] = std::vector<uint8_t>(p, p + len);
     ++writes;

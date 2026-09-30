@@ -390,6 +390,72 @@ void testOversizeResponseIsTruncatedWithoutOverflow() {
   CHECK(diagnostics.history().truncated);
 }
 
+void testTruncatedTailCannotClearHistoryPresence() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+
+  CHECK(diagnostics.requestScan(2));
+  build(diagnostics, 2, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 3);
+  build(diagnostics, 4, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x47}), 5);
+  build(diagnostics, 6, 0x7E0, 1, 0x0A);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 7);
+  CHECK(diagnostics.history().entryCount == 1);
+  CHECK(diagnostics.history().entries[0].raw == 0x0301);
+  CHECK(diagnostics.history().entries[0].lastPresentKinds == DtcHistoryStored);
+
+  CHECK(diagnostics.requestScan(20));
+  build(diagnostics, 20, 0x7E0, 1, 0x03);
+  // 97-byte payload: P0200 is visible, while the previously present P0301 is
+  // in the unseen tail after the 96-byte bounded response buffer.
+  std::vector<uint8_t> payload{0x43, 0x02, 0x00};
+  for (uint8_t i = 0; i < 46; ++i) {
+    payload.push_back(0);
+    payload.push_back(0);
+  }
+  payload.push_back(0x03);
+  payload.push_back(0x01);
+  CHECK(payload.size() == 97);
+
+  twai_message_t first{};
+  first.identifier = 0x7E8;
+  first.data_length_code = 8;
+  first.data[0] = 0x10 | static_cast<uint8_t>(payload.size() >> 8);
+  first.data[1] = static_cast<uint8_t>(payload.size());
+  for (size_t i = 0; i < 6; ++i) first.data[i + 2] = payload[i];
+  accept(diagnostics, first, 21, true);
+
+  size_t offset = 6;
+  uint8_t sequence = 1;
+  while (offset < payload.size()) {
+    twai_message_t consecutive{};
+    consecutive.identifier = 0x7E8;
+    consecutive.data[0] = 0x20 | (sequence & 0x0F);
+    consecutive.data_length_code = 1;
+    while (consecutive.data_length_code < 8 && offset < payload.size()) {
+      consecutive.data[consecutive.data_length_code++] = payload[offset++];
+    }
+    accept(diagnostics, consecutive, 21 + sequence);
+    sequence = (sequence + 1) & 0x0F;
+  }
+
+  CHECK(diagnostics.state().truncated);
+  const DtcHistoryEntry* oldCode = nullptr;
+  const DtcHistoryEntry* visibleCode = nullptr;
+  for (size_t i = 0; i < diagnostics.history().entryCount; ++i) {
+    const DtcHistoryEntry& entry = diagnostics.history().entries[i];
+    if (entry.raw == 0x0301) oldCode = &entry;
+    if (entry.raw == 0x0200) visibleCode = &entry;
+  }
+  CHECK(oldCode != nullptr);
+  CHECK(visibleCode != nullptr);
+  CHECK((oldCode->lastPresentKinds & DtcHistoryStored) != 0);
+  CHECK((visibleCode->lastPresentKinds & DtcHistoryStored) != 0);
+}
+
 void testClearSafetyAndSuccessfulMode04() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
@@ -428,7 +494,12 @@ void testClearSafetyAndSuccessfulMode04() {
   // 12.400 V = 0x3070.
   accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x42, 0x30, 0x70}), 112);
   build(diagnostics, 113, 0x7E0, 1, 0x04);
-  accept(diagnostics, frame(0x7E8, {0x01, 0x44}), 114);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x04, 0x78}), 114);
+  CHECK(diagnostics.waiting());
+  CHECK(!diagnostics.hasPendingRequest());  // Mode 04 is not retransmitted.
+  CHECK(diagnostics.state().responsePending);
+  CHECK(diagnostics.takeResponsePendingEvent());
+  accept(diagnostics, frame(0x7E8, {0x01, 0x44}), 115);
 
   const auto& state = diagnostics.state();
   CHECK(state.clearResult == DtcClearResult::Succeeded);
@@ -444,20 +515,47 @@ void testClearSafetyAndSuccessfulMode04() {
   CHECK(state.postClearVerificationPending);
   CHECK(!state.postClearScanComplete);
 
-  diagnostics.tick(1613, false);
+  diagnostics.tick(1614, false);
   CHECK(diagnostics.state().operation == DtcOperation::Idle);
-  diagnostics.tick(1614, false);  // manual continuation runs while paused
+  diagnostics.tick(1615, false);  // manual continuation runs while paused
   CHECK(diagnostics.state().operation == DtcOperation::Scanning);
   CHECK(diagnostics.state().manualOperation);
-  finishEmptyScan(diagnostics, 1614);
+  finishEmptyScan(diagnostics, 1615);
   CHECK(diagnostics.state().operation ==
         DtcOperation::PreserveAfterClear);
   CHECK(diagnostics.state().postClearScanComplete);
   CHECK(!diagnostics.state().postClearVerificationPending);
   CHECK(diagnostics.history().entries[0].lastPresentKinds == 0);
-  CHECK(diagnostics.confirmPostClearPreserved(true, 1620));
+  CHECK(diagnostics.confirmPostClearPreserved(true, 1621));
   CHECK(diagnostics.state().operation == DtcOperation::Idle);
   CHECK(diagnostics.state().postClearSnapshotPreserved);
+}
+
+void testPostClearScheduleSurvivesZeroRollover() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.requestClear(1));
+  finishEmptyPreclear(diagnostics, 1);
+
+  build(diagnostics, 8, 0x7E0, 2, 0x01, 0x0D);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 9);
+  build(diagnostics, 10, 0x7E0, 2, 0x01, 0x0C);
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x00, 0x00}), 11);
+  build(diagnostics, 12, 0x7E0, 2, 0x01, 0x42);
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x42, 0x30, 0x70}), 13);
+  build(diagnostics, 14, 0x7E0, 1, 0x04);
+
+  // clearAt + 1500 wraps exactly to zero. Zero is a valid deadline and must
+  // not be confused with an unscheduled sentinel.
+  constexpr uint32_t clearAt = UINT32_MAX - 1499U;
+  accept(diagnostics, frame(0x7E8, {0x01, 0x44}), clearAt);
+  CHECK(diagnostics.state().postClearVerificationPending);
+  diagnostics.tick(UINT32_MAX, false);
+  CHECK(diagnostics.state().operation == DtcOperation::Idle);
+  diagnostics.tick(0, false);
+  CHECK(diagnostics.state().operation == DtcOperation::Scanning);
+  CHECK(diagnostics.state().manualOperation);
 }
 
 void testClearRejectsMovingEngineAndUnsafeVoltage() {
@@ -586,10 +684,12 @@ int main() {
   testResponsePendingAndFinalNrcClassification();
   testTransientHistorySurvivesARescanAndRestore();
   testOversizeResponseIsTruncatedWithoutOverflow();
+  testTruncatedTailCannotClearHistoryPresence();
   testClearSafetyAndSuccessfulMode04();
+  testPostClearScheduleSurvivesZeroRollover();
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::puts("OBD diagnostics tests: 13 groups passed");
+  std::puts("OBD diagnostics tests: 15 groups passed");
   return 0;
 }

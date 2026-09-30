@@ -88,7 +88,7 @@ const vm = require('node:vm');
       }
       if (url.pathname === '/api/status') {
         if (offline) return route.fulfill({ status: 503, body: 'test offline' });
-        return json({ version: '0.4.1', target: 'ESP32-S3', obdConnected: false,
+        return json({ version: '0.4.2', target: 'ESP32-S3', obdConnected: false,
           boostBar: null, fuelMode: '95', dtc: { milKnown: true, milCommandedOn: false,
             milLatchedThisBoot: true, ecuReportedCount: 1, storedCount: 1,
             pendingCount: 0, permanentCount: 0, firstCode: 'P0301', misfire: true,
@@ -98,7 +98,7 @@ const vm = require('node:vm');
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
             slots: [
               { partition: 'app0', address: 0x10000, descriptorReadable: true,
-                versionKnown: true, version: '0.4.1', versionSource: 'manifest',
+                versionKnown: true, version: '0.4.2', versionSource: 'manifest',
                 running: true, bootSelected: true, nextUpdate: false, state: 'valid' },
               { partition: 'app1', address: 0x410000, descriptorReadable: true,
                 versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
@@ -184,7 +184,7 @@ const vm = require('node:vm');
         otaPreflightHeader = req.headers()['x-h2g-action'];
         const body = req.postDataJSON();
         ++otaPreflights;
-        assert.equal(body.filename, 'h2-gauge-v0.4.1-esp32s3-n16r8.bin');
+        assert.equal(body.filename, 'h2-gauge-v0.4.2-esp32s3-n16r8.bin');
         assert.equal(body.size, 5000);
         assert.equal(body.probeHex.length, 576);
         assert.match(body.probeHex, /^(a5)+$/);
@@ -227,10 +227,10 @@ const vm = require('node:vm');
     });
     await page.goto('http://h2g.test/');
     await page.waitForFunction(() => document.getElementById('lightRaw').textContent === '1830');
-    assert.equal(await page.locator('#otaFirmware').textContent(), '0.4.1');
-    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.4.1');
+    assert.equal(await page.locator('#otaFirmware').textContent(), '0.4.2');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.4.2');
     assert.equal(await page.locator('#slotCurrentMeta').textContent(), 'app0 · запущена');
-    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.4.1');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.4.2');
     assert.match(await page.locator('#slotApp0Meta').textContent(), /запущен/);
     assert.equal(await page.locator('#slotApp0Card').getAttribute('class'), 'card slotCard running');
     assert.equal(await page.locator('#slotApp1Version').textContent(), '0.3.6');
@@ -368,7 +368,7 @@ const vm = require('node:vm');
     await page.locator('#firmware').setInputFiles({ name: 'too-large.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2097153) });
     assert.equal(await page.locator('#install').isDisabled(), true);
     assert.match(await page.locator('#otaText').textContent(), /2\.00 МБ/);
-    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.4.1-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
+    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.4.2-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
     assert.equal(await page.locator('#install').isEnabled(), true);
     await page.click('#install');
     await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[invalid_image]'));

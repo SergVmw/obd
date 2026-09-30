@@ -298,8 +298,9 @@ void ObdDiagnostics::tick(uint32_t now, bool periodicScanAllowed) {
   // This is the explicitly requested verification tail of manual Mode 04, not
   // a periodic automatic scan. It must continue while ordinary polling is
   // paused in Wi-Fi service mode.
-  if (postClearScanDueAt_ != 0 &&
+  if (postClearScanScheduled_ &&
       deadlineReached(now, postClearScanDueAt_)) {
+    postClearScanScheduled_ = false;
     postClearScanDueAt_ = 0;
     postClearScanActive_ = true;
     startScan(now, true);
@@ -329,6 +330,7 @@ bool ObdDiagnostics::requestScan(uint32_t now) {
   if (state_.postClearVerificationPending) {
     postClearScanActive_ = true;
   }
+  postClearScanScheduled_ = false;
   postClearScanDueAt_ = 0;
   startScan(now, true);
   return true;
@@ -358,6 +360,7 @@ bool ObdDiagnostics::requestClear(uint32_t now) {
   state_.postClearVerificationPending = false;
   state_.postClearScanComplete = false;
   state_.postClearSnapshotPreserved = false;
+  postClearScanScheduled_ = false;
   postClearScanDueAt_ = 0;
   postClearScanActive_ = false;
   state_.verifiedSpeedKph = NAN;
@@ -771,7 +774,8 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
   }
   if (assemblyTruncated) state_.truncated = true;
   const DtcKind kind = kindForRequest(request_);
-  if (!replaceCategory(kind, payload + 1, dtcBytes, responseId_)) {
+  if (!replaceCategory(kind, payload + 1, dtcBytes, responseId_,
+                       !assemblyTruncated)) {
     advanceScan(now, DtcCategoryStatus::Malformed);
     return;
   }
@@ -944,6 +948,7 @@ void ObdDiagnostics::failClear(uint32_t now, DtcClearResult result,
   state_.responsePending = false;
   responsePendingEvent_ = false;
   clearAfterScan_ = false;
+  postClearScanScheduled_ = false;
   postClearScanDueAt_ = 0;
   postClearScanActive_ = false;
   state_.postClearVerificationPending = false;
@@ -982,6 +987,7 @@ void ObdDiagnostics::completeClear(uint32_t now) {
   state_.postClearSnapshotPreserved = false;
   setError("");
   resetAssembly();
+  postClearScanScheduled_ = true;
   postClearScanDueAt_ = now + 1500U;
   publishSummary();
 }
@@ -1020,9 +1026,10 @@ void ObdDiagnostics::appendCode(DtcKind kind, uint16_t raw,
 }
 
 bool ObdDiagnostics::replaceCategory(DtcKind kind, const uint8_t* bytes,
-                                     size_t length, uint16_t responseId) {
+                                     size_t length, uint16_t responseId,
+                                     bool authoritative) {
   if ((length & 1U) != 0U || (length != 0 && bytes == nullptr)) return false;
-  updateHistoryCategory(kind, bytes, length, responseId);
+  updateHistoryCategory(kind, bytes, length, responseId, authoritative);
   removeCategory(kind);
   for (size_t i = 0; i + 1 < length; i += 2) {
     const uint16_t raw = (static_cast<uint16_t>(bytes[i]) << 8) |
@@ -1083,26 +1090,32 @@ uint32_t ObdDiagnostics::nextHistoryChange() {
 
 void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
                                            size_t length,
-                                           uint16_t responseId) {
+                                           uint16_t responseId,
+                                           bool authoritative) {
   const uint8_t mask = kindMask(kind);
-  for (size_t i = 0; i < history_.entryCount; ++i) {
-    DtcHistoryEntry& entry = history_.entries[i];
-    if (entry.ecuResponseId != responseId ||
-        (entry.lastPresentKinds & mask) == 0) {
-      continue;
-    }
-    bool stillPresent = false;
-    for (size_t offset = 0; offset + 1 < length; offset += 2) {
-      const uint16_t raw =
-          (static_cast<uint16_t>(bytes[offset]) << 8) | bytes[offset + 1];
-      if (raw != 0 && raw == entry.raw) {
-        stillPresent = true;
-        break;
+  // Only a complete payload can prove that a previously observed code is now
+  // absent. A bounded/truncated prefix may still add positive observations,
+  // but absence from that prefix carries no information about the unseen tail.
+  if (authoritative) {
+    for (size_t i = 0; i < history_.entryCount; ++i) {
+      DtcHistoryEntry& entry = history_.entries[i];
+      if (entry.ecuResponseId != responseId ||
+          (entry.lastPresentKinds & mask) == 0) {
+        continue;
       }
-    }
-    if (!stillPresent) {
-      entry.lastPresentKinds &= static_cast<uint8_t>(~mask);
-      entry.lastChangeSequence = nextHistoryChange();
+      bool stillPresent = false;
+      for (size_t offset = 0; offset + 1 < length; offset += 2) {
+        const uint16_t raw =
+            (static_cast<uint16_t>(bytes[offset]) << 8) | bytes[offset + 1];
+        if (raw != 0 && raw == entry.raw) {
+          stillPresent = true;
+          break;
+        }
+      }
+      if (!stillPresent) {
+        entry.lastPresentKinds &= static_cast<uint8_t>(~mask);
+        entry.lastChangeSequence = nextHistoryChange();
+      }
     }
   }
 
