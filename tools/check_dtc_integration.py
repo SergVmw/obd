@@ -29,6 +29,28 @@ for value in ("case Request::ReadStored: return 0x03", "case Request::ReadPendin
 assert "kResponseCapacity = 96" in diag_h
 assert "ObdDiagnosticsState::kMaxEntries" in diag
 assert "flowControl.data[0] = 0x30" in diag
+assert "responseConsumed_ < responseExpected_" in diag, \
+    "Flow Control must be sent only when Consecutive Frames are still needed"
+
+# Engine ownership is established only by a valid functional PID 0C response;
+# all subsequent diagnostic services and normal PID data are bound to that ECU.
+assert "DiscoverEngineRpm" in diag_h and "case Request::DiscoverEngineRpm: return 0x0C" in diag
+assert "observeEngineResponse(responseId_)" in diag
+assert "engineEcuLocked" in diag_h
+assert "diagnostics_.acceptsEngineResponse(message.identifier)" in client
+assert "diagnostics_.observeEngineResponse(message.identifier)" in client
+assert "state_.engineResponseId - 8U" in diag
+
+# NRC 0x78 switches to P2* without retransmission and an absolute request
+# deadline remains active. Other final NRCs are not mislabeled unsupported.
+for token in ("kResponsePendingTimeoutMs = 5000", "kDiagnosticAbsoluteTimeoutMs = 15000",
+              "kMaxResponsePending = 8", "takeResponsePendingEvent"):
+    assert token in diag_h
+assert "negativeResponseCode == 0x78" in diag
+assert "negativeResponseCode == 0x11" in diag and "negativeResponseCode == 0x12" in diag
+assert "diagnosticTiming_.noteResponsePending" in client
+assert "diagnosticTiming_.expired(now)" in client
+assert "diagnosticTiming_.start" in client
 
 # Clearing is manual, exact-confirmed and physically gated immediately before Mode 04.
 assert "requestDtcClear" in client_h and "clearDtcs" in portal_h
@@ -66,6 +88,22 @@ confirmation = main.index("confirmDtcPreclearPreserved", checkpoint)
 assert checkpoint < confirmation
 assert "PreservationFailed" in diag and "clearSnapshotPreserved = true" in diag
 
+# Positive 0x44 schedules a manual continuation even while periodic polling is
+# paused. History is changed by the post-clear scan, then checkpointed at once.
+complete_clear_body = re.search(
+    r"void ObdDiagnostics::completeClear\(.*?\n}\n", diag, flags=re.S).group(0)
+assert "postClearVerificationPending = true" in complete_clear_body
+assert "postClearScanDueAt_" in complete_clear_body
+assert "clearHistoryPresence" not in complete_clear_body
+assert "postClearScanDueAt_" in diag and "startScan(now, true)" in diag
+assert "DtcOperation::PreserveAfterClear" in complete_scan_body
+assert "DtcOperation::PreserveAfterClear" in main
+post_operation = main.index("DtcOperation::PreserveAfterClear")
+post_checkpoint = main.index(
+    "dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())", post_operation)
+post_confirmation = main.index("confirmDtcPostClearPreserved", post_checkpoint)
+assert post_operation < post_checkpoint < post_confirmation
+
 # Changed/transient codes have an independent CRC journal and NVS mirror. The
 # payload is fixed-size/bounded and factory reset includes it.
 assert "kJournalIntervalMs = 20000UL" in history_h
@@ -75,7 +113,9 @@ for token in ('"/dtc-history.a"', '"/dtc-history.b"', '"h2dtchist"',
               "file.flush()", "verifyRecordAt", "syncNvs"):
     assert token in history
 assert "storageCrc32" in history_snapshot
-assert "updateHistoryCategory" in diag and "clearHistoryPresence" in diag
+assert "updateHistoryCategory" in diag
+assert "clearHistoryPresence" not in diag, \
+    "Mode 04 alone must not erase historical presence"
 assert "dtcHistoryPersistence_.factoryReset" in portal
 
 for route in ("/api/diagnostics/dtc", "/api/diagnostics/dtc/scan",
@@ -92,4 +132,4 @@ assert "стирание никогда не выполняется автома
 compressed = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), \
     "embedded UI is stale"
-print("DTC integration: PID 01, bounded 03/07/0A, durable history, mandatory pre-clear preservation and gated Mode 04 OK")
+print("DTC integration: PID 0C engine lock, physical 03/07/0A, NRC 0x78 P2*/absolute bounds, pre/post-clear preservation and gated Mode 04 OK")

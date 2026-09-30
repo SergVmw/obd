@@ -1,10 +1,57 @@
 # Changelog
 
-## 0.4.0 — 2026-09-28
+## 0.4.1 — 2026-09-30
 
-Source-кандидат после аппаратно принятого release 0.3.9. Поводом стало наблюдение
-мигающей лампы Check Engine при высокой скорости 2026-09-27. Бинарник 0.4.0 ещё
-не упакован и не проходил аппаратное acceptance чтения/стирания на Haval.
+Исправленный release после review отозванного 0.4.0. Версия 0.4.0 не
+устанавливалась на автомобиль, удалена из `releases/`, а её опубликованные
+SHA-256 не заменялись in-place. Аппаратно подтверждённой основой остаётся 0.3.9.
+
+### OBD/DTC transport и выбор ECU
+
+- Functional discovery теперь начинает с PID `0C`; первый структурно валидный
+  RPM response однократно фиксирует engine ECU. PID 01, обычная telemetry и
+  physical Mode 03/07/0A/04 не принимают ответы другого ECU.
+- `7F <service> 78` стал промежуточным ResponsePending без повторной передачи:
+  P2*=5000 мс, абсолютный предел запроса=15000 мс, максимум восемь pending.
+- NRC `0x11/0x12` классифицируются как unsupported; прочие финальные NRC имеют
+  отдельный `negative_response` и не удаляют DTC/history как будто ответ пустой.
+- Flow Control отправляется только когда после First Frame действительно нужны
+  Consecutive Frames; удалена недостижимая проверка длины.
+
+### Mode 04 и persistence
+
+- Positive `0x44` больше не очищает historical-presence. Через 1,5 с обязательное
+  Mode 03/07/0A выполняется как manual continuation даже при paused periodic
+  polling; итог немедленно проходит отдельный durable checkpoint.
+- RuntimePersistence checkpoint успешен, если хотя бы одна запрошенная копия
+  LittleFS/NVS записана и прочитана обратно. Health отказавшего mirror остаётся
+  ложным и виден отдельно.
+- Ошибки аргументов/порядка OTA state machine больше не выставляют NVS
+  `storageHealthy=false`; реальный отказ `Preferences` по-прежнему это делает.
+- CRC32 переведён с восьми побитовых шагов на два nibble-table lookup на байт.
+
+### Проверки и упаковка
+
+- OBD suite расширен до 13 групп: NRC 0x78, P2*/absolute deadline, bounded
+  pending, несколько ECU, immutable engine target, FC boundary и paused post-clear tail.
+- OTA suite расширен до 13 групп; storage recovery fault injection проверяет
+  partial/corrupt readback, LittleFS-only, NVS-only и dual failure checkpoints.
+- Пройдены host/static/font/browser gates и PlatformIO N16R8 build: RAM
+  53 340 байт, Flash payload 1 189 877 байт; manifest
+  `0.4.1 / esp32s3-n16r8` находится по offset `0x1c280`.
+- OTA app: 1 190 288 байта, SHA-256 `cd2f6f0b…af1d41`; factory:
+  1 255 824 байт, SHA-256 `8263b8e2…513291`; финальный raw fragment 1280 байт.
+- В `releases/` оставлены только app/factory/checksums/report 0.4.1.
+
+Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md)
+и [`releases/README-v0.4.1.md`](releases/README-v0.4.1.md).
+
+## 0.4.0 — 2026-09-28 (отозван, не устанавливать)
+
+Историческая запись исходного пакета поверх аппаратно принятого 0.3.9.
+Поводом стало наблюдение мигающей лампы Check Engine при высокой скорости
+2026-09-27. Бинарник 0.4.0 не устанавливался на Haval и после review был
+отозван; исправления выпущены как 0.4.1 без замены прежних hashes.
 
 ### Check Engine и чтение DTC
 
@@ -63,6 +110,11 @@ Source-кандидат после аппаратно принятого release
 - PlatformIO `esp32s3_n16r8` успешно собран: internal RAM 53 316 байт; app
   Flash payload 1 187 797 байт; app binary 1 188 208 байт; manifest
   `0.4.0 / esp32s3-n16r8` найден по offset `0x1c280`.
+- Упакованы обычный OTA app `h2-gauge-v0.4.0-esp32s3-n16r8.bin`
+  (`e5cf27be…44a87`, 1 188 208 байт) и factory image (`cc140502…c6388`,
+  1 253 744 байта); проверены SHA-256, byte equality и merged offsets.
+- На момент исходной упаковки в `releases/` были четыре файла 0.4.0;
+  при выпуске 0.4.1 они удалены по правилу «только актуальная версия».
 
 Подробности: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 

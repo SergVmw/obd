@@ -9,7 +9,7 @@ constexpr uint8_t kMaxRxFramesPerLoop = 16;
 constexpr uint32_t kRxTimeBudgetUs = 2000;
 }
 
-constexpr uint8_t ObdClient::kDiscoveryPids_[3];
+constexpr uint8_t ObdClient::kDiscoveryPids_[4];
 
 bool ObdClient::begin() {
   twai_general_config_t general =
@@ -47,6 +47,7 @@ void ObdClient::shutdown() {
   if (!installed_) return;
   paused_ = true;
   waiting_ = false;
+  diagnosticTiming_.stop();
 
   const esp_err_t stopResult = twai_stop();
   if (stopResult != ESP_OK && stopResult != ESP_ERR_INVALID_STATE) {
@@ -65,14 +66,18 @@ void ObdClient::shutdown() {
 void ObdClient::loop(uint32_t now) {
   if (!installed_) return;
   handleAlerts(now);
-  receiveFrames(now);
 
-  // Finish/expire an already transmitted request even if service mode paused
-  // ordinary polling after it was sent. Otherwise one stale transaction would
-  // block controlled service diagnostics indefinitely.
-  if (waiting_ && now - requestSentAt_ > pendingTimeoutMs_) {
-    finishPending(true);
+  // Enforce the wall-clock bound before consuming queued RX frames. A response
+  // first observed after P2/P2* or the absolute deadline cannot revive the
+  // request, including when ordinary polling is paused in service mode.
+  if (waiting_) {
+    const bool expired = pendingRequest_ == PendingRequest::Diagnostics
+                             ? diagnosticTiming_.expired(now)
+                             : (pendingTimeoutMs_ != 0 &&
+                                now - requestSentAt_ >= pendingTimeoutMs_);
+    if (expired) finishPending(true);
   }
+  receiveFrames(now);
   if (waiting_ || recovering_) return;
 
   diagnostics_.tick(now, !paused_);
@@ -234,6 +239,8 @@ bool ObdClient::sendDiagnostics(uint32_t now) {
   pendingPid_ = 0;
   pendingTimeoutMs_ = ObdDiagnostics::kDiagnosticTimeoutMs;
   requestSentAt_ = now;
+  diagnosticTiming_.start(now, ObdDiagnostics::kDiagnosticTimeoutMs,
+                          ObdDiagnostics::kDiagnosticAbsoluteTimeoutMs);
   lastAnyRequestAt_ = now;
   return true;
 }
@@ -251,6 +258,19 @@ void ObdClient::receiveFrames(uint32_t now) {
     bool needsFlowControl = false;
     if (diagnostics_.handleFrame(message, now, flowControl,
                                  needsFlowControl)) {
+      if (pendingRequest_ == PendingRequest::Diagnostics &&
+          diagnostics_.waiting()) {
+        // Any accepted response frame resets the current inactivity epoch.
+        // NRC 0x78 switches it to P2* without retransmitting the request; the
+        // absolute request epoch set by sendDiagnostics() remains unchanged.
+        requestSentAt_ = now;
+        diagnosticTiming_.noteActivity(now);
+        if (diagnostics_.takeResponsePendingEvent()) {
+          pendingTimeoutMs_ = ObdDiagnostics::kResponsePendingTimeoutMs;
+          diagnosticTiming_.noteResponsePending(
+              now, ObdDiagnostics::kResponsePendingTimeoutMs);
+        }
+      }
       if (needsFlowControl) {
         if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
           ++telemetry_.canErrorCount;
@@ -289,12 +309,29 @@ void ObdClient::receiveFrames(uint32_t now) {
 }
 
 void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
-  if (message.data_length_code < 4) return;
-  if (message.data[1] != 0x41) return;  // Mode 01 positive response
+  if (message.data_length_code < 4 || (message.data[0] >> 4) != 0) return;
+  const uint8_t payloadLength = message.data[0] & 0x0FU;
+  if (payloadLength < 3 || payloadLength + 1U > message.data_length_code ||
+      message.data[1] != 0x41) {
+    return;
+  }
 
   const uint8_t pid = message.data[2];
+  if (pid == 0x0C) {
+    if (payloadLength < 4) return;
+    if (!diagnostics_.acceptsEngineResponse(message.identifier) &&
+        !diagnostics_.observeEngineResponse(message.identifier)) {
+      return;
+    }
+  } else if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
+    // Until PID 0C identifies the engine ECU, no arbitrary functional reply is
+    // allowed to populate telemetry. Once locked, replies from other ECUs are
+    // ignored and cannot complete the outstanding Mode 01 transaction.
+    return;
+  }
+
   const uint8_t a = message.data[3];
-  const uint8_t b = message.data_length_code > 4 ? message.data[4] : 0;
+  const uint8_t b = payloadLength >= 4 ? message.data[4] : 0;
 
   telemetry_.lastObdResponseAt = now;
   telemetry_.obdResponseCount++;
@@ -304,10 +341,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x00:
     case 0x20:
     case 0x40:
-      if (message.data_length_code >= 7) storeSupportedMask(pid, &message.data[3]);
+      if (payloadLength >= 6) storeSupportedMask(pid, &message.data[3]);
       break;
     case 0x01:
-      if (message.data_length_code >= 7) {
+      if (payloadLength >= 6) {
         diagnostics_.observeMonitorStatus(a, now, message.identifier);
       }
       break;
@@ -327,14 +364,15 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
     case 0x0C:
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
-      diagnostics_.observeEngineResponse(message.identifier);
       break;
     case 0x0D:
       telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
       break;
     case 0x10:
-      telemetry_.mafGps.set(((static_cast<uint16_t>(a) << 8) | b) / 100.0f,
-                            now);
+      if (payloadLength >= 4) {
+        telemetry_.mafGps.set(((static_cast<uint16_t>(a) << 8) | b) / 100.0f,
+                              now);
+      }
       break;
     case 0x11:
       telemetry_.throttlePercent.set(static_cast<float>(a) * (100.0f / 255.0f),
@@ -344,16 +382,22 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       telemetry_.baroKpa.set(static_cast<float>(a), now);
       break;
     case 0x42:
-      telemetry_.ecuVoltage.set(((static_cast<uint16_t>(a) << 8) | b) / 1000.0f,
-                                now);
+      if (payloadLength >= 4) {
+        telemetry_.ecuVoltage.set(
+            ((static_cast<uint16_t>(a) << 8) | b) / 1000.0f, now);
+      }
       break;
     case 0x44:
-      telemetry_.equivalenceRatio.set(
-          ((static_cast<uint16_t>(a) << 8) | b) / 32768.0f, now);
+      if (payloadLength >= 4) {
+        telemetry_.equivalenceRatio.set(
+            ((static_cast<uint16_t>(a) << 8) | b) / 32768.0f, now);
+      }
       break;
     case 0x5E:
-      telemetry_.fuelRateLph.set(
-          ((static_cast<uint16_t>(a) << 8) | b) / 20.0f, now);
+      if (payloadLength >= 4) {
+        telemetry_.fuelRateLph.set(
+            ((static_cast<uint16_t>(a) << 8) | b) / 20.0f, now);
+      }
       break;
     default:
       break;
@@ -386,7 +430,7 @@ bool ObdClient::isSupported(uint8_t pid) const {
 }
 
 void ObdClient::runDiscovery(uint32_t now) {
-  if (discoveryIndex_ >= 3) {
+  if (discoveryIndex_ >= 4) {
     discoveryDone_ = true;
     ESP_LOGI(kTag, "Mode 01 PID discovery completed");
     return;
@@ -458,4 +502,5 @@ void ObdClient::finishPending(bool timeout) {
   pendingRequest_ = PendingRequest::None;
   pendingPid_ = 0;
   pendingTimeoutMs_ = 0;
+  diagnosticTiming_.stop();
 }

@@ -98,6 +98,7 @@ void resetEnvironment() {
   Preferences::failBegin = false;
   Preferences::writes = 0;
   hostfs::maxWritePerCall = std::numeric_limits<size_t>::max();
+  hostfs::failFlush = false;
   hostfs::flushes = 0;
   hostFsMounted = true;
 }
@@ -155,6 +156,75 @@ void testDirtyIntervalsAndMirroring() {
       PersistenceSnapshot::kRecordBytes, decoded));
   assert(decoded.trip.totalDistanceKm == persistedTripDistance);
   assert(decoded.calibration.distanceKm == calibration.distanceKm);
+}
+
+void testCheckpointAcceptsEitherReadbackVerifiedCopy() {
+  // LittleFS succeeds while the optional NVS mirror fails.
+  {
+    resetEnvironment();
+    LittleFsStorage storage = mountedStorage();
+    TripState trip = tripWith(10.0);
+    PetrolCalibrationState calibration = calibrationWith(10.0);
+    RuntimePersistence persistence;
+    assert(persistence.begin(storage, trip, calibration));
+    trip.totalDistanceKm = 11.0;
+    Preferences::failWrite = true;
+    assert(persistence.checkpoint(trip, calibration, true, true));
+    assert(persistence.journalSequence() == 2);
+    assert(persistence.nvsSequence() == 1);
+    assert(persistence.journalHealthy());
+    assert(!persistence.nvsHealthy());
+
+    Preferences::failWrite = false;
+    TripState recovered{};
+    PetrolCalibrationState recoveredCalibration{};
+    RuntimePersistence rebooted;
+    assert(rebooted.begin(storage, recovered, recoveredCalibration));
+    assert(rebooted.latestSequence() == 2);
+    assert(recovered.totalDistanceKm == 11.0);
+  }
+
+  // The journal write reports a full write but readback sees corruption (the
+  // power-loss boundary). NVS still makes the checkpoint durable and reboot
+  // repairs the dirty journal from that copy.
+  {
+    resetEnvironment();
+    LittleFsStorage storage = mountedStorage();
+    TripState trip = tripWith(20.0);
+    PetrolCalibrationState calibration = calibrationWith(20.0);
+    RuntimePersistence persistence;
+    assert(persistence.begin(storage, trip, calibration));
+    trip.totalDistanceKm = 21.0;
+    hostfs::failFlush = true;
+    assert(persistence.checkpoint(trip, calibration, true, true));
+    assert(!persistence.journalHealthy());
+    assert(persistence.nvsHealthy());
+    assert(persistence.nvsSequence() == 2);
+
+    hostfs::failFlush = false;
+    TripState recovered{};
+    PetrolCalibrationState recoveredCalibration{};
+    RuntimePersistence rebooted;
+    assert(rebooted.begin(storage, recovered, recoveredCalibration));
+    assert(std::string(rebooted.recoverySource()) == "nvs_mirror");
+    assert(rebooted.latestSequence() == 2);
+    assert(recovered.totalDistanceKm == 21.0);
+  }
+
+  // A checkpoint fails only when neither requested backend can read back the
+  // new sequence.
+  {
+    resetEnvironment();
+    LittleFsStorage storage = mountedStorage();
+    TripState trip = tripWith(30.0);
+    PetrolCalibrationState calibration = calibrationWith(30.0);
+    RuntimePersistence persistence;
+    assert(persistence.begin(storage, trip, calibration));
+    trip.totalDistanceKm = 31.0;
+    hostfs::failFlush = true;
+    Preferences::failWrite = true;
+    assert(!persistence.checkpoint(trip, calibration, true, true));
+  }
 }
 
 void testTornTailAndNewestNvsRecovery() {
@@ -460,6 +530,7 @@ bool LittleFsStorage::begin() {
 
 int main() {
   testDirtyIntervalsAndMirroring();
+  testCheckpointAcceptsEitherReadbackVerifiedCopy();
   testTornTailAndNewestNvsRecovery();
   testJournalNewerRepairsNvsAndCorruptCrcFallsBack();
   testFactoryResetSequenceDefeatsUndeletedStaleSegment();

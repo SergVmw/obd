@@ -247,6 +247,33 @@ int main() {
     CHECK(Preferences::storage["h2ota/last"][4] == 3);
   });
 
+  test("invalid arguments and state transitions do not poison NVS health", [] {
+    OtaDiagnostics diagnostics;
+    CHECK(diagnostics.begin());
+    CHECK(diagnostics.storageHealthy());
+    CHECK(!diagnostics.recordReceiving(nullptr, &kApp1, 100));
+    CHECK(diagnostics.storageHealthy());
+    CHECK(!diagnostics.recordProgress(1, "too-early"));
+    CHECK(diagnostics.storageHealthy());
+    CHECK(!diagnostics.recordImageVerified());
+    CHECK(diagnostics.storageHealthy());
+
+    CHECK(diagnostics.recordReceiving(&kApp0, &kApp1, 100));
+    CHECK(!diagnostics.recordProgress(101, "too-large"));
+    CHECK(diagnostics.storageHealthy());
+    CHECK(!diagnostics.recordBootSelectionFailed(-1));
+    CHECK(diagnostics.storageHealthy());
+  });
+
+  test("app confirmation errors are not mislabeled as NVS failures", [] {
+    hostImageState = ESP_OTA_IMG_PENDING_VERIFY;
+    hostMarkValidResult = -77;
+    OtaDiagnostics diagnostics;
+    CHECK(diagnostics.begin());
+    CHECK(hostMarkValidCalls == 1);
+    CHECK(diagnostics.storageHealthy());
+  });
+
   test("NVS failure is surfaced instead of reporting a durable phase", [] {
     OtaDiagnostics diagnostics;
     CHECK(diagnostics.begin());

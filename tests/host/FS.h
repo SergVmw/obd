@@ -52,7 +52,14 @@ class File {
     return true;
   }
 
-  void flush() { ++hostfs::flushes; }
+  void flush() {
+    ++hostfs::flushes;
+    if (hostfs::failFlush && bytes_ && writable_ && !bytes_->empty()) {
+      // Simulate a power-loss/flash failure that is visible only during the
+      // mandatory close-and-readback verification.
+      bytes_->back() ^= 0x80U;
+    }
+  }
   void close() { bytes_ = nullptr; position_ = 0; writable_ = false; }
 
  private:

@@ -29,6 +29,10 @@ required = {
     "journal append flush": "file.flush();" in runtime,
     "journal readback": "verifyRecordAt(targetPath, writeOffset, record)" in runtime,
     "NVS readback": "loadNvsRecord(readback)" in runtime,
+    "checkpoint accepts either durable copy":
+        "return journalOk || (writeNvs && nvsOk);" in runtime,
+    "table-driven CRC": "kCrc32Nibble" in text("src/storage_crc32.cpp") and
+        "for (uint8_t bit" not in text("src/storage_crc32.cpp"),
     "newest generation recovery": "sequenceNewer" in runtime,
     "periodic main integration": "persistence.periodic(now, trip, petrolCalibration" in main,
     "engine stop checkpoint": "Engine-stop runtime checkpoint" in main,

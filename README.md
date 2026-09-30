@@ -14,17 +14,17 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущий source-кандидат 0.4.0
+## Текущий release 0.4.1
 
-Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.4.0** добавляет стандартную Check Engine/DTC диагностику поверх аппаратно принятого release 0.3.9. PID 01 отслеживает MIL и подтверждённый DTC count; асинхронно читаются stored Mode 03, pending Mode 07 и permanent Mode 0A с bounded ISO-TP. Главный GC9A01 показывает приоритетное предупреждение и первый код, а web UI — полный категоризированный список и осторожные расшифровки generic-кодов. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI.
+Проект предназначен только для ESP32-S3 DevKitC-1 N16R8. Версия **0.4.1** — исправленный выпуск Check Engine/DTC диагностики поверх аппаратно принятого release 0.3.9. Отозванный пакет 0.4.0 не устанавливался на автомобиль и не должен использоваться. Engine ECU теперь однократно определяется по первому валидному ответу PID `0C`; PID 01, physical Mode 03/07/0A и ручной Mode 04 принимаются только от этого ECU. NRC `0x78` обрабатывается как промежуточный ResponsePending с P2*=5 с, абсолютным пределом 15 с и максимум восемью pending-ответами без повторной передачи команды. Главный GC9A01 показывает приоритетное предупреждение и первый код, а web UI — полный категоризированный список и осторожные расшифровки generic-кодов. Номер запущенной сборки и содержимое обоих OTA-слотов по-прежнему видны на физическом экране «СЕРВИС» и в верхней части web UI.
 
 Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. Логотип пропорционально вписывается в `220×80`, а payload имеет ровно `width×height×2` байт. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest. Передача — raw body без multipart, с TWDT-safe чтением, 2-секундным idle timeout и отдельным 30-секундным абсолютным deadline. Встроенные carbon/HAVAL всегда остаются fallback; app-only OTA LittleFS не стирает.
 
 Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. На старте выбирается новейшая валидная sequence из LittleFS/NVS, torn tail игнорируется, а reset/calibration/service/low-voltage/reboot и остановка двигателя форсируют checkpoint. Непустой не монтируемый LittleFS никогда не форматируется автоматически. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
 
-Стирание DTC никогда не выполняется автоматически. Каждый ручной Mode 04 сначала заново читает Mode 03/07/0A, немедленно сохраняет bounded-историю в CRC LittleFS journal + NVS, и только затем проверяет speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Неполный/truncated scan или невозможность durable checkpoint запрещают команду. Mode 04 сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+Стирание DTC никогда не выполняется автоматически. Каждый ручной Mode 04 сначала заново читает Mode 03/07/0A, немедленно сохраняет bounded-историю в CRC LittleFS journal + NVS, и только затем проверяет speed=0, RPM<50 и ECU voltage 11,5–16,5 В. Неполный/truncated scan или невозможность durable checkpoint запрещают команду. Положительный `0x44` сам по себе не удаляет признаки ранее наблюдавшихся кодов: через 1,5 с обязательное post-clear чтение продолжается как часть ручной операции даже при paused periodic polling, после чего результат немедленно checkpoint-ится. Mode 04 сбрасывает stored/pending, freeze-frame и readiness, но не permanent DTC. Детали и аппаратный checklist: [`docs/OBD_DTC_DIAGNOSTICS_DESIGN.md`](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
-**Аппаратные OTA подтверждены:** 20 сентября 2026 обычный app 0.3.7 успешно прошёл APP0→APP1 с автоматическим reboot и состоянием `valid`; 23 сентября 2026 упакованный app 0.3.9 успешно прошёл штатный web OTA из работающей 0.3.7. После автоматической перезагрузки сервис показал current/running/boot **0.3.9 в APP0**, **0.3.7 в APP1**, image state **`valid`**. Тем самым на N16R8 физически проверен и 332-байтный финальный raw-фрагмент 0.3.9. Точный бинарник 0.3.8 отдельно не устанавливался; проверки custom assets и random power cut для persistence остаются незакрытыми. Source-кандидат 0.4.0 ещё не упакован и не проходил аппаратную проверку Mode 03/07/0A и safety-gated Mode 04. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
+**Статус релиза:** OTA-путь до 0.3.9 аппаратно подтверждён 2026-09-23: штатный web OTA из работающей 0.3.7, server verification, boot read-back, automatic reboot и неполный 332-байтный raw fragment прошли успешно. Релиз **0.4.1 программно проверен и упакован**, но сам бинарник 0.4.1 ещё не устанавливался на автомобиль; Mode 03/07/0A, persistent DTC history и особенно safety-gated Mode 04 требуют отдельной аппаратной приёмки. Пакет 0.4.0 отозван после review и удалён из `releases/`, его опубликованные hashes не переиспользовались. Первую проверку 0.4.1 выполнять только в read-only режиме. Postmortem 0.3.7: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md); OTA-hardening 0.3.8: [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md); [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md); [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md). Config schema остаётся **6**.
 
 История релиза: [`CHANGELOG.md`](CHANGELOG.md). Анализ и стабилизация GitHub Actions: [`docs/CI_POSTMORTEM_2026-09-20.md`](docs/CI_POSTMORTEM_2026-09-20.md).
 
@@ -34,9 +34,11 @@
 - Task Watchdog для Arduino loopTask;
 - обнаружение поддерживаемых Mode 01 PID;
 - PID 01 MIL/DTC-count каждые 500 мс в движении и latched Check Engine warning на GC9A01;
-- асинхронные Mode 03/07/0A, bounded ISO-TP, до 32 DTC, web-список и осторожные generic-расшифровки;
+- однократная привязка engine ECU по валидному PID 0C и фильтрация ответов других ECU;
+- асинхронные physical Mode 03/07/0A, bounded ISO-TP, NRC 0x78 с P2*/absolute deadline, до 32 DTC, web-список и осторожные generic-расшифровки;
 - reboot-persistent bounded history transient/changed DTC: dirty-only LittleFS 20 с + NVS 60 с;
 - ручной Mode 04 только после fresh pre-scan, durable snapshot, web-confirmation и свежих safety checks speed/RPM/voltage;
+- обязательное post-clear verification и немедленный checkpoint без преждевременного удаления historical presence;
 - MAP, RPM, speed, MAF, throttle, STFT, LTFT, BARO, voltage, coolant, Fuel Rate и equivalence ratio;
 - расчёт относительного наддува;
 - бензиновый расход по PID 5E с резервом MAF;
@@ -207,21 +209,21 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, reboot-persistent history recovery и обязательный pre-clear snapshot/Mode 04 guards, собирает только environment `esp32s3_n16r8`, отдельно сверяет неизменённые committed 0.3.9 release artifacts и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая DTC state-machine, NRC 0x78/P2*/absolute deadline, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards, собирает только environment `esp32s3_n16r8`, проверяет manifest, SHA-256 и factory layout committed release 0.4.1 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts.
 
-## Последний упакованный release 0.3.9
+## Упакованный release 0.4.1
 
 ```text
-releases/h2-gauge-v0.3.9-esp32s3-n16r8.bin
-Размер: 1 159 184 байт
-SHA-256: 4eddc675f2f483eea922546f03debde6c22bd0b52f72a69c8f4dac8ee973c023
+releases/h2-gauge-v0.4.1-esp32s3-n16r8.bin
+Размер: 1 190 288 байта
+SHA-256: cd2f6f0bc966972997c8a91465aaf3b549a5084f11bc9a577a21c31776af1d41
 
-releases/h2-gauge-v0.3.9-esp32s3-n16r8-factory.bin
-Размер: 1 224 720 байт
-SHA-256: 08917e028fb29841b54849f8266f8ba6512e36f671267581d543459cab7128bc
+releases/h2-gauge-v0.4.1-esp32s3-n16r8-factory.bin
+Размер: 1 255 824 байт
+SHA-256: 8263b8e2cc46058fd41c6de480d52a45f4cdffffac84f515a1fc19c6de513291
 ```
 
-Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums и factory layout проверены; **web OTA 0.3.7→0.3.9 аппаратно подтверждён 2026-09-23**, а custom assets и random-cut persistence ещё требуют физической проверки. Полный release report: [`releases/README-v0.3.9.md`](releases/README-v0.3.9.md).
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для действительно чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, DTC history, LittleFS journal и custom assets. Clean build, host/static/browser gates, H2 manifest, checksums, app/build byte equality и factory layout проверены. 0.4.1 ещё требует аппаратной приёмки DTC-функции. Полный release report: [`releases/README-v0.4.1.md`](releases/README-v0.4.1.md).
 
 ## Flash и PSRAM
 
@@ -273,14 +275,16 @@ URL: http://192.168.4.1
 python3 tools/generate_ui_fonts.py
 python3 tools/check_ui_fonts.py
 python3 tools/test_brightness.py
+python3 tools/test_obd_diagnostics.py
+python3 tools/test_ota_diagnostics.py
 python3 tools/test_persistence.py
 python3 tools/test_storage_recovery.py
 python3 tools/embed_web_fonts.py
 python3 tools/embed_web.py
 python3 tools/check_brightness_integration.py
+python3 tools/check_dtc_integration.py
 python3 tools/check_storage_integration.py
 python3 tools/check_ota_transport.py
-python3 tools/test_ota_diagnostics.py
 pio run -e esp32s3_n16r8
 python3 tools/check_firmware_manifest.py
 ```

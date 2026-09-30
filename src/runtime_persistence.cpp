@@ -351,7 +351,11 @@ bool RuntimePersistence::checkpoint(
   const bool nvsOk = !writeNvs || syncNvs();
   lastJournalAttemptAt_ = millis();
   if (writeNvs) lastNvsAttemptAt_ = millis();
-  return (journalOk || (writeNvs && nvsOk)) && nvsOk;
+  // A forced checkpoint is durable when at least one requested backend has
+  // written and read back the current sequence. Keep each backend's health
+  // visible, but do not report total failure merely because the redundant
+  // mirror is unavailable.
+  return journalOk || (writeNvs && nvsOk);
 }
 
 bool RuntimePersistence::factoryReset(

@@ -1122,6 +1122,7 @@ void ServicePortal::sendDtcStatus() {
     snprintf(ecu, sizeof(ecu), "0x%03X", state.engineResponseId);
   }
   doc["engineEcuId"] = ecu;
+  doc["engineEcuLocked"] = state.engineEcuLocked;
 
   JsonObject mil = doc["mil"].to<JsonObject>();
   mil["known"] = state.milKnown;
@@ -1154,6 +1155,8 @@ void ServicePortal::sendDtcStatus() {
   scan["lastError"] = state.lastError;
   scan["lastNegativeService"] = state.lastNegativeService;
   scan["lastNegativeResponseCode"] = state.lastNegativeResponseCode;
+  scan["responsePending"] = state.responsePending;
+  scan["responsePendingCount"] = state.responsePendingCount;
 
   uint8_t storedCount = 0;
   uint8_t pendingCount = 0;
@@ -1255,6 +1258,10 @@ void ServicePortal::sendDtcStatus() {
   clear["completedAtMs"] = state.clearCompletedAt;
   clear["preclearScanComplete"] = state.clearPreScanComplete;
   clear["snapshotPreserved"] = state.clearSnapshotPreserved;
+  clear["postClearVerificationPending"] =
+      state.postClearVerificationPending;
+  clear["postClearScanComplete"] = state.postClearScanComplete;
+  clear["postClearSnapshotPreserved"] = state.postClearSnapshotPreserved;
   clear["requiresFreshPreclearScan"] = true;
   clear["requiresDurableSnapshot"] = true;
   if (isfinite(state.verifiedSpeedKph)) {
@@ -1274,7 +1281,8 @@ void ServicePortal::sendDtcStatus() {
   clear["clearsPermanentCodes"] = false;
   clear["resetsReadinessAndFreezeFrame"] = true;
   clear["available"] = state.operation == DtcOperation::Idle &&
-                         state.engineResponseId != 0;
+                         state.engineEcuLocked &&
+                         !state.postClearVerificationPending;
 
   String output;
   output.reserve(12288);

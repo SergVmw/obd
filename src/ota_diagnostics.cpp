@@ -57,7 +57,8 @@ bool OtaDiagnostics::begin() {
     if (valid != ESP_OK) {
       ESP_LOGE(kTag, "Running app confirmation failed: %s",
                esp_err_to_name(valid));
-      storageHealthy_ = false;
+      // This is an OTA state/partition failure, not evidence that NVS storage
+      // is unhealthy. Keep storageHealthy_ scoped to diagnostics persistence.
     } else {
       ESP_LOGI(kTag, "Running OTA image confirmed valid");
     }
@@ -99,10 +100,11 @@ bool OtaDiagnostics::begin() {
 bool OtaDiagnostics::recordReceiving(const esp_partition_t* source,
                                      const esp_partition_t* target,
                                      size_t imageSize) {
-  if (!storageOpened_ || !source || !target || imageSize == 0) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (!source || !target || imageSize == 0) return false;
   ++attempt_;
   if (attempt_ == 0) attempt_ = 1;
   state_ = kStatePending;
@@ -119,9 +121,12 @@ bool OtaDiagnostics::recordReceiving(const esp_partition_t* source,
 
 bool OtaDiagnostics::recordProgress(size_t receivedSize,
                                     const char* descriptorVersion) {
-  if (!storageOpened_ || state_ != kStatePending ||
-      phase_ != kPhaseReceiving || receivedSize > imageSize_) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
+    return false;
+  }
+  if (state_ != kStatePending || phase_ != kPhaseReceiving ||
+      receivedSize > imageSize_) {
     return false;
   }
   receivedSize_ = static_cast<uint32_t>(receivedSize);
@@ -135,10 +140,11 @@ bool OtaDiagnostics::recordVerifying(const esp_partition_t* source,
                                      const esp_partition_t* target,
                                      size_t imageSize,
                                      const char* descriptorVersion) {
-  if (!storageOpened_ || !source || !target || imageSize == 0) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (!source || !target || imageSize == 0) return false;
   const bool continuesReceiving =
       state_ == kStatePending && phase_ == kPhaseReceiving &&
       sourceAddress_ == source->address && targetAddress_ == target->address &&
@@ -161,32 +167,32 @@ bool OtaDiagnostics::recordVerifying(const esp_partition_t* source,
 }
 
 bool OtaDiagnostics::recordImageVerified() {
-  if (!storageOpened_ || state_ != kStatePending ||
-      phase_ != kPhaseVerifying) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (state_ != kStatePending || phase_ != kPhaseVerifying) return false;
   phase_ = kPhaseImageVerified;
   return save();
 }
 
 bool OtaDiagnostics::recordFinalizeFailed(esp_err_t error) {
-  if (!storageOpened_ || state_ != kStatePending ||
-      phase_ != kPhaseVerifying) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (state_ != kStatePending || phase_ != kPhaseVerifying) return false;
   state_ = kStateFinalizeFailed;
   errorCode_ = static_cast<int32_t>(error);
   return save();
 }
 
 bool OtaDiagnostics::recordBootSelectionFailed(esp_err_t error) {
-  if (!storageOpened_ || state_ != kStatePending ||
-      phase_ != kPhaseImageVerified) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (state_ != kStatePending || phase_ != kPhaseImageVerified) return false;
   state_ = kStateBootSelectionFailed;
   errorCode_ = static_cast<int32_t>(error);
   return save();
@@ -196,10 +202,11 @@ bool OtaDiagnostics::recordPending(const esp_partition_t* source,
                                    const esp_partition_t* target,
                                    size_t imageSize,
                                    const char* descriptorVersion) {
-  if (!storageOpened_ || !source || !target || imageSize == 0) {
+  if (!storageOpened_) {
     storageHealthy_ = false;
     return false;
   }
+  if (!source || !target || imageSize == 0) return false;
   const bool continuesRecordedAttempt =
       state_ == kStatePending &&
       (phase_ == kPhaseVerifying || phase_ == kPhaseImageVerified) &&
