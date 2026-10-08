@@ -9,19 +9,20 @@
 </style>
 </head>
 <body><main>
-<div class="top"><div><h1>Аппаратная диагностика fix3a</h1><div class="sub"><span id="pulse" class="pulse"></span><span id="build">загрузка…</span> · <span id="txmode">автоматический 0x7DF отключён</span><span id="probeid" class="muted"></span></div></div><div class="actions"><button id="refresh">Обновить</button><button id="clear">Очистить CAN snapshot</button><button id="probe" class="primary">Тест 0x7E0 → 0x7E8</button><button id="abort" class="danger" hidden>Прервать тест</button><a class="button" href="/normal">Обычный интерфейс</a></div></div>
+<div class="top"><div><h1>Аппаратная диагностика fix3b</h1><div class="sub"><span id="pulse" class="pulse"></span><span id="build">загрузка…</span> · <span id="txmode">автоматический 0x7DF отключён</span><span id="probeid" class="muted"></span></div></div><div class="actions"><button id="refresh">Обновить</button><button id="clear">Очистить CAN snapshot</button><button id="probe" class="primary">Тест 0x7E0 → 0x7E8</button><button id="abort" class="danger" hidden>Прервать тест</button><a class="button" href="/normal">Обычный интерфейс</a></div></div>
 <div class="grid">
 <section class="card"><h2>Быстрый итог</h2><ul id="observations"><li>Получение данных…</li></ul></section>
 <section class="card"><h2>OBD / пассивный режим</h2><div id="obd" class="kv"></div></section>
 <section class="card wide"><h2>Безопасный физический TX-тест</h2>
-<p class="note">После 10 секунд пассивного наблюдения кнопка отправляет до трёх отдельных single-shot запросов 0x7E0 02 01 0C 00 00 00 00 00. Между попытками 2 секунды, аппаратный автоматический повтор запрещён. После первого 0x7E8 41 0C тест останавливается.</p>
+<p class="note">После успешного стендового self-test, 10 секунд пассивного наблюдения и отдельного подтверждения автомобиля кнопка отправляет ровно один read-only single-shot запрос 0x7E0 02 01 0C 00 00 00 00 00. Автоматических повторов нет. На автомобиле — только на стоянке.</p>
+<label><input id="vehicleConfirm" type="checkbox"> Автомобиль стоит; понимаю, что сейчас будет отправлен один OBD-запрос только на чтение.</label>
 <div id="test" class="kv"></div>
 <div class="chips" id="alerts"></div>
 <div class="scroll" style="margin-top:10px"><table><thead><tr><th>№</th><th>Результат</th><th>Alerts</th><th>TEC/REC до → после</th><th>Bus/Arb до → после</th><th>Ответ</th></tr></thead><tbody id="attempts"><tr><td colspan="6">Тест ещё не запускался</td></tr></tbody></table></div>
 <div id="probeMsg"></div>
 </section>
 <section class="card wide"><h2>Стендовый self-test TWAI + SN65HVD230</h2>
-<p class="note"><b>Только на изолированном стенде.</b> Перед запуском физически отсоедините CANH/CANL от автомобиля. Тест передаёт три кадра 0x555 в режиме TWAI_MODE_NO_ACK и запрашивает их самоприём; штатный драйвер 500 кбит/с затем восстанавливается.</p>
+<p class="note"><b>Только на изолированном стенде.</b> Перед запуском физически отсоедините CANH/CANL от автомобиля. Тест передаёт три кадра 0x555 в режиме TWAI_MODE_NO_ACK и запрашивает их самоприём; штатный драйвер 500 кбит/с затем восстанавливается. Успешный результат разрешит отдельный однокадровый read-only OBD-зонд.</p>
 <label><input id="benchConfirm" type="checkbox"> CANH/CANL физически отключены от автомобиля; разрешаю стендовые тестовые кадры.</label>
 <div style="margin-top:10px"><button id="selfTest" class="primary" disabled>Запустить self-test</button></div><div id="selfTestMsg" class="note" style="margin-top:10px">Ожидание подтверждения изолированного стенда.</div>
 </section>
@@ -30,7 +31,7 @@
 <section class="card"><h2>CAN activity</h2><div id="can" class="kv"></div></section>
 <section class="card wide"><h2>Последние CAN кадры</h2><div class="scroll"><table><thead><tr><th>Dir</th><th>ID</th><th>DLC</th><th>Data</th><th>Count</th><th>Age</th></tr></thead><tbody id="frames"></tbody></table></div></section>
 </div>
-<div class="footer">GPIO16=CTX/TWAI_TX, GPIO17=CRX/TWAI_RX. DTC scan/clear в fix3 заблокированы. Штатный режим пассивный. Стендовый self-test передаёт только после отдельного подтверждения, что CANH/CANL отключены от автомобиля.</div>
+<div class="footer">GPIO16=CTX/TWAI_TX, GPIO17=CRX/TWAI_RX. DTC scan/clear в fix3b заблокированы. Штатный режим пассивный. Стендовый self-test передаёт только после отдельного подтверждения, что CANH/CANL отключены от автомобиля.</div>
 </main>
 <script>
 const $=id=>document.getElementById(id);let busy=false,lastData=null;
@@ -41,15 +42,17 @@ const delta=v=>(v>0?'+':'')+v;
 function kv(id,rows){$(id).innerHTML=rows.map(([a,b,c])=>`<div>${esc(a)}</div><div class="value ${c||''}">${esc(b)}</div>`).join('')}
 function pinRow(name,p,meaning){return `<tr><td>${esc(name)}</td><td><code>${esc(p.pin)}</code></td><td>${esc(p.direction)}</td><td class="value">${esc(p.rawLevel??p.rawAdc)}</td><td>${esc(meaning)}</td></tr>`}
 async function getJson(url,opt){const r=await fetch(url,{cache:'no-store',...opt});const text=await r.text();let data=null;try{data=JSON.parse(text)}catch(e){data={error:text}}if(!r.ok)throw Object.assign(new Error(data?.error||`${url}: HTTP ${r.status}`),{payload:data});return data}
-function reasonText(reason,t){switch(reason){case 'passive_window':{const left=Math.max(0,Math.ceil((t.passive.requiredMs-t.passive.elapsedMs)/1000));return `кнопка станет доступна через ${left} с пассивного наблюдения`}case 'test_running':return 'тест уже выполняется';case 'controller_not_running':return 'TWAI controller не в состоянии running';case 'twai_status_unavailable':return 'статус TWAI недоступен';case 'tx_queue_not_empty':return 'очередь TX не пуста';case 'tx_path_not_paused':return 'автоматическая передача 0x7DF не отключена';case 'tx_pin_not_idle':return 'GPIO16/TWAI_TX читается LOW в простое; сначала проверьте TXD, не запускайте пробу на автомобиле';default:return reason||'неизвестная причина'}}
+function reasonText(reason,t){switch(reason){case 'passive_window':{const left=Math.max(0,Math.ceil((t.passive.requiredMs-t.passive.elapsedMs)/1000));return `кнопка станет доступна через ${left} с пассивного наблюдения`}case 'test_running':return 'тест уже выполняется';case 'controller_not_running':return 'TWAI controller не в состоянии running';case 'twai_status_unavailable':return 'статус TWAI недоступен';case 'tx_queue_not_empty':return 'очередь TX не пуста';case 'tx_path_not_paused':return 'автоматическая передача 0x7DF не отключена';case 'bench_self_test_required':return 'сначала нужен PASS стендового TWAI + SN65HVD230 self-test';case 'vehicle_probe_locked_out_after_bus_error':return 'автомобильная проба заблокирована после ошибки шины; проверьте физический TX-путь';default:return reason||'неизвестная причина'}}
 function attemptAlerts(a){const tags=[];if(a.busErrorDelta>0)tags.push('bus_error');if(a.tecDelta>0)tags.push('tec_up');if(a.txFailedDelta>0)tags.push('tx_failed');if(a.arbLostDelta>0)tags.push('arb_lost');if(a.rxMissedDelta>0)tags.push('rx_missed');if(a.rxOverrunDelta>0)tags.push('rx_overrun');return tags.length?tags.join(', '):'—'}
 function renderTest(t,d){
  $('test').innerHTML=[['Состояние',t.running?`выполняется (${t.phase})`:t.stopReason==='none'?'ожидание запуска':`остановлен: ${t.stopReason}`,t.running?'warn':t.stopReason==='valid_response'?'ok':t.stopReason==='none'?'':'bad'],
   ['Автоматический 0x7DF',t.automaticFunctionalRequests==='disabled'?'отключён':'включён',t.automaticFunctionalRequests==='disabled'?'ok':'bad'],
   ['Пассивное наблюдение',`${(t.passive.elapsedMs/1000).toFixed(1)} s / ${(t.passive.requiredMs/1000).toFixed(0)} s${t.passive.ready?' — готово':' — ожидание'}`,t.passive.ready?'ok':'warn'],
-  ['Попытки',`${t.attemptsStarted} из ${t.request.maxAttempts} (повторов: ${t.retries})`],
+  ['Стендовый self-test',t.benchSelfTestPassed?'PASS':'не пройден',t.benchSelfTestPassed?'ok':'warn'],
+  ['Автомобильная проба',t.vehicleProbeLockedOut?'заблокирована после bus/TX error':(t.canStart?'готова после подтверждения':'заблокирована'),t.vehicleProbeLockedOut?'bad':t.canStart?'ok':'warn'],
+  ['Попытки',`${t.attemptsStarted} из ${t.request.maxAttempts} (автоповторов: ${t.retries})`],
   ['Запрос',`${t.request.identifier} ${t.request.data} · ${t.request.txMode==='single_shot_ss1'?'ss=1 (без аппаратного повтора)':t.request.txMode}`],
-  ['Ожидание ответа',`${t.request.responseIdentifier} ${t.request.expected} · до ${t.request.timeoutMs} ms, повтор через ${t.request.retryDelayMs} ms`],
+  ['Ожидание ответа',`${t.request.responseIdentifier} ${t.request.expected} · до ${t.request.timeoutMs} ms; автоповторов нет`],
   ['Watchdog',`${t.watchdogMs} ms`],
   ['Последняя ошибка',t.lastError||'—',t.lastError?'bad':''],
   ['Ответы вне окна',`${t.lateResponseCount}${t.lateResponse?` · последний ${t.lateResponse.id} ${t.lateResponse.data} ${age(t.lateResponse.ageMs)}`:''}`],
@@ -67,9 +70,10 @@ function renderTest(t,d){
  $('attempts').innerHTML=rows||'<tr><td colspan="6">Тест ещё не запускался</td></tr>';
  const probe=$('probe');
  if(t.running){probe.disabled=true;probe.textContent='Тест выполняется…';$('abort').hidden=false}
- else{probe.textContent='Тест 0x7E0 → 0x7E8';$('abort').hidden=true;
-   if(t.canStart){probe.disabled=false;probe.title=''}
-   else{probe.disabled=true;probe.title=reasonText(t.blockedReason,t)}}
+ else{probe.textContent='Один запрос 0x7E0 → 0x7E8';$('abort').hidden=true;
+   const confirmed=$('vehicleConfirm').checked;
+   if(t.canStart&&confirmed){probe.disabled=false;probe.title='Один read-only single-shot; без повторов'}
+   else{probe.disabled=true;probe.title=!t.canStart?reasonText(t.blockedReason,t):'Подтвердите одну read-only пробу на стоящем автомобиле'}}
 }
 function render(d,s){$('pulse').classList.add('live');$('build').textContent=`${d.version} / ${d.target} / uptime ${(d.uptimeMs/1000).toFixed(0)} s`;
  $('probeid').textContent=d.singleShot?.probe?` · оверлей ${d.singleShot.probe}`:'';
@@ -96,9 +100,10 @@ $('refresh').onclick=update;
 $('clear').onclick=async()=>{try{await getJson('/api/can/clear',{method:'POST'});await update()}catch(e){alert(e.message)}};
 $('probe').onclick=async()=>{
  const msg=$('probeMsg');msg.className='';msg.textContent='Запуск теста…';
- try{await getJson('/api/diagnostics/single-shot/start',{method:'POST',headers:{'X-H2G-Action':'single-shot-start'}});msg.className='ok';msg.textContent='Тест принят: до трёх single-shot запросов 0x7E0, ответ ожидается до 500 ms, повтор через 2 s.'}
+ try{await getJson('/api/diagnostics/single-shot/start?confirm=on-car-readonly',{method:'POST',headers:{'X-H2G-Action':'single-shot-start'}});msg.className='ok';msg.textContent='Принят один read-only single-shot запрос 0x7E0; ответ ожидается до 500 ms, автоповторов нет.'}
  catch(e){msg.className='err';msg.textContent=`Тест не запущен: ${e.payload?.reason?reasonText(e.payload.reason,lastData?.singleShot||{passive:{elapsedMs:0,requiredMs:10000}}):e.message}`}
  await update()};
+$('vehicleConfirm').onchange=()=>update();
 $('abort').onclick=async()=>{try{await getJson('/api/diagnostics/single-shot/abort',{method:'POST'});$('probeMsg').className='';$('probeMsg').textContent='Тест прерван оператором.'}catch(e){alert(e.message)}await update()};
 $('benchConfirm').onchange=()=>{$('selfTest').disabled=!$('benchConfirm').checked};
 $('selfTest').onclick=async()=>{
@@ -109,5 +114,5 @@ $('selfTest').onclick=async()=>{
 update();setInterval(update,1000);
 </script>
 <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a473b60a68d778fa',t:'MTc5MTQ0NzQ2Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a473b60a68d778fa',t:'MTc5MTQ0NzQ2Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a475163caf807901',t:'MTc5MTQ2MTg5Mg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
 </body></html>
