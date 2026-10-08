@@ -6,6 +6,8 @@
 
 **Назначение:** отделить неисправность физического TX-пути (GPIO16/CTX, SN65HVD230, питание/земля, терминация) от конфликта одинаковых функциональных идентификаторов `0x7DF` (H2 Gauge и внешний OBD-мастер, главный кандидат — BRC S32 Evo)
 
+**ID зонда:** `0.4.2-diag4-fix2` (виден в строке состояния страницы как `· оверлей 0.4.2-diag4-fix2`)
+
 **Официальный release:** `0.4.2` в каталоге [`../../releases`](../../releases) не заменён и не изменён
 
 `0.4.2-diag4` заменяет диагностические `diag3`/`diag2`/`diag1` для CAN-проверки. Diag3 и её артефакты остаются без изменений. Diag4 использует оверлей diag3 как базу (valve-authoritative индикация топлива, диагностическая web-страница, GPIO/TWAI/кадры) и добавляет к нему:
@@ -14,6 +16,24 @@
 2. **безопасный физический TX-тест по кнопке** — до трёх отдельных single-shot запросов `0x7E0 02 01 0C 00 00 00 00 00` с окном ответа 500 мс и паузой 2 с между попытками;
 3. **пословный журнал попыток** — TX success/fail, TEC/REC, дельты bus error, arbitration lost, TX failed, RX missed/overrun и полученный ответ;
 4. **DTC scan/clear заблокированы** (HTTP 409) на время работы диагностического образа.
+
+## Что исправлено после полевого запуска 2026-10-08
+
+Первый образ diag4 (`242bc33c…`) **не отправил ни одного кадра**. На странице это выглядело так: «Тест 0x7E0 → 0x7E8» показывал «выполняется (retry_delay)», «Попытки 0 из 3 (повторов: 0)», прошло 45.6 с, затем 164.7 с; в TWAI controller — `running`, `TEC/REC 0/0`, `TX failed 0`, `bus errors 0`, `arb lost 0`, очереди `0/0`, «Последний TX: нет»; «Ответы вне окна 0»; пассивный счётчик «TX retained (наш) 0». То есть тест бесконечно «выполнялся», не передав ничего.
+
+Причина: единственный вызов `pump()` (отправка кадра попытки) стоял в **непрерывной** ветке `obd_client.cpp::loop()`, а в diag4 клиент всегда в состоянии TX-paused (`diagnosticTxPaused_ = true`, потому что автоматический опрос выключен) → эта ветка не выполнялась никогда. Пассивное наблюдение при этом работало, поэтому счётчики выглядели здоровыми.
+
+**fix1** (коммит `a962435`):
+
+1. `pump()` вместе с `monitor_.record()` перенесён внутрь ветки `if (diagnosticTxPaused_)`, сразу после `singleShot_.tickPassive(now)`;
+2. `tickPassive()` получил стартовый watchdog `kStartWatchdogMs = 3000` мс: если через 3 с после старта не отправлено ни одной попытки, прогон останавливается с `StopReason::Watchdog` и `lastError = "probe_not_scheduled"` — вместо бесконечного «выполняется»;
+3. страница и `/api/diagnostics/hardware` показывают честное состояние: `obd.softwareTxPaused` и `obd.automaticRequests` (`disabled`/`active`) вместо ложного красного «ACTIVE — ОШИБКА diag4», плюс ID зонда в строке состояния и baseline-строки TEC/REC и ArbLost/BusErr.
+
+**fix2** (коммиты `1c0be59`, `5c5508e`): ответ `negative_response` теперь распознаётся по стандарту SAE J1979/ISO 15765 — `03 7F 01 <NRC>` (сервис 0x7F, исходный сервис 0x01, код отказа; **PID не повторяется в ответе**). Прежнее правило требовало `data[2] == 0x0C`, поэтому реальный отказ ECU выглядел как `no_response` и сжигал весь бюджет попыток, не объясняя причину. Сейчас такой кадр останавливает прогон с `negative_response` (это тоже доказательство, что ECU разобрал наш физический кадр), а `7F <другой сервис>` (например, отказ на Mode 02 из чужого трафика BRC) игнорируется.
+
+Плюс к этому колонка **Alerts** теперь читает `rxMissedDelta` напрямую (раньше поле подменялось на месте вызова через `Object.assign`, из-за чего переименование в JSON молча обнулило бы колонку) и дополнительно показывает `rx_overrun`. Статический гейт проверяет контракт целиком: все поля вида `a.<поле>`, которые читает страница, обязаны присутствовать в JSON попытки.
+
+**Как узнать, что прошит старый образ:** в строке состояния нет пометки `· оверлей …`, карточка OBD может гореть красным «ACTIVE — ОШИБКА diag4», а при нажатии теста состояние застревает в «выполняется (retry_delay)» с «Попытки 0 из 3» дольше трёх секунд. В этом случае нужно перепрошить образ из таблицы ниже.
 
 ## Почему именно так
 
@@ -37,10 +57,13 @@ h2-gauge-v0.4.2-diag4-esp32s3-n16r8.bin
 
 | Параметр | Значение |
 | --- | --- |
-| Размер | `1 221 648` байт |
-| SHA-256 | `242bc33cd95816755cfc25e22067748c7d1b4fcd043e37dace47a4fe78d7d824` |
+| Размер | `1 222 736` байт |
+| SHA-256 | `07b1b4a4ad7a04c5da2865332f62ca5f2fac50def4fccdaad5dcffdc3800c298` |
 | Manifest | `0.4.2-diag4 / esp32s3-n16r8` |
-| Embedded web-страница | `hardware-diagnostics.html` → gzip `6 761` байт (`hardware_diagnostics_gz.h`) |
+| ID зонда | `0.4.2-diag4-fix2` |
+| Embedded web-страница | `hardware-diagnostics.html` → gzip `6 894` байт (`hardware_diagnostics_gz.h`) |
+
+Этот образ заменяет первый diag4 (`242bc33c…`, 1 221 648 байт), который не передавал кадры: **не прошивайте `242bc33c…`**.
 
 Проверка Linux/macOS:
 
@@ -76,6 +99,7 @@ Get-FileHash .\h2-gauge-v0.4.2-diag4-esp32s3-n16r8.bin -Algorithm SHA256
 | `controller_not_running` | TWAI не в состоянии `running` |
 | `twai_status_unavailable` | `twai_get_status_info()` недоступен |
 | `tx_queue_not_empty` | в очереди TX остался кадр от прошлой активности |
+| `tx_path_not_paused` | программный TX не приостановлен. В diag4 клиент всегда TX-paused; отказ с этой причиной означает, что прошит не тот образ |
 
 Тайминги попытки:
 
@@ -93,7 +117,7 @@ watchdog теста       30000 мс
 - `txAttempted`, `txSuccess`, `txResult` (`ESP_OK`/код ошибки драйвера);
 - `tecBefore → tecAfter`, `recBefore → recAfter` и дельты;
 - `busErrorDelta`, `arbLostDelta`, `txFailedDelta`, `rxMissedDelta`, `rxOverrunDelta`;
-- `outcome`: `valid_response` / `negative_response` (`7F 01 0C`) / `no_response` / `tx_failed` / `aborted`;
+- `outcome`: `valid_response` / `negative_response` (`03 7F 01 <NRC>` — отказ ECU, PID в ответе не повторяется) / `no_response` / `tx_failed` / `aborted`;
 - `response`: `id`, `data`, `valid`, `latencyMs`, `rpm` (для валидного ответа).
 
 Что diag4 **не** делает: не отправляет `0x7DF`, не сканирует DTC, не выполняет Mode 04, не поддерживает многосегментные ISO-TP ответы (для PID `0C` они не нужны).
@@ -150,6 +174,8 @@ watchdog теста       30000 мс
 | `stopReason=controller_not_running` / `bus_off` | Контроллер потерял шину: снять оба JSON и сообщить; дальнейшие попытки не предпринимать |
 | `TX failed` (`txResult != ESP_OK`) | Очередь/драйвер: снять JSON, перезагрузить, повторить один раз |
 | `lateResponse` растёт, но попытки `no_response` | Ответы `41 0C` на шине есть, но они приходят вне нашего окна — то есть это ответы на чужие `0x7DF`, а не на наш `0x7E0` |
+| `stopReason=negative_response`, `responseData = 03 7F 01 xx` | ECU принял наш физический кадр и отказал: TX-путь исправен, PID `0C` на этом адресе/в этом состоянии не поддерживается. `xx` — код отказа (NRC) |
+| `stopReason=watchdog`, `lastError=probe_not_scheduled`, «Попытки 0 из 3» | Прошит первый образ diag4 (`242bc33c…`): кадр не отправлялся вообще. Перепрошить образ из таблицы |
 
 Мгновенные уровни GPIO16/17 не заменяют счётчики: доказательствами являются `singleShot.attempts[]`, TWAI counters и таблица кадров.
 
@@ -185,18 +211,32 @@ watchdog теста       30000 мс
 Проверено при сборке 2026-10-08:
 
 ```text
-python3 tools/check_hardware_diagnostics.py --diagnostic 0.4.2-diag4                # GATE PASSED
-python3 tools/check_hardware_diagnostics.py --diagnostic 0.4.2-diag4 --build-release
-python3 tools/build_hardware_diagnostics.py --diagnostic 0.4.2-diag4               # 242bc33c… 1 221 648 bytes
-sha256sum -c SHA256SUMS-diag4.txt                                                 # OK
+python3 tools/check_hardware_diagnostics.py --diagnostic 0.4.2-diag4 --revision 5bea643                    # GATE PASSED
+python3 tools/check_hardware_diagnostics.py --diagnostic 0.4.2-diag4 --revision 5bea643 --build-release    # GATE PASSED
+python3 tools/build_hardware_diagnostics.py --diagnostic 0.4.2-diag4 --revision 5bea643   # 07b1b4a4… 1 222 736 bytes
+python3 tools/test_obd_single_shot.py                                                     # 157 checks, 0 failures
+sha256sum -c SHA256SUMS-diag4.txt                                                         # OK
 python3 tools/check_firmware_manifest.py <app image> \
-        --expected-version 0.4.2-diag4                                            # 0.4.2-diag4 / esp32s3-n16r8
+        --expected-version 0.4.2-diag4                                                    # 0.4.2-diag4 / esp32s3-n16r8
 ```
 
 Повторный запуск `build_hardware_diagnostics.py` воспроизводит **тот же SHA-256**
-(`242bc33c…`): сборка идёт в отдельном временном проекте из чистого `git archive HEAD`
+(`07b1b4a4…`): сборка идёт в отдельном временном проекте из чистого `git archive <revision>`
 с применённым патчем, поэтому каталог сборки, дерево и опубликованные артефакты
 на результат не влияют.
+
+### Host-тесты зонда
+
+`tools/test_obd_single_shot.py` собирает `tests/host/obd_single_shot_tests.cpp` с `-Wall -Wextra -Werror`
+и ASan/UBSan: 157 проверок, 0 падений. Покрыты гейтинг старта и пассивное окно, happy path,
+три неудачных попытки, bus error / TX failure / дельта TEC, ошибка драйвера как новая попытка,
+поздний и «чужой» ответ, стандартный отрицательный ответ `03 7F 01 <NRC>`, abort, оба watchdog
+и снимок пассивных счётчиков. Сценарий `testStartWatchdogCatchesUnscheduledProbe` воспроизводит
+полевой отказ 2026-10-08: на модуле до fix1 он падает, на текущем — проходит.
+
+Скрипт работает и в чистом дереве (`main`): если `src/obd_single_shot.cpp` отсутствует, он
+экспортирует текущий ревизион `git archive HEAD`, применяет `hardware-diagnostics.patch`
+во временном каталоге и собирает тесты там.
 
 Дополнительно подтверждено воспроизводимостью дерева:
 
