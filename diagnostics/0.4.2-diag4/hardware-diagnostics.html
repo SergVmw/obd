@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>H2 Gauge — аппаратная диагностика diag4</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0d10;--card:#15191e;--line:#2b323a;--text:#edf2f7;--muted:#9aa6b2;--ok:#43d17a;--warn:#ffc857;--bad:#ff5d67;--accent:#55b8ff}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#090b0e,#11161c);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1100px;margin:auto;padding:16px}.top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}h1{font-size:22px;margin:0}.sub{color:var(--muted);font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap}button,a.button{border:1px solid var(--line);border-radius:9px;background:#1c232b;color:var(--text);padding:9px 12px;text-decoration:none;cursor:pointer}button:hover,a.button:hover{border-color:var(--accent)}button:disabled{opacity:.5;cursor:not-allowed;border-color:var(--line)}button.primary{border-color:#2f6f4f;background:#17331f;font-weight:700}button.primary:hover{border-color:var(--ok)}button.danger{border-color:#6f2f37;background:#33171b}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{background:rgba(21,25,30,.96);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}.wide{grid-column:1/-1}h2{font-size:16px;margin:0 0 10px}.kv{display:grid;grid-template-columns:minmax(145px,1fr) minmax(100px,1fr);gap:5px 10px}.kv div:nth-child(odd){color:var(--muted)}.value{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:700;background:#28313a}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.muted{color:var(--muted)}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:7px 6px;vertical-align:top}th{color:var(--muted);font-weight:600}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.scroll{overflow:auto}ul{margin:6px 0 0;padding-left:20px}li{margin:5px 0}.footer{color:var(--muted);font-size:12px;margin-top:12px}.pulse{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:6px;background:var(--warn)}.pulse.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}.note{color:var(--muted);font-size:13px;margin:0 0 10px}#probeMsg{margin-top:10px;font-size:13px}#probeMsg.err{color:var(--bad)}#probeMsg.ok{color:var(--ok)}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.chip{border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:12px;background:#1b2129}.chip.on{border-color:var(--warn);color:var(--warn)}.chip.good{border-color:var(--ok);color:var(--ok)}@media(max-width:720px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}.kv{grid-template-columns:1fr 1fr}main{padding:10px}h1{font-size:19px}}
+</style>
+</head>
+<body><main>
+<div class="top"><div><h1>Аппаратная диагностика diag4</h1><div class="sub"><span id="pulse" class="pulse"></span><span id="build">загрузка…</span> · <span id="txmode">автоматический 0x7DF отключён</span></div></div><div class="actions"><button id="refresh">Обновить</button><button id="clear">Очистить CAN snapshot</button><button id="probe" class="primary">Тест 0x7E0 → 0x7E8</button><button id="abort" class="danger" hidden>Прервать тест</button><a class="button" href="/normal">Обычный интерфейс</a></div></div>
+<div class="grid">
+<section class="card"><h2>Быстрый итог</h2><ul id="observations"><li>Получение данных…</li></ul></section>
+<section class="card"><h2>OBD / пассивный режим</h2><div id="obd" class="kv"></div></section>
+<section class="card wide"><h2>Безопасный физический TX-тест</h2>
+<p class="note">После 10 секунд пассивного наблюдения кнопка отправляет до трёх отдельных single-shot запросов 0x7E0 02 01 0C 00 00 00 00 00. Между попытками 2 секунды, аппаратный автоматический повтор запрещён. После первого 0x7E8 41 0C тест останавливается.</p>
+<div id="test" class="kv"></div>
+<div class="chips" id="alerts"></div>
+<div class="scroll" style="margin-top:10px"><table><thead><tr><th>№</th><th>Результат</th><th>Alerts</th><th>TEC/REC до → после</th><th>Bus/Arb до → после</th><th>Ответ</th></tr></thead><tbody id="attempts"><tr><td colspan="6">Тест ещё не запускался</td></tr></tbody></table></div>
+<div id="probeMsg"></div>
+</section>
+<section class="card wide"><h2>GPIO — текущие уровни</h2><div class="scroll"><table><thead><tr><th>Сигнал</th><th>GPIO</th><th>Режим</th><th>Raw</th><th>Интерпретация</th></tr></thead><tbody id="pins"></tbody></table></div></section>
+<section class="card"><h2>TWAI controller</h2><div id="twai" class="kv"></div></section>
+<section class="card"><h2>CAN activity</h2><div id="can" class="kv"></div></section>
+<section class="card wide"><h2>Последние CAN кадры</h2><div class="scroll"><table><thead><tr><th>Dir</th><th>ID</th><th>DLC</th><th>Data</th><th>Count</th><th>Age</th></tr></thead><tbody id="frames"></tbody></table></div></section>
+</div>
+<div class="footer">GPIO16=CTX/TWAI_TX, GPIO17=CRX/TWAI_RX. DTC scan/clear в diag4 заблокированы. До нажатия кнопки H2 только принимает CAN и подтверждает корректные входящие кадры на уровне контроллера.</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);let busy=false,lastData=null;
+const esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const age=v=>v==null||v<0?'никогда':v<1000?v+' ms':(v/1000).toFixed(1)+' s';
+const cls=v=>v>0?'bad':v<0?'muted':'';
+const delta=v=>(v>0?'+':'')+v;
+function kv(id,rows){$(id).innerHTML=rows.map(([a,b,c])=>`<div>${esc(a)}</div><div class="value ${c||''}">${esc(b)}</div>`).join('')}
+function pinRow(name,p,meaning){return `<tr><td>${esc(name)}</td><td><code>${esc(p.pin)}</code></td><td>${esc(p.direction)}</td><td class="value">${esc(p.rawLevel??p.rawAdc)}</td><td>${esc(meaning)}</td></tr>`}
+async function getJson(url,opt){const r=await fetch(url,{cache:'no-store',...opt});const text=await r.text();let data=null;try{data=JSON.parse(text)}catch(e){data={error:text}}if(!r.ok)throw Object.assign(new Error(data?.error||`${url}: HTTP ${r.status}`),{payload:data});return data}
+function reasonText(reason,t){switch(reason){case 'passive_window':{const left=Math.max(0,Math.ceil((t.passive.requiredMs-t.passive.elapsedMs)/1000));return `кнопка станет доступна через ${left} с пассивного наблюдения`}case 'test_running':return 'тест уже выполняется';case 'controller_not_running':return 'TWAI controller не в состоянии running';case 'twai_status_unavailable':return 'статус TWAI недоступен';case 'tx_queue_not_empty':return 'очередь TX не пуста';case 'tx_path_not_paused':return 'автоматическая передача 0x7DF не отключена';default:return reason||'неизвестная причина'}}
+function attemptAlerts(a){const tags=[];if(a.busErrorDelta>0)tags.push('bus_error');if(a.tecDelta>0)tags.push('tec_up');if(a.txFailedDelta>0)tags.push('tx_failed');if(a.arbLostDelta>0)tags.push('arb_lost');if(a.rxMissingDelta>0)tags.push('rx_missed');return tags.length?tags.join(', '):'—'}
+function renderTest(t,d){
+ $('test').innerHTML=[['Состояние',t.running?`выполняется (${t.phase})`:t.stopReason==='none'?'ожидание запуска':`остановлен: ${t.stopReason}`,t.running?'warn':t.stopReason==='valid_response'?'ok':t.stopReason==='none'?'':'bad'],
+  ['Автоматический 0x7DF',t.automaticFunctionalRequests==='disabled'?'отключён':'включён',t.automaticFunctionalRequests==='disabled'?'ok':'bad'],
+  ['Пассивное наблюдение',`${(t.passive.elapsedMs/1000).toFixed(1)} s / ${(t.passive.requiredMs/1000).toFixed(0)} s${t.passive.ready?' — готово':' — ожидание'}`,t.passive.ready?'ok':'warn'],
+  ['Попытки',`${t.attemptsStarted} из ${t.request.maxAttempts} (повторов: ${t.retries})`],
+  ['Запрос',`${t.request.identifier} ${t.request.data} · ${t.request.txMode==='single_shot_ss1'?'ss=1 (без аппаратного повтора)':t.request.txMode}`],
+  ['Ожидание ответа',`${t.request.responseIdentifier} ${t.request.expected} · до ${t.request.timeoutMs} ms, повтор через ${t.request.retryDelayMs} ms`],
+  ['Watchdog',`${t.watchdogMs} ms`],
+  ['Последняя ошибка',t.lastError||'—',t.lastError?'bad':''],
+  ['Ответы вне окна',`${t.lateResponseCount}${t.lateResponse?` · последний ${t.lateResponse.id} ${t.lateResponse.data} ${age(t.lateResponse.ageMs)}`:''}`],
+  ['Baseline (после reboot)',t.canStart?'готов к запуску':reasonText(t.blockedReason,t),t.canStart?'ok':'warn']].map(([a,b,c])=>`<div>${esc(a)}</div><div class="value ${c||''}">${esc(b)}</div>`).join('');
+ const latched=(t.alertFlags||[]);
+ $('alerts').innerHTML=latched.length?latched.map(f=>`<span class="chip on">${esc(f)}</span>`).join(''):'<span class="chip good">latched alert flags: нет</span>';
+ const rows=(t.attempts||[]).map(a=>{
+   const response=a.response?`${a.response.id} · <code>${esc(a.response.data)}</code>${a.response.valid?` · валиден, PID 0C${a.response.rpm!=null?` = ${a.response.rpm} об/мин`:''}`: ' · не 41 0C'}${a.response.latencyMs!=null?` · ${a.response.latencyMs} ms`:''}${a.response.ageMs!=null?` (${age(a.response.ageMs)} назад)`:''}`:'нет';
+   const result=`${esc(a.outcome)}${a.txAttempted?(a.txSuccess?' · TX ok':' · TX FAILED'):''}${a.txResult&&a.txResult!=='ESP_OK'?` (${esc(a.txResult)})`:''}`;
+   return `<tr><td>${a.number}</td><td class="${a.outcome==='valid_response'?'ok':a.outcome==='pending'?'':a.outcome==='no_response'?'warn':'bad'}">${result}</td><td>${esc(attemptAlerts(Object.assign({},a,{rxMissingDelta:a.rxMissedDelta})))}</td><td class="value">${a.tecBefore} → ${a.tecAfter} <span class="${cls(a.tecDelta)}">(${delta(a.tecDelta)})</span> / ${a.recBefore} → ${a.recAfter} <span class="${cls(a.recDelta)}">(${delta(a.recDelta)})</span></td><td class="value">${delta(a.busErrorDelta)} / ${delta(a.arbLostDelta)}</td><td>${response}</td></tr>`}).join('');
+ $('attempts').innerHTML=rows||'<tr><td colspan="6">Тест ещё не запускался</td></tr>';
+ const probe=$('probe');
+ if(t.running){probe.disabled=true;probe.textContent='Тест выполняется…';$('abort').hidden=false}
+ else{probe.textContent='Тест 0x7E0 → 0x7E8';$('abort').hidden=true;
+   if(t.canStart){probe.disabled=false;probe.title=''}
+   else{probe.disabled=true;probe.title=reasonText(t.blockedReason,t)}}
+}
+function render(d,s){$('pulse').classList.add('live');$('build').textContent=`${d.version} / ${d.target} / uptime ${(d.uptimeMs/1000).toFixed(0)} s`;
+ const g=d.gpio,l=g.lpg;
+ $('pins').innerHTML=[
+  pinRow('Кнопка',g.button,g.button.pressed?'НАЖАТА (LOW)':'отпущена (HIGH)'),
+  pinRow('LPG / PC817',l,`enabled=${l.enabled}, activeLow=${l.activeLow}, electricalActive=${l.electricalActive}, candidate=${l.candidateElectricalActive} ${l.candidateAgeMs}ms, debounce=${l.debounceSatisfied} / ${l.requiredDebounceMs}ms, stable=${l.stableElectricalActive} ${l.stableAgeMs}ms, fuel=${l.selectedFuel}, source=${l.selectionSource}, lpgEnabled=${l.lpgEnabled}, ожидается при клапане ON: ${l.expectedValveOnLevel}`),
+  `<tr><td>LDR</td><td><code>${g.ambientLight.pin}</code></td><td>adc_input</td><td class="value">${esc(g.ambientLight.rawAdc)}</td><td>filtered=${esc(g.ambientLight.filteredAdc)}, clipped=${esc(g.ambientLight.clipped)}</td></tr>`,
+  pinRow('Подсветка',g.backlight,`${g.backlight.percent}% / PWM ${g.backlight.pwmDuty}`),
+  pinRow('TFT CS',g.tftChipSelect,'активный уровень LOW'),
+  pinRow('TFT D/C',g.tftDataCommand,'LOW=command, HIGH=data'),
+  pinRow('TFT reset',g.tftReset,g.tftReset.rawLevel?'дисплей released':'дисплей в reset'),
+  pinRow('TFT MOSI',g.tftMosi,'мгновенный уровень SPI data'),
+  pinRow('TFT SCLK',g.tftClock,'мгновенный уровень SPI clock'),
+  pinRow('CAN TX / CTX',g.canTx,'idle обычно HIGH'),
+  pinRow('CAN RX / CRX',g.canRx,'idle обычно HIGH')].join('');
+ const t=d.twai;
+ kv('twai',[["Состояние",t.state,t.state==='running'?'ok':t.state==='bus_off'?'bad':'warn'],["Driver ready",t.driverReady],["Bitrate",t.bitrate+' bit/s'],["TX/RX queue",`${t.txQueue??'—'} / ${t.rxQueue??'—'}`],["TEC / REC",`${t.txErrorCounter??'—'} / ${t.rxErrorCounter??'—'}`],["TX failed",t.txFailedCount??'—',t.txFailedCount?'bad':''],["Bus errors",t.busErrorCount??'—',t.busErrorCount?'bad':''],["RX missed/overrun",`${t.rxMissedCount??'—'} / ${t.rxOverrunCount??'—'}`],["Arbitration lost",t.arbitrationLostCount??'—']]);
+ const c=d.can;
+ kv('can',[["Всего кадров",c.totalObservedFrames],["TX retained (наш)",c.retainedTxFrames,c.retainedTxFrames?'ok':'warn'],["RX retained",c.retainedRxFrames,c.retainedRxFrames?'ok':'bad'],["RX 0x7DF — другие OBD-запросы",c.externalFunctionalRequestFrames??0,c.externalFunctionalRequestFrames?'warn':''],["Raw 0x7E8–0x7EF replies",c.rawObdResponseFrames??0,c.rawObdResponseFrames?'ok':''],["Software/alert errors с boot",c.telemetryErrorCount,c.telemetryErrorCount?'bad':''],["Последний TX",c.latestTx.seen?`${c.latestTx.id} · ${c.latestTx.data} · ${age(c.latestTx.ageMs)}`:'нет'],["Последний RX",c.latestRx.seen?`${c.latestRx.id} · ${c.latestRx.data} · ${age(c.latestRx.ageMs)}`:'нет']]);
+ const o=d.obd;
+ kv('obd',[["Автоматический опрос",o.readOnlyPollingActive?'ACTIVE — ОШИБКА diag4':'disabled (пассивный режим)',o.readOnlyPollingActive?'bad':'ok'],["Pending",`${o.pendingRequest} PID 0x${Number(o.pendingPid).toString(16).padStart(2,'0').toUpperCase()}`],["Waiting",o.waiting],["Discovery",o.discoveryDone?'complete':`step ${o.discoveryIndex}`,o.discoveryDone?'muted':'warn'],["Responses (Mode 01)",o.responses,o.responses?'':'muted'],["Timeouts",o.timeouts,o.timeouts?'warn':''],["Last request",age(o.lastRequestAgeMs)],["Last response",age(o.lastResponseAgeMs)],["Engine ECU",o.engineEcuLocked?`${o.engineEcuId} locked`:'not locked',o.engineEcuLocked?'ok':'muted'],["DTC operation",o.diagnosticOperation],["Last error",o.lastError||'—']]);
+ renderTest(d.singleShot,d);
+ $('observations').innerHTML=(d.observations?.length?d.observations:['Явных предупреждений нет']).map(x=>`<li>${esc(x)}</li>`).join('');
+ const frames=(s.frames||[]).sort((a,b)=>a.ageMs-b.ageMs);
+ $('frames').innerHTML=frames.length?frames.map(f=>`<tr><td class="${f.direction==='RX'?'ok':'warn'}">${esc(f.direction)}</td><td><code>${esc(f.id)}</code></td><td>${f.dlc}</td><td><code>${esc(f.data)}</code></td><td>${f.count}</td><td>${age(f.ageMs)}</td></tr>`).join(''):'<tr><td colspan="6">Кадров пока нет</td></tr>';
+}
+async function update(){if(busy)return;busy=true;try{const [d,s]=await Promise.all([getJson('/api/diagnostics/hardware'),getJson('/api/can/snapshot')]);lastData=d;render(d,s)}catch(e){$('pulse').classList.remove('live');$('build').textContent=e.message;$('observations').innerHTML=`<li class="bad">${esc(e.message)}</li>`}finally{busy=false}}
+$('refresh').onclick=update;
+$('clear').onclick=async()=>{try{await getJson('/api/can/clear',{method:'POST'});await update()}catch(e){alert(e.message)}};
+$('probe').onclick=async()=>{
+ const msg=$('probeMsg');msg.className='';msg.textContent='Запуск теста…';
+ try{await getJson('/api/diagnostics/single-shot/start',{method:'POST',headers:{'X-H2G-Action':'single-shot-start'}});msg.className='ok';msg.textContent='Тест принят: до трёх single-shot запросов 0x7E0, ответ ожидается до 500 ms, повтор через 2 s.'}
+ catch(e){msg.className='err';msg.textContent=`Тест не запущен: ${e.payload?.reason?reasonText(e.payload.reason,lastData?.singleShot||{passive:{elapsedMs:0,requiredMs:10000}}):e.message}`}
+ await update()};
+$('abort').onclick=async()=>{try{await getJson('/api/diagnostics/single-shot/abort',{method:'POST'});$('probeMsg').className='';$('probeMsg').textContent='Тест прерван оператором.'}catch(e){alert(e.message)}await update()};
+update();setInterval(update,1000);
+</script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4bc70e2c01a94c73b74392e4234840661791215815920" integrity="sha512-L0ha0OXavK/8okipN9F8BtP84dg9DUhPERbBXzwI6dgTA55d2+yweo3pn5CSFYs45/r8md2+xvUPtTdvTNRfjA==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
+</body></html>
