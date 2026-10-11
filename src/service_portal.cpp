@@ -116,6 +116,68 @@ float clampValue<float>(float value, float low, float high) {
   return value < low ? low : (value > high ? high : value);
 }
 
+struct IntegerField {
+  const char* name;
+  int low;
+  int high;
+};
+
+struct FloatField {
+  const char* name;
+  double low;
+  double high;
+};
+
+const char* invalidIntegerField(JsonObjectConst object,
+                                const IntegerField* fields, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    const JsonVariantConst value = object[fields[i].name];
+    if (!value.isUnbound() &&
+        (!value.is<int>() || value.as<int>() < fields[i].low ||
+         value.as<int>() > fields[i].high)) {
+      return fields[i].name;
+    }
+  }
+  return nullptr;
+}
+
+const char* invalidFloatField(JsonObjectConst object,
+                              const FloatField* fields, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    const JsonVariantConst value = object[fields[i].name];
+    if (value.isUnbound()) continue;
+    // Configured float ranges are small, so valid integer-backed JSON numbers
+    // fit in int; decimals use ArduinoJson's floating representation. Oversized
+    // integers are invalid regardless and remain rejected here.
+    const bool numeric = value.is<int>() || value.is<unsigned int>() ||
+                         value.is<double>();
+    if (!numeric) return fields[i].name;
+    const double number = value.as<double>();
+    if (!isfinite(number) || number < fields[i].low ||
+        number > fields[i].high) {
+      return fields[i].name;
+    }
+  }
+  return nullptr;
+}
+
+const char* invalidBooleanField(JsonObjectConst object,
+                                const char* const* fields, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    const JsonVariantConst value = object[fields[i]];
+    if (!value.isUnbound() && !value.is<bool>()) return fields[i];
+  }
+  return nullptr;
+}
+
+void sendInvalidConfigField(WebServer& server, const char* fieldName,
+                            const char* requirement) {
+  char body[128];
+  snprintf(body, sizeof(body), "{\"error\":\"%s must be %s\"}",
+           fieldName, requirement);
+  server.send(422, "application/json", body);
+}
+
 String color565ToHex(uint16_t color) {
   const uint8_t red = ((color >> 11) & 0x1F) * 255 / 31;
   const uint8_t green = ((color >> 5) & 0x3F) * 255 / 63;
@@ -485,31 +547,31 @@ void ServicePortal::receiveConfig() {
   ConfigData& c = candidate;
   JsonObjectConst d = doc["display"];
   if (!d.isNull()) {
-    // Reject malformed brightness values before narrowing to uint8/uint16.
-    // Never wrap a large ADC/delay or silently accept a fractional enum.
-    struct IntegerField { const char* name; int low; int high; };
-    const IntegerField fields[] = {
+    // Validate every supplied numeric field before narrowing or clamping. A
+    // fractional enum or out-of-range setting is rejected uniformly instead
+    // of being silently changed in the persisted candidate.
+    const IntegerField integerFields[] = {
         {"brightnessDay", 10, 100}, {"brightnessNight", 5, 80},
         {"brightnessMode", 0, 3}, {"lightNightAdc", 0, 4095},
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
-        {"lightBrightenDelayMs", 0, 30000}};
-    for (const IntegerField& field : fields) {
-      const JsonVariantConst value = d[field.name];
-      if (!value.isUnbound() &&
-          (!value.is<int>() || value.as<int>() < field.low ||
-           value.as<int>() > field.high)) {
-        server_.send(422, "application/json",
-                     "{\"error\":\"brightness values must be integers within allowed ranges\"}");
-        return;
-      }
+        {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
+        {"startPage", 0, 3}, {"mainCenterValue", 0, 3},
+        {"uiLanguage", 0, 1}, {"autoReturnSec", 0, 120}};
+    const char* invalid = invalidIntegerField(
+        d, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
     }
-    for (const char* name : {"manualNight", "lightAutoCalibrate"}) {
-      const JsonVariantConst value = d[name];
-      if (!value.isUnbound() && !value.is<bool>()) {
-        server_.send(422, "application/json",
-                     "{\"error\":\"brightness flags must be booleans\"}");
-        return;
-      }
+    const char* booleanFields[] = {"manualNight", "lightAutoCalibrate",
+                                   "pageFuel", "pageTemperature",
+                                   "pageDiagnostics", "peakEnabled"};
+    invalid = invalidBooleanField(
+        d, booleanFields, sizeof(booleanFields) / sizeof(booleanFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid, "a boolean");
+      return;
     }
     c.brightness.mode = static_cast<BrightnessMode>(
         d["brightnessMode"] | static_cast<int>(c.brightness.mode));
@@ -542,6 +604,27 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst b = doc["boost"];
   if (!b.isNull()) {
+    const IntegerField integerFields[] = {
+        {"baroSource", 0, 4}, {"boostArcStyle", 0, 1},
+        {"smoothingMs", 0, 2000}};
+    const char* invalid = invalidIntegerField(
+        b, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    const FloatField floatFields[] = {
+        {"fixedBaroKpa", 70.0, 110.0}, {"boostOffsetBar", -0.5, 0.5},
+        {"boostMinBar", -1.2, 0.0}, {"boostMaxBar", 0.5, 2.5},
+        {"boostWarningBar", 0.2, 2.0}, {"boostDangerBar", 0.3, 2.5}};
+    invalid = invalidFloatField(
+        b, floatFields, sizeof(floatFields) / sizeof(floatFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "a finite number within the allowed range");
+      return;
+    }
     c.baroSource = static_cast<BaroSource>(clampValue<int>(b["baroSource"] | static_cast<int>(c.baroSource), 0, 4));
     c.boostArcStyle = static_cast<BoostArcStyle>(clampValue<int>(
         b["boostArcStyle"] | static_cast<int>(c.boostArcStyle), 0, 1));
@@ -556,6 +639,33 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst f = doc["fuel"];
   if (!f.isNull()) {
+    const IntegerField integerFields[] = {{"fuelSource", 0, 5},
+                                          {"switchSpeedKph", 1, 30}};
+    const char* invalid = invalidIntegerField(
+        f, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    const FloatField floatFields[] = {
+        {"petrolCorrection", 0.5, 1.5}, {"lpgCorrection", 0.5, 2.0},
+        {"lpgAfr", 10.0, 20.0}, {"lpgDensity", 400.0, 700.0}};
+    invalid = invalidFloatField(
+        f, floatFields, sizeof(floatFields) / sizeof(floatFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "a finite number within the allowed range");
+      return;
+    }
+    const char* booleanFields[] = {"saveTrip", "dfcoEnabled",
+                                   "fuelTrimEnabled"};
+    invalid = invalidBooleanField(
+        f, booleanFields, sizeof(booleanFields) / sizeof(booleanFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid, "a boolean");
+      return;
+    }
     c.fuelSource = static_cast<FuelSource>(clampValue<int>(f["fuelSource"] | static_cast<int>(c.fuelSource), 0, 5));
     c.petrolCorrection = clampValue<float>(f["petrolCorrection"] | c.petrolCorrection, 0.5f, 1.5f);
     c.lpgCorrection = clampValue<float>(f["lpgCorrection"] | c.lpgCorrection, 0.5f, 2.0f);
@@ -569,6 +679,22 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst l = doc["lpg"];
   if (!l.isNull()) {
+    const IntegerField integerFields[] = {{"lpgDebounceMs", 100, 3000},
+                                          {"lpgOffDelayMs", 0, 5000}};
+    const char* invalid = invalidIntegerField(
+        l, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    const char* booleanFields[] = {"lpgEnabled", "lpgActiveLow"};
+    invalid = invalidBooleanField(
+        l, booleanFields, sizeof(booleanFields) / sizeof(booleanFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid, "a boolean");
+      return;
+    }
     c.lpgEnabled = l["lpgEnabled"] | c.lpgEnabled;
     c.lpgActiveLow = l["lpgActiveLow"] | c.lpgActiveLow;
     c.lpgDebounceMs = clampValue<int>(l["lpgDebounceMs"] | c.lpgDebounceMs, 100, 3000);
@@ -581,6 +707,25 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst controls = doc["controls"];
   if (!controls.isNull()) {
+    const IntegerField integerFields[] = {
+        {"longPressMs", 800, 4000}, {"serviceHoldMs", 3000, 10000},
+        {"serviceTimeoutMin", 3, 60}};
+    const char* invalid = invalidIntegerField(
+        controls, integerFields,
+        sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    const char* booleanFields[] = {"lockLongWhenMoving"};
+    invalid = invalidBooleanField(
+        controls, booleanFields,
+        sizeof(booleanFields) / sizeof(booleanFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid, "a boolean");
+      return;
+    }
     c.longPressMs = clampValue<int>(controls["longPressMs"] | c.longPressMs, 800, 4000);
     c.serviceHoldMs = clampValue<int>(controls["serviceHoldMs"] | c.serviceHoldMs, 3000, 10000);
     c.serviceTimeoutMin = clampValue<int>(controls["serviceTimeoutMin"] | c.serviceTimeoutMin, 3, 60);
@@ -589,6 +734,23 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst obd = doc["obd"];
   if (!obd.isNull()) {
+    const IntegerField integerFields[] = {
+        {"obdTimeoutMs", 50, 1000}, {"maxRequestsPerSecond", 5, 40}};
+    const char* invalid = invalidIntegerField(
+        obd, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    const FloatField floatFields[] = {{"speedCorrectionKph", -20.0, 20.0}};
+    invalid = invalidFloatField(
+        obd, floatFields, sizeof(floatFields) / sizeof(floatFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "a finite number within the allowed range");
+      return;
+    }
     c.obdTimeoutMs = clampValue<int>(obd["obdTimeoutMs"] | c.obdTimeoutMs, 50, 1000);
     c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 40);
     c.speedCorrectionKph = clampValue<float>(

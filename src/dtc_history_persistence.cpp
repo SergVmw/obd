@@ -334,6 +334,13 @@ bool DtcHistoryPersistence::factoryReset(DtcHistoryData& history) {
   const bool nvsOk = syncNvs();
   lastJournalAttemptAt_ = millis();
   lastNvsAttemptAt_ = millis();
-  return latestValid_ && filesCleared && nvsCleared &&
-         (journalOk || nvsOk);
+  // NVS clear is reported separately: a verified reset journal is durable
+  // even when this redundant backend could not be opened or cleared.
+  if (nvsCleared) {
+    ESP_LOGI(kTag, "Factory reset: old NVS mirror cleared");
+  } else {
+    ESP_LOGW(kTag, "Factory reset: NVS clear failed (ready=%u)",
+             preferencesReady_ ? 1U : 0U);
+  }
+  return latestValid_ && filesCleared && (journalOk || nvsOk);
 }

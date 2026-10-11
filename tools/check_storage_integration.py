@@ -12,6 +12,7 @@ def text(path: str) -> str:
 main = text("src/main.cpp")
 runtime_h = text("include/runtime_persistence.h")
 runtime = text("src/runtime_persistence.cpp")
+dtc_history = text("src/dtc_history_persistence.cpp")
 snapshot_h = text("include/persistence_snapshot.h")
 assets_h = text("include/asset_store.h")
 assets = text("src/asset_store.cpp")
@@ -31,9 +32,11 @@ required = {
     "NVS readback": "loadNvsRecord(readback)" in runtime,
     "checkpoint accepts either durable copy":
         "return journalOk || (writeNvs && nvsOk);" in runtime,
-    "factory reset accepts either rewritten durable copy":
-        "(journalOk || nvsOk);" in runtime and
-        "(journalOk || nvsOk) && nvsOk" not in runtime,
+    "runtime/DTC factory reset accept either rewritten durable copy":
+        "return latestValid_ && filesCleared && (journalOk || nvsOk);" in runtime and
+        "return latestValid_ && filesCleared && (journalOk || nvsOk);" in dtc_history and
+        "filesCleared && nvsCleared &&" not in runtime and
+        "filesCleared && nvsCleared &&" not in dtc_history,
     "table-driven CRC": "kCrc32Nibble" in text("src/storage_crc32.cpp") and
         "for (uint8_t bit" not in text("src/storage_crc32.cpp"),
     "newest generation recovery": "sequenceNewer" in runtime,

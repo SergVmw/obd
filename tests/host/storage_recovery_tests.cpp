@@ -351,6 +351,43 @@ void testFactoryResetAcceptsJournalWhenNvsRewriteFails() {
   assert(rebooted.nvsSequence() == 2);  // startup repairs the missing mirror
 }
 
+void testFactoryResetAcceptsJournalWhenNvsCannotOpen() {
+  resetEnvironment();
+  LittleFS.files["/trip-journal.a"] = record(5, 50.0);
+  setNvs(record(5, 50.0));
+  Preferences::failBegin = true;
+
+  LittleFsStorage storage = mountedStorage();
+  TripState trip{};
+  PetrolCalibrationState calibration{};
+  RuntimePersistence persistence;
+  assert(persistence.begin(storage, trip, calibration));
+  assert(persistence.latestSequence() == 5);
+  assert(persistence.nvsSequence() == 0);
+
+  TripState resetTrip{};
+  PetrolCalibrationState resetCalibration{};
+  assert(persistence.factoryReset(resetTrip, resetCalibration));
+  assert(persistence.latestSequence() == 6);
+  assert(persistence.journalSequence() == 6);
+  assert(persistence.nvsSequence() == 0);
+  assert(PersistenceSnapshot::sequence(
+             Preferences::storage["h2persist/snapshot"].data(),
+             Preferences::storage["h2persist/snapshot"].size()) == 5);
+
+  // Once NVS becomes available, boot still selects the newer journal reset
+  // and repairs the stale mirror instead of resurrecting the old trip.
+  Preferences::failBegin = false;
+  TripState recovered = tripWith(999.0);
+  PetrolCalibrationState recoveredCalibration = calibrationWith(999.0);
+  RuntimePersistence rebooted;
+  assert(rebooted.begin(storage, recovered, recoveredCalibration));
+  assert(rebooted.latestSequence() == 6);
+  assert(recovered.totalDistanceKm == 0.0);
+  assert(recoveredCalibration.active == 0);
+  assert(rebooted.nvsSequence() == 6);
+}
+
 DtcHistoryData dtcHistoryWith(uint16_t raw, uint8_t kinds,
                               uint32_t changeSequence = 1) {
   DtcHistoryData history{};
@@ -372,6 +409,39 @@ std::vector<uint8_t> dtcRecord(uint32_t sequence,
   assert(DtcHistorySnapshot::encode(sequence, history, bytes.data(),
                                     bytes.size()));
   return bytes;
+}
+
+void testDtcFactoryResetAcceptsJournalWhenNvsCannotOpen() {
+  resetEnvironment();
+  const DtcHistoryData oldHistory =
+      dtcHistoryWith(0x0301, DtcHistoryStored, 7);
+  LittleFS.files["/dtc-history.a"] = dtcRecord(12, oldHistory);
+  Preferences::storage["h2dtchist/snapshot"] = dtcRecord(12, oldHistory);
+  Preferences::failBegin = true;
+
+  LittleFsStorage storage = mountedStorage();
+  DtcHistoryData history{};
+  DtcHistoryPersistence persistence;
+  assert(persistence.begin(storage, history));
+  assert(persistence.latestSequence() == 12);
+  assert(persistence.nvsSequence() == 0);
+  assert(history.entryCount == 1);
+
+  assert(persistence.factoryReset(history));
+  assert(persistence.latestSequence() == 13);
+  assert(persistence.journalSequence() == 13);
+  assert(persistence.nvsSequence() == 0);
+  const auto& staleNvs = Preferences::storage["h2dtchist/snapshot"];
+  assert(DtcHistorySnapshot::sequence(staleNvs.data(), staleNvs.size()) == 12);
+  assert(history.entryCount == 0);
+
+  Preferences::failBegin = false;
+  DtcHistoryData recovered{};
+  DtcHistoryPersistence rebooted;
+  assert(rebooted.begin(storage, recovered));
+  assert(rebooted.latestSequence() == 13);
+  assert(recovered.entryCount == 0);
+  assert(rebooted.nvsSequence() == 13);
 }
 
 void testDtcHistorySnapshotAndDurableMirror() {
@@ -568,6 +638,8 @@ int main() {
   testJournalNewerRepairsNvsAndCorruptCrcFallsBack();
   testFactoryResetSequenceDefeatsUndeletedStaleSegment();
   testFactoryResetAcceptsJournalWhenNvsRewriteFails();
+  testFactoryResetAcceptsJournalWhenNvsCannotOpen();
+  testDtcFactoryResetAcceptsJournalWhenNvsCannotOpen();
   testDtcHistorySnapshotAndDurableMirror();
   testDtcHistoryTornJournalFallsBackToNvs();
   testAssetValidationAbAndFallback();

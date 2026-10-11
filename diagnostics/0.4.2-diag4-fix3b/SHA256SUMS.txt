@@ -1,0 +1,1 @@
+c105eed1be445f7e07e33c2cac9670043375fd727e14f0f815693d9bcbf2f509  /home/user/repo/diagnostics/0.4.2-diag4-fix3b/h2-gauge-v0.4.2-fix3b-esp32s3-n16r8.bin

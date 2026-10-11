@@ -2,23 +2,18 @@
 
 #include <string.h>
 
-namespace {
-constexpr size_t kMaxConfiguredDids = 8;
-uint32_t sLastSentAt[kMaxConfiguredDids]{};
-}
-
 bool Mode22Transport::buildDueRequest(uint32_t now,
                                       twai_message_t& message) {
-  if (waiting_ || definitions_ == nullptr || count_ == 0) return false;
-  const size_t usableCount = count_ < kMaxConfiguredDids
-                                 ? count_
-                                 : kMaxConfiguredDids;
+  if (waiting_ || definitions_ == nullptr || count_ == 0 ||
+      count_ > kMaxConfiguredDids) {
+    return false;
+  }
 
-  for (size_t checked = 0; checked < usableCount; ++checked) {
-    const size_t index = (cursor_ + checked) % usableCount;
+  for (size_t checked = 0; checked < count_; ++checked) {
+    const size_t index = (cursor_ + checked) % count_;
     const auto& definition = definitions_[index];
     if (!definition.enabled || definition.decode == nullptr ||
-        now - sLastSentAt[index] < definition.pollIntervalMs) {
+        now - lastSentAt_[index] < definition.pollIntervalMs) {
       continue;
     }
 
@@ -32,8 +27,8 @@ bool Mode22Transport::buildDueRequest(uint32_t now,
     message.data[2] = static_cast<uint8_t>(definition.did >> 8);
     message.data[3] = static_cast<uint8_t>(definition.did & 0xFF);
 
-    sLastSentAt[index] = now;
-    cursor_ = (index + 1) % usableCount;
+    lastSentAt_[index] = now;
+    cursor_ = (index + 1) % count_;
     pending_ = &definition;
     waiting_ = true;
     expectedLength_ = 0;
@@ -46,7 +41,7 @@ bool Mode22Transport::buildDueRequest(uint32_t now,
 
 const Mode22DidDefinition* Mode22Transport::findResponse(
     const twai_message_t& message, uint16_t did) const {
-  if (definitions_ == nullptr) return nullptr;
+  if (definitions_ == nullptr || count_ > kMaxConfiguredDids) return nullptr;
   for (size_t i = 0; i < count_; ++i) {
     const auto& definition = definitions_[i];
     if (definition.enabled && definition.did == did &&

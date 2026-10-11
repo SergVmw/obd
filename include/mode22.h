@@ -20,6 +20,11 @@ struct Mode22DidDefinition {
   Mode22DecodeFn decode;
 };
 
+// This transport keeps per-DID polling timestamps inline to avoid heap
+// allocation. Keep the production list within this bound; mode22_config.cpp
+// enforces it at compile time, while arbitrary runtime lists fail closed.
+constexpr size_t kMaxConfiguredDids = 8;
+
 extern const Mode22DidDefinition* const kMode22DidList;
 extern const size_t kMode22DidCount;
 
@@ -51,6 +56,7 @@ class Mode22Transport {
   const Mode22DidDefinition* definitions_;
   size_t count_;
   TelemetryData& telemetry_;
+  uint32_t lastSentAt_[kMaxConfiguredDids]{};
   size_t cursor_ = 0;
   const Mode22DidDefinition* pending_ = nullptr;
   bool waiting_ = false;

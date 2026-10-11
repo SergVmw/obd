@@ -381,9 +381,14 @@ bool RuntimePersistence::factoryReset(
   const bool nvsOk = syncNvs();
   lastJournalAttemptAt_ = millis();
   lastNvsAttemptAt_ = millis();
-  // The old NVS value was removed successfully above. The reset is durable
-  // once either newly written backend has been read back; a failed redundant
-  // NVS rewrite must not turn a valid LittleFS reset into a false HTTP error.
-  return latestValid_ && filesCleared && nvsCleared &&
-         (journalOk || nvsOk);
+  // A new reset snapshot is durable once either backend has been read back.
+  // Clearing the old NVS mirror is useful cleanup, but it is not a condition
+  // for success when the LittleFS journal contains the verified reset record.
+  if (nvsCleared) {
+    ESP_LOGI(kTag, "Factory reset: old NVS mirror cleared");
+  } else {
+    ESP_LOGW(kTag, "Factory reset: NVS clear failed (ready=%u)",
+             preferencesReady_ ? 1U : 0U);
+  }
+  return latestValid_ && filesCleared && (journalOk || nvsOk);
 }
