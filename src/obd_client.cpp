@@ -85,7 +85,7 @@ void ObdClient::loop(uint32_t now) {
   // an explicitly requested service scan/clear, remains asynchronous and may
   // finish while the web service is open.
   if (sendDiagnostics(now)) return;
-  if (paused_) return;
+  if (paused_ && !servicePollingEnabled_) return;
 
   if (!discoveryDone_) {
     runDiscovery(now);
@@ -181,6 +181,10 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
   }
 
   monitor_.record(message, true, now);
+  if (pid == 0x0B) {
+    ++mapPidStats_.requestCount;
+    mapPidStats_.lastRequestAt = now;
+  }
   waiting_ = true;
   pendingRequest_ = PendingRequest::Mode01;
   pendingPid_ = pid;
@@ -361,6 +365,11 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
     case 0x0B:
       telemetry_.mapKpa.set(static_cast<float>(a), now);
+      if (mapPidRequestPending()) {
+        ++mapPidStats_.responseCount;
+        mapPidStats_.lastResponseAt = now;
+        mapPidStats_.lastResponseLatencyMs = now - requestSentAt_;
+      }
       break;
     case 0x0C:
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
@@ -418,6 +427,16 @@ void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data) {
                            (static_cast<uint32_t>(data[2]) << 8) |
                            static_cast<uint32_t>(data[3]);
   maskKnown_[index] = true;
+  if (basePid == 0x00) {
+    mapPidStats_.supportKnown = true;
+    mapPidStats_.supported = isSupported(0x0B);
+  }
+}
+
+bool ObdClient::pidSupportKnown(uint8_t pid) const {
+  if (pid == 0 || pid > 0x60) return false;
+  const uint8_t group = (pid - 1) / 0x20;
+  return group < 3 && maskKnown_[group];
 }
 
 bool ObdClient::isSupported(uint8_t pid) const {
@@ -427,6 +446,11 @@ bool ObdClient::isSupported(uint8_t pid) const {
   if (group >= 3 || !maskKnown_[group]) return true;  // optimistic fallback
   const uint8_t shift = pid - base;
   return (supportedMasks_[group] & (1UL << (32 - shift))) != 0;
+}
+
+bool ObdClient::mapPidRequestPending() const {
+  return waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
+         pendingPid_ == 0x0B;
 }
 
 void ObdClient::runDiscovery(uint32_t now) {
@@ -492,7 +516,12 @@ void ObdClient::runPolling(uint32_t now) {
 }
 
 void ObdClient::finishPending(bool timeout) {
-  if (timeout) ++telemetry_.obdTimeoutCount;
+  if (timeout) {
+    ++telemetry_.obdTimeoutCount;
+    if (pendingRequest_ == PendingRequest::Mode01 && pendingPid_ == 0x0B) {
+      ++mapPidStats_.timeoutCount;
+    }
+  }
   if (pendingRequest_ == PendingRequest::Mode22 && timeout) {
     mode22_.timeout();
   } else if (pendingRequest_ == PendingRequest::Diagnostics && timeout) {

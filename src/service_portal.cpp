@@ -337,6 +337,8 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/assets/logo", HTTP_POST,
              [this]() { handleAssetFinished(VisualAssetType::Logo); },
              [this]() { handleAssetBody(VisualAssetType::Logo); });
+  server_.on("/api/brightness/temporary", HTTP_POST,
+             [this]() { setTemporaryBrightness(); });
   server_.on("/api/brightness/calibration/reset", HTTP_POST, [this]() {
     touch();
     if (!requireAction("light-calibration-reset", lastLightResetAt_, 10000)) return;
@@ -806,6 +808,54 @@ void ServicePortal::receiveConfig() {
   server_.send(200, "application/json", "{\"ok\":true,\"brightnessAppliedLive\":true,\"rebootRecommended\":true}");
 }
 
+void ServicePortal::setTemporaryBrightness() {
+  touch();
+  if (!server_.hasArg("plain")) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"JSON body required\"}");
+    return;
+  }
+
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain"))) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+
+  const JsonVariantConst clear = request["clear"];
+  if (!clear.isUnbound() && !clear.is<bool>()) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"clear must be a boolean\"}");
+    return;
+  }
+  if (clear.is<bool>() && clear.as<bool>()) {
+    brightness_.clearTemporaryOverride();
+    server_.send(200, "application/json",
+                 "{\"ok\":true,\"temporaryOverride\":false}");
+    return;
+  }
+
+  const JsonVariantConst value = request["percent"];
+  if (!value.is<int>() || value.as<int>() < 5 || value.as<int>() > 100) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"percent must be an integer from 5 to 100\"}");
+    return;
+  }
+  const uint8_t percent = static_cast<uint8_t>(value.as<int>());
+  if (!brightness_.setTemporaryOverride(percent)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"temporary brightness is out of range\"}");
+    return;
+  }
+
+  char response[96];
+  snprintf(response, sizeof(response),
+           "{\"ok\":true,\"temporaryOverride\":true,\"percent\":%u}",
+           static_cast<unsigned>(percent));
+  server_.send(200, "application/json", response);
+}
+
 const char* ServicePortal::fuelModeName(FuelMode mode) {
   switch (mode) {
     case FuelMode::Petrol: return "95";
@@ -830,18 +880,79 @@ void ServicePortal::sendStatus() {
   if (telemetry_.ecuResponseId) snprintf(ecu, sizeof(ecu), "0x%03X", telemetry_.ecuResponseId);
   else strlcpy(ecu, "", sizeof(ecu));
   doc["ecuId"] = ecu;
-  if (telemetry_.mapKpa.valid(now)) doc["boostBar"] = telemetry_.filteredBoostBar;
-  else doc["boostBar"] = nullptr;
-  const bool lpgEnabled = configStore_.data().lpgEnabled;
-  const bool staleLpgSample = !lpgEnabled && telemetry_.fuelMode == FuelMode::Lpg;
-  const FuelMode statusFuelMode = staleLpgSample ? FuelMode::Petrol
-                                                 : telemetry_.fuelMode;
-  doc["fuelMode"] = fuelModeName(statusFuelMode);
+
+  // Keep both raw pressure inputs, their ages and both derived boost values
+  // visible. A stale/missing MAP remains null rather than a fabricated zero.
+  const bool mapFresh = telemetry_.mapKpa.valid(now);
+  if (mapFresh) {
+    doc["mapKpa"] = telemetry_.mapKpa.value;
+    doc["mapAgeMs"] = now - telemetry_.mapKpa.updatedAt;
+    doc["boostRawBar"] = telemetry_.boostBar;
+    doc["boostBar"] = telemetry_.filteredBoostBar;
+    doc["filteredBoostBar"] = telemetry_.filteredBoostBar;
+  } else {
+    doc["mapKpa"] = nullptr;
+    doc["mapAgeMs"] = nullptr;
+    doc["boostRawBar"] = nullptr;
+    doc["boostBar"] = nullptr;
+    doc["filteredBoostBar"] = nullptr;
+  }
+  if (telemetry_.baroKpa.valid(now, 15000)) {
+    doc["baroKpa"] = telemetry_.baroKpa.value;
+    doc["baroAgeMs"] = now - telemetry_.baroKpa.updatedAt;
+  } else {
+    doc["baroKpa"] = nullptr;
+    doc["baroAgeMs"] = nullptr;
+  }
+  doc["effectiveBaroKpa"] = telemetry_.effectiveBaroKpa;
+
+  JsonObject mapPid = doc["mapPid"].to<JsonObject>();
+  const ObdPidStats& mapStats = obdClient_.mapPidStats();
+  mapPid["supportKnown"] = mapStats.supportKnown;
+  if (mapStats.supportKnown) mapPid["supported"] = mapStats.supported;
+  else mapPid["supported"] = nullptr;
+  mapPid["requestCount"] = mapStats.requestCount;
+  mapPid["responseCount"] = mapStats.responseCount;
+  mapPid["timeoutCount"] = mapStats.timeoutCount;
+  mapPid["pending"] = obdClient_.mapPidRequestPending();
+  mapPid["pollingActive"] = obdClient_.standardPollingActive();
+  mapPid["discoveryDone"] = obdClient_.discoveryDone();
+  if (mapStats.lastRequestAt != 0) {
+    mapPid["lastRequestAgeMs"] = now - mapStats.lastRequestAt;
+  } else {
+    mapPid["lastRequestAgeMs"] = nullptr;
+  }
+  if (mapStats.lastResponseAt != 0) {
+    mapPid["lastResponseAgeMs"] = now - mapStats.lastResponseAt;
+    mapPid["lastResponseLatencyMs"] = mapStats.lastResponseLatencyMs;
+  } else {
+    mapPid["lastResponseAgeMs"] = nullptr;
+    mapPid["lastResponseLatencyMs"] = nullptr;
+  }
+
+  const ConfigData& config = configStore_.data();
+  const bool lpgEnabled = config.lpgEnabled;
+  const bool rpmFresh = telemetry_.rpm.valid(now);
+  doc["fuelSelection"] = telemetry_.lpgInputActive ? "LPG" : "95";
+  doc["lpgInputActive"] = telemetry_.lpgInputActive;
   doc["lpgEnabled"] = lpgEnabled;
-  doc["fuelLph"] = telemetry_.fuelValueValid && !staleLpgSample
+  doc["fuelMode"] = fuelModeName(telemetry_.fuelMode);
+  doc["fuelModeReason"] = !rpmFresh ? "rpm_stale"
+                           : telemetry_.rpm.value <= 200.0f ? "engine_off"
+                           : !lpgEnabled ? "lpg_disabled"
+                           : telemetry_.lpgInputActive ? "lpg_input"
+                           : "petrol_default";
+  if (rpmFresh) doc["rpm"] = telemetry_.rpm.value;
+  else doc["rpm"] = nullptr;
+  if (telemetry_.rpm.updatedAt != 0) {
+    doc["rpmAgeMs"] = now - telemetry_.rpm.updatedAt;
+  } else {
+    doc["rpmAgeMs"] = nullptr;
+  }
+  doc["fuelLph"] = telemetry_.fuelValueValid && rpmFresh
                        ? telemetry_.currentFuelLph
                        : 0.0f;
-  doc["tripPetrolLiters"] = engine_.petrolLiters(configStore_.data());
+  doc["tripPetrolLiters"] = engine_.petrolLiters(config);
   doc["tripLpgLiters"] = engine_.lpgLiters(configStore_.data());
   doc["rawSpeedKph"] = telemetry_.rawSpeedKph.valid(now)
                              ? telemetry_.rawSpeedKph.value
@@ -1029,6 +1140,12 @@ void ServicePortal::sendStatus() {
   }
   bl["percent"] = light.currentPercent();
   bl["targetPercent"] = light.targetPercent();
+  bl["temporaryOverrideActive"] = light.temporaryOverrideActive();
+  if (light.temporaryOverrideActive()) {
+    bl["temporaryPercent"] = light.temporaryOverridePercent();
+  } else {
+    bl["temporaryPercent"] = nullptr;
+  }
   bl["pwmDuty"] = light.pwmDuty();
   bl["nightAdc"] = light.nightThreshold();
   bl["dayAdc"] = light.dayThreshold();
@@ -1060,7 +1177,7 @@ void ServicePortal::sendStatus() {
   bl["storageHealthy"] = brightness_.storageHealthy();
 
   String output;
-  output.reserve(3584);
+  output.reserve(4608);
   serializeJson(doc, output);
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);

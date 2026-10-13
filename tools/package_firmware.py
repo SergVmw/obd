@@ -46,16 +46,8 @@ subprocess.run([
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
-# Keep only the current version's generated release artifacts.
-for path in RELEASES.glob("h2-gauge-v*.bin"):
-    if path not in (APP, FACTORY):
-        path.unlink()
-for path in RELEASES.glob("SHA256SUMS-v*.txt"):
-    if path != SUMS:
-        path.unlink()
-for path in RELEASES.glob("README-v*.md"):
-    if path != RELEASE_README:
-        path.unlink()
+# Update only this release's files. Historical releases are immutable local
+# artifacts and must survive packaging of a newer version.
 SUMS.write_text(
     "".join(f"{digest(path)}  {path.name}\n" for path in (APP, FACTORY)),
     encoding="ascii",

@@ -111,6 +111,9 @@ void enterServiceMode() {
   if (serviceMode) return;
   serviceMode = true;
   obdClient.pause(true);
+  // Keep the ordinary Mode 01 discovery/poller alive in the portal so live MAP
+  // and fuel-input state can be inspected. Auto DTC scans remain paused.
+  obdClient.setServicePollingEnabled(true);
   const bool legacyTripOk =
       !configStore.data().saveTrip || tripStore.save(trip);
   const bool legacyCalibrationOk =
@@ -255,6 +258,8 @@ void loop() {
     obdClient.loop(now);
 #endif
     serviceDtcPersistence(now);
+    const bool lpgActive = lpgInput.update(now, configStore.data());
+    telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
     servicePortal.loop();
     if (event == ButtonEvent::ServiceHold) {
       brightnessManager.checkpoint();

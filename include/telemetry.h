@@ -76,6 +76,7 @@ struct TelemetryData {
   bool dfcoActive = false;
   float fuelTrimSumPercent = 0.0f;
   bool fuelTrimWarning = false;
+  bool lpgInputActive = false;
   FuelMode fuelMode = FuelMode::Unknown;
 
   bool obdConnected(uint32_t now) const {
@@ -148,6 +149,10 @@ class TelemetryEngine {
   explicit TelemetryEngine(TelemetryData& data) : data_(data) {}
 
   void begin(TripState* trip, PetrolCalibrationState* petrolCalibration);
+  // Refreshes live derivatives/modes without integrating fuel or distance into
+  // trip state. Service mode uses this while standard OBD polling stays active.
+  void refreshLiveTelemetry(uint32_t now, const ConfigData& config,
+                            bool lpgActive);
   void update(uint32_t now, const ConfigData& config, bool lpgActive);
   void captureStartupBaro();
   void resetTrip();

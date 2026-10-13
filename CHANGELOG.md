@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.3 — 2026-10-13
+
+Production-релиз поверх 0.4.2; Config schema остаётся 6. Выпущен отдельный app/factory комплект, предыдущие бинарники 0.4.2 и их SHA-256 сохранены без изменений.
+
+### Яркость и топливо в сервисе
+
+- Сохраняемые настройки «День»/«Ночь» представлены range-ползунками. Независимый текущий ползунок сразу меняет PWM в диапазоне 5–100%, не пишет в конфигурацию и действует до reboot; есть ручной возврат к сохранённому режиму.
+- Сервисный loop продолжает debounce LPG-входа и обновляет вычисленный fuel mode с учётом свежести RPM, не интегрируя поездку. API/UI разделяют выбранное топливо по входу и режим телеметрии.
+
+### Штатный PID 0B и release
+
+- Существующий Mode 01 discovery/poller сохранён. В сервисе работает тот же обычный poller; в `/api/status`/веб-интерфейсе наблюдаемы support-mask PID `0x0B`, request/response/timeout counters, возраст/latency, сырые MAP/BARO и calculated/filtered boost. Нет свежих данных — отображается `null`/прочерк, не синтетический ноль.
+- `fix3b`-specific self-test/diagnostic CAN flow в production не переносился; CAN wiring и bitrate не менялись.
+- Пройдены host, static, font и browser gates, а также PlatformIO build/manifest/package checks. Manifest: `0.4.3 / esp32s3-n16r8`, app offset `0x1c314`. App: 1 198 752 байта, SHA-256 `52b36d55420d6aa1866777efbf90021638e92a4a1655dd291ced914aca9d43f6`; factory: 1 264 288 байт, SHA-256 `5cd473554172237454be5e5a89854e1463d2106d34361d328922d3c17c30141d`.
+- 0.4.3 локально собран и проверен, но не устанавливался на автомобиль. TWAI self-test не выполнялся и в release отсутствует.
+
+Подробности и полные контрольные суммы: [`releases/README-v0.4.3.md`](releases/README-v0.4.3.md), [`releases/SHA256SUMS-v0.4.3.txt`](releases/SHA256SUMS-v0.4.3.txt).
+
 ## 0.4.2 — 2026-09-30
 
 Corrective release по результатам дополнительного аудита 0.4.1. Production-код

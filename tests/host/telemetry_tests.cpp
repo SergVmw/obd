@@ -203,6 +203,36 @@ void testDfcoThresholdAndZeroFuelValidity() {
   CHECK(near(rig.data.currentFuelRawLph, 12.0));
 }
 
+void testServiceLiveRefreshDoesNotIntegrateTrip() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.lpgEnabled = true;
+  rig.data.rpm.set(1800.0f, 1000);
+  rig.data.rawSpeedKph.set(12.0f, 1000);
+  rig.data.mapKpa.set(160.0f, 1000);
+  rig.data.baroKpa.set(100.0f, 1000);
+  rig.data.fuelRateLph.set(8.0f, 1000);
+  rig.engine.refreshLiveTelemetry(1000, config, true);
+
+  CHECK(rig.data.lpgInputActive);
+  CHECK(rig.data.fuelMode == FuelMode::Lpg);
+  CHECK(near(rig.data.speedKph.value, 12.0));
+  CHECK(near(rig.data.effectiveBaroKpa, 100.0));
+  CHECK(near(rig.data.boostBar, 0.6));
+  CHECK(near(rig.data.filteredBoostBar, 0.6));
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.trip.rawLpgLiters, 0.0));
+  CHECK(rig.trip.lpgSeconds == 0);
+
+  // The LPG input is still visible when RPM has aged out; only the computed
+  // operating mode becomes unknown, and service refresh still books no trip.
+  rig.engine.refreshLiveTelemetry(4001, config, true);
+  CHECK(rig.data.lpgInputActive);
+  CHECK(rig.data.fuelMode == FuelMode::Unknown);
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.trip.rawLpgLiters, 0.0));
+}
+
 void testFuelModeAndFuelTrimWarningDelay() {
   Rig rig;
   ConfigData config = testConfig();
@@ -384,6 +414,8 @@ int main() {
        testFuelSourceSelectionAndStaleFallback);
   test("LPG uses MAF and separate counters", testLpgUsesMafAndTracksSeparateCounters);
   test("DFCO threshold", testDfcoThresholdAndZeroFuelValidity);
+  test("service live refresh without trip integration",
+       testServiceLiveRefreshDoesNotIntegrateTrip);
   test("fuel mode and trim warning delay", testFuelModeAndFuelTrimWarningDelay);
   test("barometric pressure source selection", testBaroSelectionAndStartupMapCapture);
   test("boost derivation and smoothing", testBoostDerivationAndSmoothing);

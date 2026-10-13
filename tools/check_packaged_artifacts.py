@@ -47,9 +47,24 @@ assert len(factory) == 0x10000 + len(app)
 
 expected = "".join(f"{sha(path)}  {path.name}\n" for path in (APP, FACTORY))
 assert SUMS.read_text("ascii") == expected
-assert sorted(path.name for path in (ROOT / "releases").glob("h2-gauge-v*.bin")) == sorted((APP.name, FACTORY.name))
+release_dir = ROOT / "releases"
+assert sorted(path.name for path in release_dir.glob(f"h2-gauge-v{VERSION}-*.bin")) == sorted((APP.name, FACTORY.name))
 assert RELEASE_README.is_file()
-assert [path.name for path in (ROOT / "releases").glob("README-v*.md")] == [RELEASE_README.name]
+
+# Keep the previous production release intact while packaging the new one.
+previous_version = "0.4.2"
+previous_names = (
+    f"h2-gauge-v{previous_version}-{TARGET}.bin",
+    f"h2-gauge-v{previous_version}-{TARGET}-factory.bin",
+    f"SHA256SUMS-v{previous_version}.txt",
+    f"README-v{previous_version}.md",
+)
+assert all((release_dir / name).is_file() for name in previous_names), previous_names
+previous_sums = (release_dir / f"SHA256SUMS-v{previous_version}.txt").read_text("ascii")
+for line in previous_sums.splitlines():
+    expected_hash, filename = line.split(None, 1)
+    filename = filename.strip()
+    assert sha(release_dir / filename) == expected_hash, f"historical release changed: {filename}"
 
 print(
     f"Artifacts OK: app={len(app)} ({len(app) % 1436}-byte final raw "

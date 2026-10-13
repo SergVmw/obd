@@ -10,6 +10,17 @@
 #include "telemetry.h"
 #include "pins.h"
 
+struct ObdPidStats {
+  bool supportKnown = false;
+  bool supported = false;
+  uint32_t requestCount = 0;
+  uint32_t responseCount = 0;
+  uint32_t timeoutCount = 0;
+  uint32_t lastRequestAt = 0;
+  uint32_t lastResponseAt = 0;
+  uint32_t lastResponseLatencyMs = 0;
+};
+
 class ObdClient {
  public:
   ObdClient(TelemetryData& telemetry, const ConfigData& config,
@@ -22,8 +33,19 @@ class ObdClient {
   void shutdown();
   void loop(uint32_t now);
   void pause(bool paused) { paused_ = paused; }
+  // In the service portal only the ordinary Mode 01 poller/discovery may run;
+  // automatic DTC scans remain paused and no diagnostic self-test is added.
+  void setServicePollingEnabled(bool enabled) {
+    servicePollingEnabled_ = enabled;
+  }
+  bool standardPollingActive() const {
+    return installed_ && (!paused_ || servicePollingEnabled_);
+  }
   bool isSupported(uint8_t pid) const;
+  bool pidSupportKnown(uint8_t pid) const;
   bool discoveryDone() const { return discoveryDone_; }
+  bool mapPidRequestPending() const;
+  const ObdPidStats& mapPidStats() const { return mapPidStats_; }
   bool requestDtcScan(uint32_t now) { return diagnostics_.requestScan(now); }
   bool requestDtcClear(uint32_t now) { return diagnostics_.requestClear(now); }
   bool confirmDtcPreclearPreserved(bool success, uint32_t now) {
@@ -73,6 +95,7 @@ class ObdClient {
   Mode22Transport mode22_;
   bool installed_ = false;
   bool paused_ = false;
+  bool servicePollingEnabled_ = false;
   bool recovering_ = false;
   uint32_t recoveryRequestedAt_ = 0;
 
@@ -89,6 +112,7 @@ class ObdClient {
   uint8_t pollCursor_ = 0;
   uint32_t supportedMasks_[3]{};
   bool maskKnown_[3]{};
+  ObdPidStats mapPidStats_{};
 
   // RPM is discovered first so the first valid PID 0C response binds the
   // engine ECU before support masks or normal telemetry are accepted.

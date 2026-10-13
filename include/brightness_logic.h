@@ -48,7 +48,11 @@ class BrightnessLogic {
               const BrightnessSettings& settings,
               uint8_t dayPercent, uint8_t nightPercent);
   void resetCalibration(uint32_t now);
+  bool setTemporaryOverride(uint8_t percent);
+  void clearTemporaryOverride();
 
+  bool temporaryOverrideActive() const { return temporaryOverrideActive_; }
+  uint8_t temporaryOverridePercent() const { return temporaryOverridePercent_; }
   bool hasSample() const { return hasSample_; }
   uint16_t rawAdc() const { return rawAdc_; }
   uint16_t filteredAdc() const;
@@ -86,6 +90,8 @@ class BrightnessLogic {
   float controlAdc_ = 0.0f;
   float currentPercent_ = 82.0f;
   float targetPercent_ = 82.0f;
+  bool temporaryOverrideActive_ = false;
+  uint8_t temporaryOverridePercent_ = 82;
   uint16_t effectiveNightAdc_ = 600;
   uint16_t effectiveDayAdc_ = 3000;
   uint32_t lastSampleAt_ = 0;

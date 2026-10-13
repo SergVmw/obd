@@ -10,6 +10,7 @@ const vm = require('node:vm');
   const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8');
   let saved = vm.runInNewContext('(' + html.match(/const DEFAULT_CONFIG=(.*);\n/)[1] + ')');
   let posts = 0, resetHeader = '', otaHeader = '', otaPreflightHeader = '';
+  let temporaryOverride = false, temporaryPercent = 54;
   let dtcScanHeader = '', dtcClearHeader = '', dtcClearBody = null;
   let otaBytes = 0, otaPreflights = 0, otaBehavior = 'jsonError';
   let otaPreflightReject = true, otaStatusError = null, offline = false;
@@ -75,6 +76,7 @@ const vm = require('node:vm');
   const browser = await chromium.launch(launchOptions);
   try {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const setRange = (id, value) => page.locator('#' + id).evaluate((el, next) => { el.value = String(next); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, value);
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     page.on('dialog', d => d.accept());
@@ -88,8 +90,15 @@ const vm = require('node:vm');
       }
       if (url.pathname === '/api/status') {
         if (offline) return route.fulfill({ status: 503, body: 'test offline' });
-        return json({ version: '0.4.2', target: 'ESP32-S3', obdConnected: false,
-          boostBar: null, fuelMode: '95', dtc: { milKnown: true, milCommandedOn: false,
+        return json({ version: '0.4.3', target: 'ESP32-S3', obdConnected: false,
+          mapKpa: 32, mapAgeMs: 350, baroKpa: 99, baroAgeMs: 550,
+          effectiveBaroKpa: 99, boostRawBar: -0.67, boostBar: -0.67,
+          mapPid: { supportKnown: true, supported: true, requestCount: 4,
+            responseCount: 3, timeoutCount: 1, lastResponseLatencyMs: 34,
+            pending: false, pollingActive: true, discoveryDone: true },
+          fuelSelection: 'LPG', lpgEnabled: true, lpgInputActive: true,
+          fuelMode: 'UNKNOWN', fuelModeReason: 'rpm_stale', rpm: null, rpmAgeMs: 3500,
+          dtc: { milKnown: true, milCommandedOn: false,
             milLatchedThisBoot: true, ecuReportedCount: 1, storedCount: 1,
             pendingCount: 0, permanentCount: 0, firstCode: 'P0301', misfire: true,
             scanInProgress: false }, ota: { runningPartition: 'app0', runningAddress: 0x10000,
@@ -98,15 +107,18 @@ const vm = require('node:vm');
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
             slots: [
               { partition: 'app0', address: 0x10000, descriptorReadable: true,
-                versionKnown: true, version: '0.4.2', versionSource: 'manifest',
+                versionKnown: true, version: '0.4.3', versionSource: 'manifest',
                 running: true, bootSelected: true, nextUpdate: false, state: 'valid' },
               { partition: 'app1', address: 0x410000, descriptorReadable: true,
                 versionKnown: true, version: '0.3.6', versionSource: 'known_legacy',
                 running: false, bootSelected: false, nextUpdate: true, state: 'valid' },
             ],
             last: otaLast }, 
-          brightness: { ...sample, mode: saved.display.brightnessMode,
-            manualNight: saved.display.manualNight, calibrationLearning: saved.display.brightnessMode === 0 && saved.display.lightAutoCalibrate },
+          brightness: { ...sample, percent: temporaryOverride ? temporaryPercent : sample.percent,
+            temporaryOverrideActive: temporaryOverride,
+            temporaryPercent: temporaryOverride ? temporaryPercent : null,
+            mode: saved.display.brightnessMode, manualNight: saved.display.manualNight,
+            calibrationLearning: saved.display.brightnessMode === 0 && saved.display.lightAutoCalibrate },
           persistence: { littlefsMounted: true, littlefsStatus: 'mounted', journalHealthy: true,
             nvsHealthy: true, latestSequence: 44, journalSequence: 44, nvsSequence: 43,
             journalWrites: 5, nvsWrites: 2, journalFailures: 0, nvsFailures: 0,
@@ -175,6 +187,12 @@ const vm = require('node:vm');
         dtcClearBody = req.postDataJSON();
         return json({ ok: true, accepted: true, operation: 'preclear_scan' });
       }
+      if (url.pathname === '/api/brightness/temporary') {
+        const body = req.postDataJSON();
+        if (body.clear) temporaryOverride = false;
+        else { assert.ok(Number.isInteger(body.percent) && body.percent >= 5 && body.percent <= 100); temporaryOverride = true; temporaryPercent = body.percent; }
+        return json({ ok: true, temporaryOverride, percent: temporaryPercent });
+      }
       if (url.pathname === '/api/brightness/calibration/reset') {
         resetHeader = req.headers()['x-h2g-action'];
         sample.observedMinAdc = sample.observedMaxAdc = null;
@@ -184,7 +202,7 @@ const vm = require('node:vm');
         otaPreflightHeader = req.headers()['x-h2g-action'];
         const body = req.postDataJSON();
         ++otaPreflights;
-        assert.equal(body.filename, 'h2-gauge-v0.4.2-esp32s3-n16r8.bin');
+        assert.equal(body.filename, 'h2-gauge-v0.4.3-esp32s3-n16r8.bin');
         assert.equal(body.size, 5000);
         assert.equal(body.probeHex.length, 576);
         assert.match(body.probeHex, /^(a5)+$/);
@@ -227,10 +245,10 @@ const vm = require('node:vm');
     });
     await page.goto('http://h2g.test/');
     await page.waitForFunction(() => document.getElementById('lightRaw').textContent === '1830');
-    assert.equal(await page.locator('#otaFirmware').textContent(), '0.4.2');
-    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.4.2');
+    assert.equal(await page.locator('#otaFirmware').textContent(), '0.4.3');
+    assert.equal(await page.locator('#slotCurrentVersion').textContent(), '0.4.3');
     assert.equal(await page.locator('#slotCurrentMeta').textContent(), 'app0 · запущена');
-    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.4.2');
+    assert.equal(await page.locator('#slotApp0Version').textContent(), '0.4.3');
     assert.match(await page.locator('#slotApp0Meta').textContent(), /запущен/);
     assert.equal(await page.locator('#slotApp0Card').getAttribute('class'), 'card slotCard running');
     assert.equal(await page.locator('#slotApp1Version').textContent(), '0.3.6');
@@ -242,12 +260,40 @@ const vm = require('node:vm');
     assert.match(await page.locator('#persistRuntime').textContent(), /CRC: OK/);
     assert.match(await page.locator('#persistRuntime').textContent(), /3[,.]7 с \/ 24 с/);
     assert.match(await page.locator('#persistRuntime').textContent(), /хвост целый/);
+    await page.waitForFunction(() => document.getElementById('mapRaw').textContent === '32 kPa');
+    assert.equal(await page.locator('#sFuel').textContent(), 'LPG');
+    assert.match(await page.locator('#sFuelDetail').textContent(), /режим UNKNOWN \(RPM устарели\)/);
+    assert.match(await page.locator('#sFuelDetail').textContent(), /Вход ГБО активен/);
+    assert.equal(await page.locator('#mapPidSupport').textContent(), 'поддерживается');
+    assert.equal(await page.locator('#mapPidRequests').textContent(), '4');
+    assert.equal(await page.locator('#mapPidResponses').textContent(), '3');
+    assert.equal(await page.locator('#mapPidTimeouts').textContent(), '1');
+    assert.match(await page.locator('#mapLive').textContent(), /совпавшие ответы: 3/);
+    await page.evaluate(() => mapStatus({ mapPid: { supportKnown: true, supported: false,
+      requestCount: 0, responseCount: 0, timeoutCount: 0, pollingActive: true,
+      discoveryDone: true }, mapKpa: null, baroKpa: null, effectiveBaroKpa: 99,
+      boostRawBar: null, boostBar: null }));
+    assert.equal(await page.locator('#mapRaw').textContent(), '—');
+    assert.equal(await page.locator('#mapBoostRaw').textContent(), '—');
+    assert.match(await page.locator('#mapLive').textContent(), /неподдерживаемый/);
+    await page.evaluate(() => status());
+    await page.waitForFunction(() => document.getElementById('mapPidSupport').textContent === 'поддерживается');
     await page.waitForFunction(() => document.getElementById('dtcRows').textContent.includes('P0301'));
     assert.match(await page.locator('#sDtc').textContent(), /ПРОПУСКИ P0301/);
     assert.match(await page.locator('#dtcState').textContent(), /Mode 03: OK/);
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /P0302/);
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /Исчез \/ история/);
     assert.match(await page.locator('#dtcHistoryState').textContent(), /LittleFS: OK, NVS: OK, CRC: OK/);
+    const savedBeforeTemporary = JSON.stringify(saved.display), postsBeforeTemporary = posts;
+    await setRange('temporaryBrightness', 47);
+    await page.waitForFunction(() => document.getElementById('temporaryBrightnessState').textContent.includes('Временное значение 47%'));
+    assert.equal(posts, postsBeforeTemporary, 'temporary brightness must not POST saved configuration');
+    assert.equal(JSON.stringify(saved.display), savedBeforeTemporary, 'temporary override changed saved day/night values');
+    assert.equal(await page.locator('#temporaryBrightnessValue').textContent(), '47%');
+    assert.equal(await page.locator('#clearTemporaryBrightness').isEnabled(), true);
+    await page.click('#clearTemporaryBrightness');
+    await page.waitForFunction(() => document.getElementById('temporaryBrightnessState').textContent.includes('Временного переопределения нет'));
+    assert.equal(posts, postsBeforeTemporary);
     dtcFixture.scan.responsePending = true;
     dtcFixture.scan.responsePendingCount = 3;
     dtcFixture.clear.postClearVerificationPending = true;
@@ -320,12 +366,12 @@ const vm = require('node:vm');
     await page.fill('#lightNightAdc', '700');
     await page.evaluate(() => status());
     assert.equal(await page.locator('#lightNightAdc').inputValue(), '700', 'live poll overwrote an unsaved field');
-    await page.fill('#brightnessDay', '20');
-    await page.fill('#brightnessNight', '26');
+    await setRange('brightnessDay', 20);
+    await setRange('brightnessNight', 26);
     await page.click('#save');
     assert.match(await page.locator('#msg').textContent(), /Ночная яркость/);
     assert.equal(posts, 0);
-    await page.fill('#brightnessDay', '82');
+    await setRange('brightnessDay', 82);
     await page.fill('#lightDayAdc', '850');
     await page.click('#save');
     assert.match(await page.locator('#msg').textContent(), /минимум на 200/);
@@ -368,7 +414,7 @@ const vm = require('node:vm');
     await page.locator('#firmware').setInputFiles({ name: 'too-large.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2097153) });
     assert.equal(await page.locator('#install').isDisabled(), true);
     assert.match(await page.locator('#otaText').textContent(), /2\.00 МБ/);
-    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.4.2-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
+    await page.locator('#firmware').setInputFiles({ name: 'h2-gauge-v0.4.3-esp32s3-n16r8.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(5000, 0xA5) });
     assert.equal(await page.locator('#install').isEnabled(), true);
     await page.click('#install');
     await page.waitForFunction(() => document.getElementById('otaText').textContent.includes('[invalid_image]'));

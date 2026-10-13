@@ -138,18 +138,15 @@ float TelemetryEngine::calculateMafFuelLph(float mafGps, float phi,
   return mafGps * phi * 3600.0f / (afr * density);
 }
 
-void TelemetryEngine::update(uint32_t now, const ConfigData& config,
-                             bool lpgActive) {
-  if (!trip_) return;
-
+void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
+                                           const ConfigData& config,
+                                           bool lpgActive) {
   uint32_t dtMs = now - lastUpdateAt_;
   lastUpdateAt_ = now;
   if (dtMs == 0 || dtMs > 2000) dtMs = 0;
-  const float dtSec = dtMs / 1000.0f;
 
-  // Keep the PID 0D value untouched and derive one corrected speed used by
-  // every display, distance and L/100 km calculation. Preserve the original
-  // timestamp so a stale PID cannot be made fresh by this fast update loop.
+  // Preserve each source timestamp: this derived speed must not make a stale
+  // PID 0D sample appear fresh to the dashboard or trip accounting.
   if (!isnan(data_.rawSpeedKph.value)) {
     data_.speedKph.value =
         fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
@@ -163,7 +160,6 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   if (data_.mapKpa.valid(now)) {
     data_.boostBar = (data_.mapKpa.value - data_.effectiveBaroKpa) / 100.0f +
                      config.boostOffsetBar;
-
     if (!boostFilterInitialized_ || config.smoothingMs == 0) {
       data_.filteredBoostBar = data_.boostBar;
       boostFilterInitialized_ = true;
@@ -176,17 +172,28 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     }
   }
 
+  data_.lpgInputActive = config.lpgEnabled && lpgActive;
   const bool rpmValid = data_.rpm.valid(now);
-  const bool engineRunning = rpmValid && data_.rpm.value > 200.0f;
   if (!rpmValid) {
     data_.fuelMode = FuelMode::Unknown;
-  } else if (!engineRunning) {
+  } else if (data_.rpm.value <= 200.0f) {
     data_.fuelMode = FuelMode::Off;
   } else {
-    data_.fuelMode = (config.lpgEnabled && lpgActive) ? FuelMode::Lpg
-                                                      : FuelMode::Petrol;
+    data_.fuelMode = data_.lpgInputActive ? FuelMode::Lpg : FuelMode::Petrol;
   }
+}
 
+void TelemetryEngine::update(uint32_t now, const ConfigData& config,
+                             bool lpgActive) {
+  if (!trip_) return;
+
+  uint32_t dtMs = now - lastUpdateAt_;
+  if (dtMs == 0 || dtMs > 2000) dtMs = 0;
+  const float dtSec = dtMs / 1000.0f;
+  refreshLiveTelemetry(now, config, lpgActive);
+
+  const bool rpmValid = data_.rpm.valid(now);
+  const bool engineRunning = rpmValid && data_.rpm.value > 200.0f;
   data_.fuelTrimWarning = false;
   if (config.fuelTrimEnabled() && engineRunning &&
       data_.fuelMode == FuelMode::Lpg &&

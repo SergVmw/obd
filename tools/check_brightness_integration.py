@@ -71,6 +71,18 @@ assert 'light-calibration-reset' in html and 'light-calibration-reset' in portal
 assert 'brightnessStatus(null)' in html, "stale live readings must be cleared on failure"
 assert 'BrightnessLogic::validSettings' in portal
 assert portal.index('BrightnessLogic::validSettings') < portal.index('configStore_.data() = candidate')
+for control in ('brightnessDay', 'brightnessNight', 'temporaryBrightness'):
+    assert re.search(rf'id="{control}"[^>]*type="range"', html), f"{control} must be a slider"
+assert 'brightnessDayValue' in ids and 'brightnessNightValue' in ids
+assert 'temporaryBrightnessValue' in ids and 'clearTemporaryBrightness' in ids
+assert '/api/brightness/temporary' in html and '/api/brightness/temporary' in portal
+assert 'setTemporaryOverride' in portal and 'temporaryOverrideActive' in portal
+assert 'temporaryPercent' in portal and 'clearTemporaryOverride' in portal
+assert 'temporaryOverrideActive_' in (ROOT / 'src/brightness_logic.cpp').read_text(encoding='utf-8')
+assert 'temporary brightness' in (ROOT / 'tests/host/brightness_tests.cpp').read_text(encoding='utf-8')
+temporary_handler = portal[portal.index('void ServicePortal::setTemporaryBrightness()'):portal.index('const char* ServicePortal::fuelModeName')]
+assert 'configStore_.save' not in temporary_handler, "temporary brightness must never be persisted"
+assert 'refreshLiveTelemetry(now' in main, "service status must refresh fuel mode/boost without counting a trip"
 compressed = bytes(int(h, 16) for h in re.findall(r'0x([0-9a-fA-F]{2})', embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), "embedded UI is stale"
 print(f"Brightness/config integration: UI/API validation, GPIO6/7, PWM startup, service updates, protected reset and {len(compressed)}-byte embedded gzip OK")
