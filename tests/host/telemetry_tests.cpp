@@ -111,6 +111,10 @@ void testMafFormulaEquivalenceRatioAndCorrection() {
   rig.data.rpm.set(1800.0f, 2000);
   rig.data.mafGps.set(10.0f, 2000);
   rig.data.equivalenceRatio.set(1.1f, 2000);
+  // Speed is supplied because the trip now refuses to integrate an interval
+  // whose speed is unknown, not only one whose fuel is unknown. Standing is the
+  // realistic case for an idle engine, and it still banks the litres.
+  rig.data.rawSpeedKph.set(0.0f, 2000);
 
   rig.engine.update(2000, config, false);
 
@@ -247,6 +251,9 @@ void testDfcoThresholdAndZeroFuelValidity() {
   rig.data.rpm.set(1800.0f, 2000);
   rig.data.fuelRateLph.set(12.0f, 2000);
   rig.data.throttlePercent.set(1.0f, 2000);
+  // Supplied so the interval integrates at all; DFCO itself is what this test
+  // is about, and the trip now needs a known speed as well as a known fuel.
+  rig.data.rawSpeedKph.set(0.0f, 2000);
   rig.engine.update(2000, config, false);
   CHECK(rig.data.dfcoActive);
   CHECK(rig.data.fuelValueValid);
@@ -537,6 +544,58 @@ void testPureIdlingYieldsNoAverage() {
   CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
 }
 
+void testStaleSpeedDoesNotBankFuelAsStanding() {
+  // The interval must be dropped, not banked. Before this was enforced, fuel
+  // kept accumulating while the distance stood still and every litre of it was
+  // booked as standing: the average climbed on a frozen denominator and the
+  // standing share ran towards 100%. Standing has to mean "speed known, zero".
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+
+  runSegment(rig, config, 1000, 600, 2000.0f, 10.0f, 50.0f);
+  const double litresBefore = rig.trip.rawPetrolLiters;
+  const double idleBefore = rig.trip.idlePetrolLiters;
+  const double distanceBefore = rig.trip.totalDistanceKm;
+  CHECK(litresBefore > 0.0);
+  CHECK(distanceBefore > 0.0);
+
+  // Fuel keeps arriving on time; PID 0D goes quiet and the 2 s window lapses.
+  for (int i = 0; i < 10; ++i) {
+    const uint32_t t = 700000 + static_cast<uint32_t>(i) * 1000U;
+    rig.data.rpm.set(2000.0f, t);
+    rig.data.mafGps.set(10.0f, t);
+    rig.engine.update(t, config, false);
+  }
+  CHECK(near(rig.trip.rawPetrolLiters, litresBefore));
+  CHECK(near(rig.trip.idlePetrolLiters, idleBefore));
+  CHECK(near(rig.trip.totalDistanceKm, distanceBefore));
+  CHECK(rig.engine.droppedNoSpeedIntervals() >= 5);
+  // The average has to survive the outage instead of drifting upwards.
+  const float averageAfter = rig.engine.averageForCurrentFuel(config);
+  const float movingAfter = rig.engine.averageWhileMoving(config);
+  CHECK(averageAfter > 0.0f);
+  CHECK(near(averageAfter, movingAfter));
+}
+
+void testLongLoopStallIsCountedNotIntegrated() {
+  // A gap long enough to invalidate the signals spanning it is dropped, and the
+  // drop is reported rather than silently shortening the trip.
+  Rig rig;
+  ConfigData config = testConfig();
+  runSegment(rig, config, 1000, 120, 2000.0f, 10.0f, 50.0f);
+  const double distanceBefore = rig.trip.totalDistanceKm;
+  const uint32_t stallsBefore = rig.engine.droppedStallIntervals();
+
+  // A 10 s gap: integrating it would add about 138 km and the fuel for them.
+  rig.data.rpm.set(2000.0f, 400000);
+  rig.data.mafGps.set(10.0f, 400000);
+  rig.data.rawSpeedKph.set(50.0f, 400000);
+  rig.engine.update(400000, config, false);
+  CHECK(near(rig.trip.totalDistanceKm, distanceBefore));
+  CHECK(rig.engine.droppedStallIntervals() == stallsBefore + 1);
+}
+
 void testStalePidSamplesDoNotCountFuelOrDistance() {
   Rig rig;
   ConfigData config = testConfig();
@@ -625,6 +684,9 @@ int main() {
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
   test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
   test("pure idling yields no average", testPureIdlingYieldsNoAverage);
+  test("stale speed drops the interval instead of banking idle fuel",
+       testStaleSpeedDoesNotBankFuelAsStanding);
+  test("long loop stall is counted, not integrated", testLongLoopStallIsCountedNotIntegrated);
   test("stale samples excluded from trip", testStalePidSamplesDoNotCountFuelOrDistance);
   test("trip reset versus calibration state", testTripResetAndPetrolCalibrationAreIndependent);
   test("invalid fuel samples rejected", testInvalidMafAndFuelRateAreRejected);

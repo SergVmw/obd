@@ -244,8 +244,16 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
                              bool lpgActive) {
   if (!trip_) return;
 
-  uint32_t dtMs = now - lastUpdateAt_;
-  if (dtMs == 0 || dtMs > 2000) dtMs = 0;
+  const uint32_t elapsedMs = now - lastUpdateAt_;
+  uint32_t dtMs = elapsedMs;
+  // A long gap is dropped rather than integrated across: the signals that
+  // span it are stale, and charging the trip for a period nothing was
+  // measuring would bias every average. Kept as a counter because the loss is
+  // otherwise invisible — the trip simply looks short.
+  if (dtMs == 0 || dtMs > 2000) {
+    if (elapsedMs > 2000) ++droppedStallIntervals_;
+    dtMs = 0;
+  }
   const float dtSec = dtMs / 1000.0f;
   refreshLiveTelemetry(now, config, lpgActive);
 
@@ -341,16 +349,29 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     data_.consumptionIsPerHour = true;
   }
 
-  if (dtMs == 0 || !engineRunning || !data_.fuelValueValid) return;
+  // Speed needs the same treatment as fuel. With fuel valid but speed stale
+  // the interval used to bank litres with no kilometres, and because
+  // "distance == 0" was read as standing, all of them landed in the idle
+  // bucket: the trip average climbed while the denominator stood still, and
+  // the standing share drifted towards 100%. An unknown speed cannot be
+  // classified as moving or as standing, so the interval is dropped instead —
+  // the same choice already made for an unknown fuel flow.
+  if (dtMs == 0 || !engineRunning || !data_.fuelValueValid || !speedValid) {
+    if (engineRunning && data_.fuelValueValid && !speedValid) {
+      ++droppedNoSpeedIntervals_;
+    }
+    return;
+  }
 
   const double rawLiters = data_.currentFuelRawLph * dtSec / 3600.0;
-  const double distance = speedValid
-                              ? max(0.0f, data_.speedKph.value) * dtSec / 3600.0
-                              : 0.0;
-  // Zero distance with the engine running is standing: a traffic queue, a
-  // drive-through, a show. Split the fuel out so the trip average and the
-  // moving average can be reported separately. The tank calibration keeps
-  // using the undivided total, because the engine burnt it either way.
+  // Speed is known-good here, so zero distance means the vehicle is standing
+  // rather than merely unmeasured. That distinction is what keeps a queue out
+  // of the moving average, and a lost PID 0D out of the standing share.
+  const double distance =
+      fmax(0.0, static_cast<double>(data_.speedKph.value)) * dtSec / 3600.0;
+  // Split the fuel so the trip average and the moving average can be reported
+  // separately. The tank calibration keeps using the undivided total, because
+  // the engine burnt it either way.
   const double idleLiters = distance > 0.0 ? 0.0 : rawLiters;
 
   trip_->totalDistanceKm += distance;

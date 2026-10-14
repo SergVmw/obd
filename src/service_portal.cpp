@@ -1179,6 +1179,13 @@ void ServicePortal::sendStatus() {
   }
   doc["tripIdleSharePercent"] = engine_.idleShareOfTrip();
   doc["tripIdleLitersPerHour"] = engine_.idleLitersPerHour(config);
+  // The trip totals are correct without these, but a device that drops a
+  // meaningful share of its samples reports a short trip that still looks
+  // plausible, so the losses are counted rather than left to be guessed at.
+  doc["droppedIntervals"] = JsonObject();
+  JsonObject dropped = doc["droppedIntervals"].to<JsonObject>();
+  dropped["longLoopGap"] = engine_.droppedStallIntervals();
+  dropped["speedUnknown"] = engine_.droppedNoSpeedIntervals();
   doc["rawSpeedKph"] = telemetry_.rawSpeedKph.valid(now)
                              ? telemetry_.rawSpeedKph.value
                              : 0.0f;

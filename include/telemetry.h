@@ -196,6 +196,13 @@ class TelemetryEngine {
   // queue, which per-100km figures cannot express.
   float idleLitersPerHour(const ConfigData& config) const;
   float petrolCalibrationLiters(const ConfigData& config) const;
+
+  // Intervals the trip refused to integrate, and why. Both counters are
+  // cumulative since boot and are only there to be read: the trip totals
+  // themselves are correct either way, but a device that quietly drops a
+  // third of its samples produces a short trip that looks plausible.
+  uint32_t droppedStallIntervals() const { return droppedStallIntervals_; }
+  uint32_t droppedNoSpeedIntervals() const { return droppedNoSpeedIntervals_; }
   const TripState& trip() const { return *trip_; }
   TripState& trip() { return *trip_; }
   const PetrolCalibrationState& petrolCalibration() const {
@@ -218,4 +225,6 @@ class TelemetryEngine {
   uint32_t petrolTimeRemainderMs_ = 0;
   uint32_t lpgTimeRemainderMs_ = 0;
   uint32_t calibrationTimeRemainderMs_ = 0;
+  uint32_t droppedStallIntervals_ = 0;
+  uint32_t droppedNoSpeedIntervals_ = 0;
 };
