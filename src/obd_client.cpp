@@ -594,8 +594,12 @@ void ObdClient::runDiscovery(uint32_t now) {
 
 void ObdClient::runPolling(uint32_t now) {
   constexpr uint8_t kPollCount = sizeof(poll_) / sizeof(poll_[0]);
+  // Deliberately keyed on the raw PID 0D reading, never on the corrected
+  // speed: the correction must not be able to influence the poll profile. The
+  // fuel and display paths agree with this decision by construction, because
+  // telemetry.cpp zeroes the corrected speed inside the same raw band.
   const bool parked = telemetry_.rawSpeedKph.valid(now) &&
-                      telemetry_.rawSpeedKph.value < 1.0f;
+                      telemetry_.rawSpeedKph.value < kParkedRawSpeedKph;
 
   PollItem* selected = nullptr;
   uint8_t selectedIndex = 0;

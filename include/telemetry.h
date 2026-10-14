@@ -25,6 +25,17 @@ struct TimedFloat {
   }
 };
 
+// Raw PID 0D at or below this reading means the vehicle is standing.
+// speedCorrectionKph compensates a measurement error, so it only corrects
+// anything while the vehicle is actually moving; at a standing raw reading the
+// same constant is a pure offset. With raw 0 and a +5 kph correction the
+// effective speed became 5 km/h, which switched the display to L/100km from an
+// idling engine and integrated 0.83 km of trip distance per 10 minutes.
+// The band also decides the standing poll profile, so both decisions share one
+// threshold instead of the unrelated 1.0 and 5.0 kph limits that disagreed
+// whenever speedCorrectionKph was non-zero.
+constexpr float kParkedRawSpeedKph = 4.0f;
+
 struct TelemetryData {
   TimedFloat rpm;
   TimedFloat rawSpeedKph;       // OBD PID 0D, unchanged

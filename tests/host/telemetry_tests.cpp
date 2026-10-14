@@ -425,6 +425,51 @@ void testSpeedCorrectionPreservesTimestampAndClampsAtZero() {
   CHECK(rig.data.consumptionIsPerHour);
 }
 
+void testStandingBandSuppressesCorrectionAndDistance() {
+  // A raw PID 0D reading inside the standing band is already a standing
+  // indication. The correction is a measurement-error compensation, so applying
+  // it there invents speed: with raw 0 and +5 kph the old code reported 5 km/h,
+  // switched to L/100km and integrated trip distance from an idling engine.
+  Rig rig;
+  ConfigData config = testConfig();
+  config.speedCorrectionKph = 5.0f;
+  rig.data.rpm.set(750.0f, 1000);
+  rig.data.fuelRateLph.set(2.275f, 1000);
+
+  rig.data.rawSpeedKph.set(0.0f, 1000);
+  rig.engine.update(1000, config, false);
+  CHECK(near(rig.data.speedKph.value, 0.0));
+  CHECK(rig.data.speedKph.valid(1000));
+  CHECK(rig.data.consumptionIsPerHour);
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.trip.rawPetrolLiters, 0.0));
+
+  // The whole band 0/1/2/3 must be standing, not just a single reading.
+  for (float reading = 0.0f; reading < kParkedRawSpeedKph; reading += 1.0f) {
+    rig.data.rawSpeedKph.set(reading, 2000);
+    rig.engine.update(2000, config, false);
+    CHECK(near(rig.data.speedKph.value, 0.0));
+    CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  }
+
+  // Just above the band the correction applies again, and distance starts
+  // integrating: the band must not disable real movement.
+  const double before = rig.trip.totalDistanceKm;
+  rig.data.rawSpeedKph.set(kParkedRawSpeedKph, 3000);
+  rig.engine.update(3000, config, false);
+  CHECK(near(rig.data.speedKph.value, kParkedRawSpeedKph + 5.0f));
+  CHECK(rig.trip.totalDistanceKm > before);
+
+  // A standing vehicle with a positive correction must not switch to L/100km,
+  // which is the observable symptom this band exists to remove.
+  const double distanceAtBandEdge = rig.trip.totalDistanceKm;
+  rig.data.rawSpeedKph.set(0.0f, 4000);
+  rig.engine.update(4000, config, false);
+  CHECK(rig.data.consumptionIsPerHour);
+  CHECK(near(rig.data.currentConsumption, rig.data.currentFuelLph));
+  CHECK(near(rig.trip.totalDistanceKm, distanceAtBandEdge));
+}
+
 void testStalePidSamplesDoNotCountFuelOrDistance() {
   Rig rig;
   ConfigData config = testConfig();
@@ -508,6 +553,8 @@ int main() {
   test("barometric pressure source selection", testBaroSelectionAndStartupMapCapture);
   test("boost derivation and smoothing", testBoostDerivationAndSmoothing);
   test("speed correction and timestamp", testSpeedCorrectionPreservesTimestampAndClampsAtZero);
+  test("standing band suppresses correction and distance",
+       testStandingBandSuppressesCorrectionAndDistance);
   test("stale samples excluded from trip", testStalePidSamplesDoNotCountFuelOrDistance);
   test("trip reset versus calibration state", testTripResetAndPetrolCalibrationAreIndependent);
   test("invalid fuel samples rejected", testInvalidMafAndFuelRateAreRejected);

@@ -191,8 +191,14 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
   // Preserve each source timestamp: this derived speed must not make a stale
   // PID 0D sample appear fresh to the dashboard or trip accounting.
   if (!isnan(data_.rawSpeedKph.value)) {
-    data_.speedKph.value =
-        fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
+    // Apply the correction only above the standing band. Below it the raw
+    // reading already means standing, and the correction would lift it into
+    // the moving range, fabricating trip distance and L/100km from an idling
+    // engine.
+    const bool standing = data_.rawSpeedKph.value < kParkedRawSpeedKph;
+    data_.speedKph.value = standing
+        ? 0.0f
+        : fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
     data_.speedKph.updatedAt = data_.rawSpeedKph.updatedAt;
   } else {
     data_.speedKph.value = NAN;
