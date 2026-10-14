@@ -118,7 +118,10 @@ void testSequenceOrderingAndWrap() {
 }  // namespace
 
 int main() {
-  static_assert(PersistenceSnapshot::kRecordBytes == 140,
+  // Bumped from 140 when TripState gained the standing-petrol and standing-LPG
+  // litre counters. Records written by an older schema are rejected by the
+  // magic and CRC check, so the trip restarts once on this upgrade.
+  static_assert(PersistenceSnapshot::kRecordBytes == 156,
                 "record format regression");
   testCrc32();
   testSnapshotRoundTrip();

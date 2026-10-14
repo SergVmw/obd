@@ -745,10 +745,26 @@ void DashboardUi::drawFuel(const TelemetryData& data,
                            const TelemetryEngine& engine,
                            const ConfigData& config, uint32_t now) {
   char value[40];
+  // Everything below the trip header follows the fuel actually in use, so the
+  // page answers "how did this drive go on the fuel I am burning now" without
+  // the driver having to match a label to a number.
+  const bool lpg = data.fuelMode == FuelMode::Lpg;
+
+  // The separator stays inside ASCII: the UI font carries no glyph outside
+  // ASCII and the Cyrillic block, so anything else would render blank.
   snprintf(value, sizeof(value),
-           isRussian(config) ? "ПУТЬ %.1f КМ" : "TRIP %.1f KM",
-           engine.trip().totalDistanceKm);
-  drawText(value, 120, 28, MC_DATUM, kMuted, FontRole::Small,
+           isRussian(config) ? "ПУТЬ %.1f КМ | %.2f Л" : "TRIP %.1f KM | %.2f L",
+           engine.trip().totalDistanceKm,
+           lpg ? engine.lpgLiters(config) : engine.petrolLiters(config));
+  // Vertical budget, in baseline coordinates (the Small/Medium/Large faces
+  // rise 13/17/28 px above the baseline and fall 1-4 px below it, and the
+  // status pill starts at 201):
+  //   header 25 -> 12..28    large 62 -> 34..63     unit 92 -> 79..95
+  //   row one 128 -> 111..132, label 147 -> 134..150
+  //   row two 176 -> 159..180, label 195 -> 182..198
+  // Every band clears its neighbours; moving any baseline up without also
+  // moving the one below it will overlap.
+  drawText(value, 120, 25, MC_DATUM, kMuted, FontRole::Small,
            labelFont(config, true));
 
   if (data.fuelValueValid) {
@@ -756,25 +772,58 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   } else {
     strlcpy(value, "--.-", sizeof(value));
   }
-  drawText(value, 120, 82, MC_DATUM, config.colorText, FontRole::Large,
+  drawText(value, 120, 62, MC_DATUM, config.colorText, FontRole::Large,
            FSSB24);
   drawText(data.consumptionIsPerHour
                ? translated(config, "Л/Ч", "L/H")
                : translated(config, "Л/100 КМ", "L/100 KM"),
-           120, 114, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
+           120, 92, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
 
-  snprintf(value, sizeof(value), "%.2f L", engine.petrolLiters(config));
-  if (config.lpgEnabled) {
-    drawValueCell(67, 153, value, translated(config, "БЕНЗИН", "PETROL"),
-                  config, config.colorWarning);
-    snprintf(value, sizeof(value), "%.2f L", engine.lpgLiters(config));
-    drawValueCell(173, 153, value, translated(config, "ГАЗ", "LPG"), config,
-                  config.colorBoost);
+  // The trip average includes standing fuel, so it is what the tank paid for.
+  // The moving average is the part attributable to propulsion, and the only
+  // figure that can be compared with a manufacturer number.
+  //
+  // The three cells sit on an 80 px pitch, so every label has to stay under
+  // 78 px in the 13 px face: "В ДВИЖЕНИИ" measures 81 and would have collided
+  // with its neighbours, hence the shorter wording.
+  const bool haveAverage = lpg ? engine.trip().lpgDistanceKm >= 0.1
+                                : engine.trip().petrolDistanceKm >= 0.1;
+  if (haveAverage) {
+    snprintf(value, sizeof(value), "%.1f", engine.averageForCurrentFuel(config));
   } else {
-    // Gasoline-only mode keeps every petrol statistic while removing all LPG
-    // values from the instrument screen.
-    drawValueCell(120, 153, value, translated(config, "БЕНЗИН", "PETROL"),
-                  config, config.colorWarning);
+    strlcpy(value, "--.-", sizeof(value));
+  }
+  drawValueCell(40, 128, value, translated(config, "СРЕДНИЙ", "AVERAGE"), config,
+                config.colorText);
+
+  if (haveAverage) {
+    snprintf(value, sizeof(value), "%.1f", engine.averageWhileMoving(config));
+  } else {
+    strlcpy(value, "--.-", sizeof(value));
+  }
+  drawValueCell(120, 128, value, translated(config, "ДВИЖЕНИЕ", "MOVING"),
+                config, config.colorText);
+
+  // Standing cost is a share of the trip's fuel, not a per-100km rate: a queue
+  // burns fuel per hour, and expressing that per kilometre would be meaningless.
+  const float idleShare = engine.idleShareOfTrip();
+  if (idleShare > 0.05f) {
+    snprintf(value, sizeof(value), "%.0f%%", idleShare);
+  } else {
+    strlcpy(value, "--", sizeof(value));
+  }
+  drawValueCell(200, 128, value, translated(config, "ПРОСТОИ", "IDLE %"),
+                config, kMuted);
+
+  // The other fuel's litres stay visible, so a drive that switched tanks still
+  // shows what the second one contributed.
+  if (config.lpgEnabled) {
+    snprintf(value, sizeof(value), "%.2f L",
+             lpg ? engine.petrolLiters(config) : engine.lpgLiters(config));
+    drawValueCell(120, 176, value,
+                  lpg ? translated(config, "БЕНЗИН", "PETROL")
+                      : translated(config, "ГАЗ", "LPG"),
+                  config, lpg ? config.colorWarning : config.colorBoost);
   }
 
   drawStatusRow(data, config, now);

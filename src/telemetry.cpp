@@ -347,10 +347,16 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   const double distance = speedValid
                               ? max(0.0f, data_.speedKph.value) * dtSec / 3600.0
                               : 0.0;
+  // Zero distance with the engine running is standing: a traffic queue, a
+  // drive-through, a show. Split the fuel out so the trip average and the
+  // moving average can be reported separately. The tank calibration keeps
+  // using the undivided total, because the engine burnt it either way.
+  const double idleLiters = distance > 0.0 ? 0.0 : rawLiters;
 
   trip_->totalDistanceKm += distance;
   if (data_.fuelMode == FuelMode::Lpg) {
     trip_->rawLpgLiters += rawLiters;
+    trip_->idleLpgLiters += idleLiters;
     trip_->lpgDistanceKm += distance;
     lpgTimeRemainderMs_ += dtMs;
     while (lpgTimeRemainderMs_ >= 1000) {
@@ -359,6 +365,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     }
   } else {
     trip_->rawPetrolLiters += rawLiters;
+    trip_->idlePetrolLiters += idleLiters;
     trip_->petrolDistanceKm += distance;
     petrolTimeRemainderMs_ += dtMs;
     while (petrolTimeRemainderMs_ >= 1000) {
@@ -449,4 +456,57 @@ float TelemetryEngine::averageForCurrentFuel(const ConfigData& config) const {
   if (trip_->petrolDistanceKm < 0.1) return 0.0f;
   return static_cast<float>(trip_->rawPetrolLiters * config.petrolCorrection *
                             100.0 / trip_->petrolDistanceKm);
+}
+
+float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
+  if (!trip_) return 0.0f;
+  // Idle fuel covers no distance, so it stays in the numerator of the trip
+  // average and leaves this one. Dividing by the same distance keeps the two
+  // figures directly comparable.
+  if (data_.fuelMode == FuelMode::Lpg) {
+    if (trip_->lpgDistanceKm < 0.1) return 0.0f;
+    const double moving =
+        trip_->rawLpgLiters - trip_->idleLpgLiters;
+    if (moving <= 0.0) return 0.0f;
+    return static_cast<float>(moving * config.lpgCorrection * 100.0 /
+                              trip_->lpgDistanceKm);
+  }
+  if (trip_->petrolDistanceKm < 0.1) return 0.0f;
+  const double moving = trip_->rawPetrolLiters - trip_->idlePetrolLiters;
+  if (moving <= 0.0) return 0.0f;
+  return static_cast<float>(moving * config.petrolCorrection * 100.0 /
+                            trip_->petrolDistanceKm);
+}
+
+float TelemetryEngine::idleLiters(const ConfigData& config) const {
+  if (!trip_) return 0.0f;
+  const double idle = data_.fuelMode == FuelMode::Lpg
+                          ? trip_->idleLpgLiters
+                          : trip_->idlePetrolLiters;
+  const float correction = data_.fuelMode == FuelMode::Lpg
+                               ? config.lpgCorrection
+                               : config.petrolCorrection;
+  return static_cast<float>(idle * correction);
+}
+
+float TelemetryEngine::idleShareOfTrip() const {
+  if (!trip_) return 0.0f;
+  const double total = data_.fuelMode == FuelMode::Lpg ? trip_->rawLpgLiters
+                                                       : trip_->rawPetrolLiters;
+  if (total <= 1e-9) return 0.0f;
+  const double idle = data_.fuelMode == FuelMode::Lpg ? trip_->idleLpgLiters
+                                                       : trip_->idlePetrolLiters;
+  return static_cast<float>(idle / total * 100.0);
+}
+
+float TelemetryEngine::idleLitersPerHour(const ConfigData& config) const {
+  if (!trip_) return 0.0f;
+  const uint32_t seconds = data_.fuelMode == FuelMode::Lpg ? trip_->lpgSeconds
+                                                          : trip_->petrolSeconds;
+  if (seconds == 0) return 0.0f;
+  // A whole-trip idle rate understates a queue: it folds in the fuel burnt
+  // while the engine was merely idling during stops, not the long stationary
+  // stretches. It is still the honest running cost of "standing" per the same
+  // definition the rest of this page uses.
+  return idleLiters(config) / (static_cast<float>(seconds) / 3600.0f);
 }

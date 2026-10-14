@@ -1107,6 +1107,78 @@ void ServicePortal::sendStatus() {
   }
   doc["tripPetrolLiters"] = engine_.petrolLiters(config);
   doc["tripLpgLiters"] = engine_.lpgLiters(configStore_.data());
+  // Standing fuel is reported apart from the moving total so the trip average
+  // and the average attributable to propulsion can be told apart, and so the
+  // cost of traffic appears as a share of the trip rather than as an unusable
+  // per-100km rate.
+  {
+    const TripState& trip = engine_.trip();
+    const ConfigData& gasConfig = configStore_.data();
+    JsonObject breakdown = doc["tripBreakdown"].to<JsonObject>();
+    breakdown["distanceKm"] = static_cast<float>(trip.totalDistanceKm);
+    breakdown["activeFuel"] =
+        telemetry_.fuelMode == FuelMode::Lpg ? "lpg" : "petrol";
+
+    JsonObject petrol = breakdown["petrol"].to<JsonObject>();
+    petrol["liters"] = engine_.petrolLiters(config);
+    petrol["idleLiters"] =
+        static_cast<float>(trip.idlePetrolLiters * config.petrolCorrection);
+    petrol["distanceKm"] = static_cast<float>(trip.petrolDistanceKm);
+    petrol["engineSeconds"] = trip.petrolSeconds;
+    if (trip.petrolDistanceKm >= 0.1) {
+      petrol["averageL100"] = static_cast<float>(
+          trip.rawPetrolLiters * config.petrolCorrection * 100.0 /
+          trip.petrolDistanceKm);
+      const double moving = trip.rawPetrolLiters - trip.idlePetrolLiters;
+      if (moving > 0.0) {
+        petrol["movingAverageL100"] =
+            static_cast<float>(moving * config.petrolCorrection * 100.0 /
+                               trip.petrolDistanceKm);
+      } else {
+        petrol["movingAverageL100"] = nullptr;
+      }
+    } else {
+      petrol["averageL100"] = nullptr;
+      petrol["movingAverageL100"] = nullptr;
+    }
+    if (trip.rawPetrolLiters > 1e-9) {
+      petrol["idleSharePercent"] = static_cast<float>(
+          trip.idlePetrolLiters / trip.rawPetrolLiters * 100.0);
+    } else {
+      petrol["idleSharePercent"] = nullptr;
+    }
+
+    JsonObject lpg = breakdown["lpg"].to<JsonObject>();
+    lpg["liters"] = engine_.lpgLiters(gasConfig);
+    lpg["idleLiters"] =
+        static_cast<float>(trip.idleLpgLiters * gasConfig.lpgCorrection);
+    lpg["distanceKm"] = static_cast<float>(trip.lpgDistanceKm);
+    lpg["engineSeconds"] = trip.lpgSeconds;
+    if (trip.lpgDistanceKm >= 0.1) {
+      lpg["averageL100"] = static_cast<float>(
+          trip.rawLpgLiters * gasConfig.lpgCorrection * 100.0 /
+          trip.lpgDistanceKm);
+      const double moving = trip.rawLpgLiters - trip.idleLpgLiters;
+      if (moving > 0.0) {
+        lpg["movingAverageL100"] =
+            static_cast<float>(moving * gasConfig.lpgCorrection * 100.0 /
+                               trip.lpgDistanceKm);
+      } else {
+        lpg["movingAverageL100"] = nullptr;
+      }
+    } else {
+      lpg["averageL100"] = nullptr;
+      lpg["movingAverageL100"] = nullptr;
+    }
+    if (trip.rawLpgLiters > 1e-9) {
+      lpg["idleSharePercent"] = static_cast<float>(
+          trip.idleLpgLiters / trip.rawLpgLiters * 100.0);
+    } else {
+      lpg["idleSharePercent"] = nullptr;
+    }
+  }
+  doc["tripIdleSharePercent"] = engine_.idleShareOfTrip();
+  doc["tripIdleLitersPerHour"] = engine_.idleLitersPerHour(config);
   doc["rawSpeedKph"] = telemetry_.rawSpeedKph.valid(now)
                              ? telemetry_.rawSpeedKph.value
                              : 0.0f;

@@ -75,6 +75,39 @@ def main() -> None:
     ))
     assert set(map(ord, required)) <= set(UI_CODEPOINTS)
 
+    # Derive the required set from the sources instead of a hand-kept list, so
+    # a new label can never reach the screen with no glyph behind it. Any
+    # character outside the font renders blank, which reads as a typo in the
+    # field rather than as a build failure.
+    #
+    # KNOWN_MISSING is pre-existing debt, enumerated rather than waived. Each
+    # entry must be justified, and a glyph outside this set is a build failure.
+    known_missing: dict[str, dict[int, str]] = {
+        # Midpoint separators in the DTC results text, predating this gate.
+        # Cosmetic only, and the diagnostic page is off-limits while the
+        # field investigation is running, so it is recorded here instead of
+        # being changed in passing.
+        "src/dashboard_ui.cpp": {0xB7: "DTC results text, awaiting a separate fix"},
+    }
+    for relative in ("src/dashboard_ui.cpp", "src/service_portal.cpp"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        used = {
+            char
+            for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', text)
+            for char in literal
+            if ord(char) > 0x1F
+        }
+        waived = known_missing.get(relative, {})
+        missing = sorted(set(map(ord, used)) - set(UI_CODEPOINTS))
+        unexcused = [code for code in missing if code not in waived]
+        assert not unexcused, (
+            f"{relative} uses characters the UI font cannot render: "
+            + ", ".join(f"U+{code:04X} {chr(code)!r}" for code in unexcused)
+        )
+        for code in missing:
+            print(f"known-missing glyph in {relative}: U+{code:04X} ({waived[code]})")
+        print(f"{relative}: {len(used)} distinct characters, all in font")
+
     for name in ("GolosText-Regular.woff", "GolosText-SemiBold.woff"):
         font = TTFont(font_dir / name)
         cmap = set().union(*(table.cmap.keys() for table in font["cmap"].tables))

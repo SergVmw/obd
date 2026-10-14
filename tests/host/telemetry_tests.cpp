@@ -470,6 +470,73 @@ void testStandingBandSuppressesCorrectionAndDistance() {
   CHECK(near(rig.trip.totalDistanceKm, distanceAtBandEdge));
 }
 
+// Drive the engine for `steps` one-second intervals. The integrator refuses
+// gaps longer than two seconds, so a realistic segment has to be stepped.
+void runSegment(Rig& rig, const ConfigData& config, uint32_t from, int steps,
+                float rpm, float mafGps, float rawSpeedKph) {
+  for (int i = 0; i < steps; ++i) {
+    const uint32_t t = from + static_cast<uint32_t>(i) * 1000U;
+    rig.data.rpm.set(rpm, t);
+    rig.data.mafGps.set(mafGps, t);
+    rig.data.rawSpeedKph.set(rawSpeedKph, t);
+    rig.engine.update(t, config, false);
+  }
+}
+
+void testIdleFuelIsSplitFromMovingFuel() {
+  // Standing fuel is real fuel out of the tank, so it stays in the trip
+  // average, but it covers no distance and must not be charged to
+  // propulsion. The moving average is the only figure comparable with a
+  // manufacturer number.
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+
+  runSegment(rig, config, 1000, 300, 1500.0f, 1.0f, 0.0f);
+  CHECK(rig.trip.rawPetrolLiters > 0.0);
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.trip.idlePetrolLiters, rig.trip.rawPetrolLiters));
+
+  runSegment(rig, config, 400000, 600, 2000.0f, 10.0f, 60.0f);
+  const double idleBefore = rig.trip.idlePetrolLiters;
+  CHECK(rig.trip.totalDistanceKm > 5.0);
+  CHECK(rig.trip.rawPetrolLiters > idleBefore);
+  // Standing fuel must not grow once the vehicle is moving.
+  CHECK(near(rig.trip.idlePetrolLiters, idleBefore));
+  // Moving average drops the standing part, so it is strictly the lower one.
+  CHECK(rig.engine.averageWhileMoving(config) > 0.0f);
+  CHECK(rig.engine.averageWhileMoving(config) <
+        rig.engine.averageForCurrentFuel(config));
+  CHECK(rig.engine.idleShareOfTrip() > 0.0f);
+  CHECK(rig.engine.idleShareOfTrip() < 100.0f);
+  CHECK(rig.engine.idleLitersPerHour(config) > 0.0f);
+}
+
+void testIdleShareIsZeroWithoutStanding() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+  runSegment(rig, config, 1000, 600, 2000.0f, 10.0f, 50.0f);
+  CHECK(near(rig.trip.idlePetrolLiters, 0.0));
+  CHECK(near(rig.engine.idleShareOfTrip(), 0.0));
+  // With no standing the two averages must coincide exactly.
+  CHECK(near(rig.engine.averageWhileMoving(config),
+             rig.engine.averageForCurrentFuel(config)));
+}
+
+void testPureIdlingYieldsNoAverage() {
+  Rig rig;
+  ConfigData config = testConfig();
+  runSegment(rig, config, 1000, 300, 900.0f, 2.0f, 0.0f);
+  // Litres accumulate and distance does not, so neither average is available
+  // rather than one of them showing a fabricated rate.
+  CHECK(rig.trip.rawPetrolLiters > 0.0);
+  CHECK(rig.trip.idlePetrolLiters > 0.0);
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
+  CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
+}
+
 void testStalePidSamplesDoNotCountFuelOrDistance() {
   Rig rig;
   ConfigData config = testConfig();
@@ -555,6 +622,9 @@ int main() {
   test("speed correction and timestamp", testSpeedCorrectionPreservesTimestampAndClampsAtZero);
   test("standing band suppresses correction and distance",
        testStandingBandSuppressesCorrectionAndDistance);
+  test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
+  test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
+  test("pure idling yields no average", testPureIdlingYieldsNoAverage);
   test("stale samples excluded from trip", testStalePidSamplesDoNotCountFuelOrDistance);
   test("trip reset versus calibration state", testTripResetAndPetrolCalibrationAreIndependent);
   test("invalid fuel samples rejected", testInvalidMafAndFuelRateAreRejected);

@@ -101,6 +101,13 @@ struct TripState {
   uint32_t magic = 0x54524950UL;  // TRIP
   double rawPetrolLiters = 0.0;
   double rawLpgLiters = 0.0;
+  // Portion of the fuel above that was burned without covering any distance:
+  // engine idling and the sub-threshold creep below kParkedRawSpeedKph. Kept
+  // apart from the moving fuel so the trip average and the average actually
+  // attributable to propulsion can both be reported, instead of one number
+  // silently carrying the cost of every traffic queue.
+  double idlePetrolLiters = 0.0;
+  double idleLpgLiters = 0.0;
   double petrolDistanceKm = 0.0;
   double lpgDistanceKm = 0.0;
   double totalDistanceKm = 0.0;
@@ -175,7 +182,19 @@ class TelemetryEngine {
 
   float petrolLiters(const ConfigData& config) const;
   float lpgLiters(const ConfigData& config) const;
+  float idleLiters(const ConfigData& config) const;
+  // Average over the whole trip, idle fuel included: what the tank actually
+  // paid for this journey.
   float averageForCurrentFuel(const ConfigData& config) const;
+  // Average over the propelled part only, idle fuel excluded. Comparable with
+  // a manufacturer figure, which is measured while the engine is working.
+  float averageWhileMoving(const ConfigData& config) const;
+  // Share of this trip's fuel that went into standing, as a percentage. A
+  // ratio, so it carries no correction factor.
+  float idleShareOfTrip() const;
+  // Litres burnt per hour with the vehicle standing; the running cost of a
+  // queue, which per-100km figures cannot express.
+  float idleLitersPerHour(const ConfigData& config) const;
   float petrolCalibrationLiters(const ConfigData& config) const;
   const TripState& trip() const { return *trip_; }
   TripState& trip() { return *trip_; }

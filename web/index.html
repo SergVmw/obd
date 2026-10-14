@@ -142,6 +142,9 @@
 </div>
 
 <div class="pane" id="fuel"><h2>Расход и ГБО</h2><p class="desc">Бензиновый расход работает независимо. Все газовые функции подчиняются одному глобальному выключателю.</p>
+ <div class="section"><h3>Текущая поездка</h3><div class="calstate" aria-live="polite"><div><small>Общий путь</small><b id="tripDistance">—</b></div><div><small>Активное топливо</small><b id="tripActiveFuel">—</b></div><div><small>Простои, доля расхода</small><b id="tripIdleShare">—</b></div><div><small>Простои, л/ч</small><b id="tripIdleLph">—</b></div></div>
+  <div class="canwrap" style="margin-top:13px"><table class="cantable"><thead><tr><th>ТОПЛИВО</th><th>ЛИТРЫ</th><th>ИЗ НИХ ПРОСТОИ</th><th>ПУТЬ</th><th>СРЕДНИЙ Л/100</th><th>В ДВИЖЕНИИ</th><th>ПРОСТОИ</th><th>ДВИГАТЕЛЬ</th></tr></thead><tbody id="tripRows"><tr><td colspan="8">Нет данных о поездке</td></tr></tbody></table></div>
+  <p class="note" style="margin-top:13px">Литры в простоях — это топливо, сгоревшее без движения: очереди, светофоры, drive-through. Оно остаётся в столбце «СРЕДНИЙ», потому что бак оплатил его в любом случае, но вынесено отдельно, чтобы «В ДВИЖЕНИИ» можно было сравнивать с заводскими цифрами. «Средний» — весь путь целиком, «В движении» — без простоев. У простоя нет смысла в л/100 км: очередь сжигает топливо за час, а не за километр, поэтому здесь это доля и расход в час.</p></div>
  <div class="section"><h3>Конфигурация автомобиля</h3><div class="grid">
   <div class="check full"><input id="lpgEnabled" type="checkbox"><label for="lpgEnabled"><b>Использовать ГБО</b> — клапан, LPG-расчёты, индикация и контроль коррекций</label></div>
  </div><div class="note" style="margin-top:13px">Если выключено, GPIO5 не опрашивается, PID STFT/LTFT для контроля LPG не запрашиваются, газовые значения и настройки скрыты. Все функции бензина сохраняются.</div></div>
@@ -393,6 +396,24 @@ function fuelStatus(s){
  const speedDensity=s.fuelSource===5?`; SD: MAP ${s.mapKpa==null?'—':Number(s.mapKpa).toFixed(0)+' kPa'}, IAT ${s.intakeAirC==null?'—':Number(s.intakeAirC).toFixed(0)+' °C'}, воздух ${s.speedDensityAirflowGps==null?'—':Number(s.speedDensityAirflowGps).toFixed(2)+' g/s'}, ${s.speedDensityAirflowGps==null?'нет свежего набора сигналов':'входы свежие'}`:'';
  $('sFuelDetail').textContent=`Вход ГБО ${input}; режим ${modeNames[s.fuelMode]||s.fuelMode||'—'} (${reasonNames[s.fuelModeReason]||'причина не указана'}); ${rpm}${extra}${speedDensity}.`;
 }
+function tripStatus(s){
+ const fmt=(v,d=2,u='')=>v==null?'—':Number(v).toFixed(d)+u;
+ if(!s){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph'])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';return}
+ const b=s.tripBreakdown;
+ if(!b){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph'])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';return}
+ $('tripDistance').textContent=fmt(b.distanceKm,1,' км');
+ $('tripActiveFuel').textContent=b.activeFuel==='lpg'?'Газ':'Бензин';
+ $('tripIdleShare').textContent=fmt(s.tripIdleSharePercent,0,'%');
+ $('tripIdleLph').textContent=fmt(s.tripIdleLitersPerHour,2,' л/ч');
+ const rows=[['Бензин',b.petrol],['Газ',b.lpg]].filter(([,f])=>f);
+ const name=b.activeFuel==='lpg'?'Газ':'Бензин';
+ $('tripRows').innerHTML=rows.map(([label,f])=>{
+  // Highlight the fuel in use so the reader does not have to remember which
+  // tank the instrument screen is currently reporting.
+  const mark=label===name?` style="color:var(--a)"`:'';
+  return `<tr${mark}><td>${label}</td><td>${fmt(f.liters)} л</td><td>${fmt(f.idleLiters)} л</td><td>${fmt(f.distanceKm,1)} км</td><td>${fmt(f.averageL100,1)}</td><td>${fmt(f.movingAverageL100,1)}</td><td>${fmt(f.idleSharePercent,0,'%')}</td><td>${fmt((Number(f.engineSeconds||0)/60),1)} мин</td></tr>`;
+ }).join('')||'<tr><td colspan="8">Нет данных о поездке</td></tr>';
+}
 function mapStatus(s){
  const fields=['mapPidSupport','mapPidRequests','mapPidResponses','mapPidTimeouts','iatPidSupport','iatPidCounts','iatPidTimeouts','mapRaw','intakeAirRaw','speedDensityAirflow','baroRaw','effectiveBaro','mapBoostRaw','mapBoostFiltered'];
  if(!s){for(const id of fields)$(id).textContent='—';$('mapLive').textContent='Нет актуальных данных OBD. Прочерки не означают нулевые значения.';return}
@@ -419,7 +440,7 @@ function mapStatus(s){
  else text+=`BARO обновлён ${(Number(s.baroAgeMs||0)/1000).toFixed(1)} с назад.`;
  $('mapLive').textContent=text;
 }
-async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
+async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
 let dtcData=null,dtcLoading=false;
 const dtcTypeName={stored:'Сохранённый · Mode 03',pending:'Ожидающий · Mode 07',permanent:'Постоянный · Mode 0A'};
 const dtcScanName={not_scanned:'не читалось',reading:'чтение',complete:'OK',unsupported:'не поддерживается',timeout:'тайм-аут',malformed:'повреждённый ответ',transport_error:'ошибка CAN',negative_response:'отрицательный ответ ECU'};
