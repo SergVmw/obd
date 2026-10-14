@@ -93,9 +93,19 @@ struct ObdTraceEventSnapshot {
 
 class ObdTraceRecorder {
  public:
+  // Default: 90 seconds at 2 Hz, which resolves a two-second staleness window
+  // but is shorter than a drive. H2G_TRACE_LONG_WINDOW trades that resolution
+  // for eight minutes at 1 Hz, so a whole trip fits in one capture. Two samples
+  // still straddle a two-second event, and the event ring keeps exact
+  // timestamps regardless of the sample rate.
+#ifdef H2G_TRACE_LONG_WINDOW
+  static constexpr uint32_t kSampleIntervalMs = 1000;
+  static constexpr size_t kSampleCapacity = 480;  // 8 minutes at 1 Hz
+#else
   static constexpr uint32_t kSampleIntervalMs = 500;
-  static constexpr uint32_t kFuelInvalidEventDelayMs = 1000;
   static constexpr size_t kSampleCapacity = 180;  // 90 seconds at 2 Hz
+#endif
+  static constexpr uint32_t kFuelInvalidEventDelayMs = 1000;
   static constexpr size_t kEventCapacity = 24;
 
   void record(const ObdTraceSample& sample);
