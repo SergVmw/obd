@@ -1,0 +1,3 @@
+platformio==6.1.18
+fonttools==4.63.0
+Pillow==12.3.0
