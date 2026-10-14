@@ -16,6 +16,11 @@ const uint8_t ObdClient::kDiagnosticPidIds_[ObdClient::kDiagnosticPidCount] = {
 #endif
 
 bool ObdClient::begin() {
+  // A support mask learned in a previous session must not survive the restart:
+  // if a block reported fewer PIDs while it was still waking up, that stale
+  // union would keep those PIDs out of the poller for the whole new session.
+  supportTable_.reset();
+
   twai_general_config_t general =
       TWAI_GENERAL_CONFIG_DEFAULT(Pins::CanTx, Pins::CanRx, TWAI_MODE_NORMAL);
   general.tx_queue_len = 10;
@@ -179,16 +184,12 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
   if (now - lastAnyRequestAt_ < minGap) return false;
 
   twai_message_t message{};
-  if (kSpeedDensityBuild || config_.fuelSource == FuelSource::SpeedDensity) {
-    const ObdDiagnosticsState& engine = diagnostics_.state();
-    message.identifier = engine.engineEcuLocked &&
-                                 engine.engineResponseId >= 0x7E8 &&
-                                 engine.engineResponseId <= 0x7EF
-                             ? static_cast<uint32_t>(engine.engineResponseId - 8U)
-                             : 0x7DF;
-  } else {
-    message.identifier = 0x7DF;
-  }
+  // Always the functional request ID. Targeting the selected ECU added nothing
+  // the functional address does not already reach, and it permanently blinded
+  // the poller to every other block: a signal only the engine ECU has could
+  // never be requested once the transmission had won the engine selection.
+  // Diagnostic services keep their own targeted addressing in sendDiagnostics.
+  message.identifier = 0x7DF;
   message.extd = 0;
   message.rtr = 0;
   message.data_length_code = 8;
@@ -369,16 +370,23 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       }
     }
   } else if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
-    // Until PID 0C identifies the engine ECU, no arbitrary functional reply is
-    // allowed to populate telemetry. Once locked, replies from other ECUs are
-    // ignored and cannot complete the outstanding Mode 01 transaction.
+    // Engine-data PIDs describe the engine or the vehicle, not a controller, so
+    // they are taken from whichever powertrain ECU answers them. A transmission
+    // block has no manifold, no air meter and no throttle, so it can only ever
+    // be the source of RPM and speed, and those are handled above.
+    //
+    // Everything else stays bound to the selected engine ECU. In particular PID
+    // 01 is excluded: the check-engine lamp and the DTC count must follow the
+    // block that actually raises engine faults, not a transmission's view.
+    if (!isEngineDataPid(pid)) {
 #ifdef H2G_DIAGNOSTIC_BUILD
-    if (diagnostics_.state().engineEcuLocked) {
-      recordOtherEcuResponse(static_cast<uint16_t>(message.identifier), pid,
-                             now);
-    }
+      if (diagnostics_.state().engineEcuLocked) {
+        recordOtherEcuResponse(static_cast<uint16_t>(message.identifier), pid,
+                               now);
+      }
 #endif
-    return;
+      return;
+    }
   }
 
   const bool matchedMode01Request =
@@ -416,7 +424,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x00:
     case 0x20:
     case 0x40:
-      if (payloadLength >= 6) storeSupportedMask(pid, &message.data[3]);
+      if (payloadLength >= 6) {
+        storeSupportedMask(pid, &message.data[3],
+                           static_cast<uint16_t>(message.identifier));
+      }
       break;
     case 0x01:
       if (payloadLength >= 6) {
@@ -492,15 +503,13 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 }
 
-void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data) {
-  uint8_t index = 0;
-  if (basePid == 0x20) index = 1;
-  if (basePid == 0x40) index = 2;
-  supportedMasks_[index] = (static_cast<uint32_t>(data[0]) << 24) |
-                           (static_cast<uint32_t>(data[1]) << 16) |
-                           (static_cast<uint32_t>(data[2]) << 8) |
-                           static_cast<uint32_t>(data[3]);
-  maskKnown_[index] = true;
+void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data,
+                                   uint16_t responseId) {
+  // The mask is recorded per responder and unioned. Previously one block's mask
+  // overwrote the previous one and then decided on its own which PIDs the
+  // poller was allowed to request, so a transmission block that does not have
+  // a manifold could silence MAP, IAT, MAF and fuel rate for good.
+  supportTable_.recordMask(responseId, basePid, data);
   if (basePid == 0x00) {
     mapPidStats_.supportKnown = true;
     mapPidStats_.supported = isSupported(0x0B);
@@ -515,16 +524,11 @@ void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data) {
 bool ObdClient::pidSupportKnown(uint8_t pid) const {
   if (pid == 0 || pid > 0x60) return false;
   const uint8_t group = (pid - 1) / 0x20;
-  return group < 3 && maskKnown_[group];
+  return group < 3 && supportTable_.groupKnown(group);
 }
 
 bool ObdClient::isSupported(uint8_t pid) const {
-  if (pid == 0 || pid > 0x60) return false;
-  const uint8_t group = (pid - 1) / 0x20;
-  const uint8_t base = group * 0x20;
-  if (group >= 3 || !maskKnown_[group]) return true;  // optimistic fallback
-  const uint8_t shift = pid - base;
-  return (supportedMasks_[group] & (1UL << (32 - shift))) != 0;
+  return supportTable_.isSupported(pid);
 }
 
 bool ObdClient::mapPidRequestPending() const {

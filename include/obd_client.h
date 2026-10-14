@@ -9,6 +9,7 @@
 #include "obd_request_timing.h"
 #include "telemetry.h"
 #include "pins.h"
+#include "pid_support.h"
 
 struct ObdPidStats {
   bool supportKnown = false;
@@ -111,7 +112,8 @@ class ObdClient {
   void runDiscovery(uint32_t now);
   void runPolling(uint32_t now);
   void finishPending(bool timeout);
-  void storeSupportedMask(uint8_t basePid, const uint8_t* data);
+  void storeSupportedMask(uint8_t basePid, const uint8_t* data,
+                          uint16_t responseId);
 #ifdef H2G_DIAGNOSTIC_BUILD
   ObdPidStats* mutableDiagnosticPidStats(uint8_t pid);
   void refreshDiagnosticSupportStats();
@@ -141,8 +143,9 @@ class ObdClient {
   bool discoveryDone_ = false;
   uint8_t discoveryIndex_ = 0;
   uint8_t pollCursor_ = 0;
-  uint32_t supportedMasks_[3]{};
-  bool maskKnown_[3]{};
+  // Support masks from every ECU that answered, combined. A single block can no
+  // longer decide which PIDs are polled at all.
+  PidSupportTable supportTable_{};
   ObdPidStats mapPidStats_{};
   ObdPidStats iatPidStats_{};
 #ifdef H2G_DIAGNOSTIC_BUILD
