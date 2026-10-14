@@ -10,6 +10,10 @@ constexpr uint32_t kRxTimeBudgetUs = 2000;
 }
 
 constexpr uint8_t ObdClient::kDiscoveryPids_[4];
+#ifdef H2G_DIAGNOSTIC_BUILD
+const uint8_t ObdClient::kDiagnosticPidIds_[ObdClient::kDiagnosticPidCount] = {
+    0x0B, 0x0C, 0x10, 0x33, 0x5E};
+#endif
 
 bool ObdClient::begin() {
   twai_general_config_t general =
@@ -158,6 +162,15 @@ void ObdClient::handleAlerts(uint32_t now) {
 }
 
 bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
+#if defined(H2G_SPEED_DENSITY_BUILD)
+  constexpr bool kSpeedDensityBuild = true;
+#else
+  constexpr bool kSpeedDensityBuild = false;
+#endif
+  // Speed-Density uses only MAP/RPM/IAT as its airflow input. Reject the two
+  // unsupported fuel-flow inputs even if a caller accidentally schedules them.
+  if ((kSpeedDensityBuild || config_.fuelSource == FuelSource::SpeedDensity) &&
+      (pid == 0x10 || pid == 0x5E)) return false;
   const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
                                   ? 1
                                   : config_.maxRequestsPerSecond;
@@ -166,7 +179,16 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
   if (now - lastAnyRequestAt_ < minGap) return false;
 
   twai_message_t message{};
-  message.identifier = 0x7DF;
+  if (kSpeedDensityBuild || config_.fuelSource == FuelSource::SpeedDensity) {
+    const ObdDiagnosticsState& engine = diagnostics_.state();
+    message.identifier = engine.engineEcuLocked &&
+                                 engine.engineResponseId >= 0x7E8 &&
+                                 engine.engineResponseId <= 0x7EF
+                             ? static_cast<uint32_t>(engine.engineResponseId - 8U)
+                             : 0x7DF;
+  } else {
+    message.identifier = 0x7DF;
+  }
   message.extd = 0;
   message.rtr = 0;
   message.data_length_code = 8;
@@ -185,6 +207,16 @@ bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
     ++mapPidStats_.requestCount;
     mapPidStats_.lastRequestAt = now;
   }
+  if (pid == 0x0F) {
+    ++iatPidStats_.requestCount;
+    iatPidStats_.lastRequestAt = now;
+  }
+#ifdef H2G_DIAGNOSTIC_BUILD
+  if (ObdPidStats* stats = mutableDiagnosticPidStats(pid)) {
+    if (pid != 0x0B) ++stats->requestCount;
+    stats->lastRequestAt = now;
+  }
+#endif
   waiting_ = true;
   pendingRequest_ = PendingRequest::Mode01;
   pendingPid_ = pid;
@@ -323,16 +355,55 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   const uint8_t pid = message.data[2];
   if (pid == 0x0C) {
     if (payloadLength < 4) return;
-    if (!diagnostics_.acceptsEngineResponse(message.identifier) &&
-        !diagnostics_.observeEngineResponse(message.identifier)) {
-      return;
+    if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
+      const bool ecuWasAlreadyLocked =
+          diagnostics_.state().engineEcuLocked;
+      if (!diagnostics_.observeEngineResponse(message.identifier)) {
+#ifdef H2G_DIAGNOSTIC_BUILD
+        if (ecuWasAlreadyLocked) {
+          recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
+                                 pid, now);
+        }
+#endif
+        return;
+      }
     }
   } else if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
     // Until PID 0C identifies the engine ECU, no arbitrary functional reply is
     // allowed to populate telemetry. Once locked, replies from other ECUs are
     // ignored and cannot complete the outstanding Mode 01 transaction.
+#ifdef H2G_DIAGNOSTIC_BUILD
+    if (diagnostics_.state().engineEcuLocked) {
+      recordOtherEcuResponse(static_cast<uint16_t>(message.identifier), pid,
+                             now);
+    }
+#endif
     return;
   }
+
+  const bool matchedMode01Request =
+      waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
+      pid == pendingPid_;
+  if (pid == 0x0F && matchedMode01Request) {
+    ++iatPidStats_.responseCount;
+    iatPidStats_.lastResponseAt = now;
+    iatPidStats_.lastResponseLatencyMs = now - requestSentAt_;
+#ifdef H2G_DIAGNOSTIC_BUILD
+    iatPidStats_.consecutiveTimeouts = 0;
+#endif
+  }
+#ifdef H2G_DIAGNOSTIC_BUILD
+  if (ObdPidStats* stats = mutableDiagnosticPidStats(pid)) {
+    if (matchedMode01Request) {
+      stats->lastResponseAt = now;
+      stats->lastResponseLatencyMs = now - requestSentAt_;
+      stats->consecutiveTimeouts = 0;
+      if (pid != 0x0B) ++stats->responseCount;
+    } else {
+      ++stats->unsolicitedResponseCount;
+    }
+  }
+#endif
 
   const uint8_t a = message.data[3];
   const uint8_t b = payloadLength >= 4 ? message.data[4] : 0;
@@ -376,6 +447,9 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
     case 0x0D:
       telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
+      break;
+    case 0x0F:
+      telemetry_.intakeAirC.set(static_cast<float>(a) - 40.0f, now);
       break;
     case 0x10:
       if (payloadLength >= 4) {
@@ -430,7 +504,12 @@ void ObdClient::storeSupportedMask(uint8_t basePid, const uint8_t* data) {
   if (basePid == 0x00) {
     mapPidStats_.supportKnown = true;
     mapPidStats_.supported = isSupported(0x0B);
+    iatPidStats_.supportKnown = true;
+    iatPidStats_.supported = isSupported(0x0F);
   }
+#ifdef H2G_DIAGNOSTIC_BUILD
+  refreshDiagnosticSupportStats();
+#endif
 }
 
 bool ObdClient::pidSupportKnown(uint8_t pid) const {
@@ -452,6 +531,54 @@ bool ObdClient::mapPidRequestPending() const {
   return waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
          pendingPid_ == 0x0B;
 }
+
+bool ObdClient::iatPidRequestPending() const {
+  return waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
+         pendingPid_ == 0x0F;
+}
+
+#ifdef H2G_DIAGNOSTIC_BUILD
+const ObdPidStats* ObdClient::diagnosticPidStats(uint8_t pid) const {
+  for (size_t i = 0; i < kDiagnosticPidCount; ++i) {
+    if (kDiagnosticPidIds_[i] != pid) continue;
+    return i == 0 ? &mapPidStats_ : &diagnosticPidStats_[i - 1];
+  }
+  return nullptr;
+}
+
+bool ObdClient::diagnosticPidRequestPending(uint8_t pid) const {
+  return waiting_ && pendingRequest_ == PendingRequest::Mode01 &&
+         pendingPid_ == pid;
+}
+
+ObdPidStats* ObdClient::mutableDiagnosticPidStats(uint8_t pid) {
+  for (size_t i = 0; i < kDiagnosticPidCount; ++i) {
+    if (kDiagnosticPidIds_[i] != pid) continue;
+    return i == 0 ? &mapPidStats_ : &diagnosticPidStats_[i - 1];
+  }
+  return nullptr;
+}
+
+void ObdClient::refreshDiagnosticSupportStats() {
+  for (size_t i = 0; i < kDiagnosticPidCount; ++i) {
+    ObdPidStats* stats = mutableDiagnosticPidStats(kDiagnosticPidIds_[i]);
+    if (!stats) continue;
+    stats->supportKnown = pidSupportKnown(kDiagnosticPidIds_[i]);
+    stats->supported = stats->supportKnown &&
+                       isSupported(kDiagnosticPidIds_[i]);
+  }
+}
+
+void ObdClient::recordOtherEcuResponse(uint16_t responseId, uint8_t pid,
+                                       uint32_t now) {
+  if (responseId < 0x7E8 || responseId > 0x7EF) return;
+  ObdOtherEcuStats& stats = diagnosticOtherEcuStats_[responseId - 0x7E8];
+  stats.responseId = responseId;
+  ++stats.responseCount;
+  stats.lastResponseAt = now;
+  stats.lastPid = pid;
+}
+#endif
 
 void ObdClient::runDiscovery(uint32_t now) {
   if (discoveryIndex_ >= 4) {
@@ -483,6 +610,9 @@ void ObdClient::runPolling(uint32_t now) {
     const uint8_t index = (pollCursor_ + checked) % kPollCount;
     auto& item = poll_[index];
     if (!isSupported(item.pid)) continue;
+    const bool speedDensity = config_.fuelSource == FuelSource::SpeedDensity;
+    if (item.pid == 0x0F && !speedDensity) continue;
+    if (speedDensity && (item.pid == 0x10 || item.pid == 0x5E)) continue;
     if ((item.pid == 0x06 || item.pid == 0x07) &&
         (!config_.lpgEnabled || !config_.fuelTrimEnabled())) {
       continue;
@@ -518,8 +648,28 @@ void ObdClient::runPolling(uint32_t now) {
 void ObdClient::finishPending(bool timeout) {
   if (timeout) {
     ++telemetry_.obdTimeoutCount;
-    if (pendingRequest_ == PendingRequest::Mode01 && pendingPid_ == 0x0B) {
-      ++mapPidStats_.timeoutCount;
+    if (pendingRequest_ == PendingRequest::Mode01) {
+#ifdef H2G_DIAGNOSTIC_BUILD
+      if (ObdPidStats* stats = mutableDiagnosticPidStats(pendingPid_)) {
+        if (pendingPid_ != 0x0B) ++stats->timeoutCount;
+        ++stats->consecutiveTimeouts;
+        if (stats->consecutiveTimeouts > stats->maxConsecutiveTimeouts) {
+          stats->maxConsecutiveTimeouts = stats->consecutiveTimeouts;
+        }
+      }
+#endif
+      if (pendingPid_ == 0x0B) ++mapPidStats_.timeoutCount;
+      if (pendingPid_ == 0x0F) {
+        ++iatPidStats_.timeoutCount;
+#ifdef H2G_DIAGNOSTIC_BUILD
+        ++iatPidStats_.consecutiveTimeouts;
+        if (iatPidStats_.consecutiveTimeouts >
+            iatPidStats_.maxConsecutiveTimeouts) {
+          iatPidStats_.maxConsecutiveTimeouts =
+              iatPidStats_.consecutiveTimeouts;
+        }
+#endif
+      }
     }
   }
   if (pendingRequest_ == PendingRequest::Mode22 && timeout) {

@@ -27,17 +27,23 @@ jobs:
           python tools/test_ota_diagnostics.py
           python tools/test_persistence.py
           python tools/test_storage_recovery.py
+          python tools/test_mode22.py
+          python tools/test_telemetry.py
+          python tools/test_obd_trace.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
           python tools/check_brightness_integration.py
+          python tools/check_obd_service_integration.py
           python tools/check_dtc_integration.py
           python tools/check_storage_integration.py
           python tools/check_ota_transport.py
           python tools/check_ui_fonts.py
+          python tools/check_diagnostic_integration.py
 
       - name: Run browser OTA/UI regression
         run: |
+          node tests/web/diagnostic_export.cjs
           npm install --no-save --no-package-lock playwright@1.55.0
           npx playwright install --with-deps chromium
           NODE_PATH="$PWD/node_modules" node tests/web/brightness_ui.cjs
@@ -48,8 +54,8 @@ jobs:
       - name: Check build and committed release artifacts
         run: |
           python tools/check_firmware_manifest.py
-          python tools/check_firmware_manifest.py releases/h2-gauge-v0.4.2-esp32s3-n16r8.bin --expected-version 0.4.2
-          (cd releases && sha256sum -c SHA256SUMS-v0.4.2.txt)
+          python tools/check_firmware_manifest.py releases/h2-gauge-v0.4.3-esp32s3-n16r8.bin --expected-version 0.4.3
+          (cd releases && sha256sum -c SHA256SUMS-v0.4.3.txt)
           python tools/check_packaged_artifacts.py
 
       - name: Upload ESP32-S3 build artifacts

@@ -123,6 +123,66 @@ void testMafFormulaEquivalenceRatioAndCorrection() {
   CHECK(near(rig.trip.rawPetrolLiters, expectedRaw / 3600.0));
 }
 
+void testSpeedDensityCalculatesStationaryLitersPerHourWithoutMafOrPid5E() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.fuelSource = FuelSource::SpeedDensity;
+  rig.data.rpm.set(750.0f, 2000);
+  rig.data.mapKpa.set(30.0f, 2000);
+  rig.data.intakeAirC.set(27.0f, 2000);
+  rig.data.rawSpeedKph.set(0.0f, 2000);
+  // No MAF or PID 5E samples are supplied: the MAP/IAT/RPM path must suffice.
+
+  rig.engine.update(2000, config, false);
+
+  const double expectedAirGps =
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      (8.314 * (27.0 + 273.15));
+  const double expectedFuelLph =
+      expectedAirGps * 3600.0 / (config.petrolAfr * config.petrolDensity);
+  CHECK(rig.data.fuelMode == FuelMode::Petrol);
+  CHECK(rig.data.fuelValueValid);
+  CHECK(near(rig.data.speedDensityAirflowGps, expectedAirGps));
+  CHECK(near(rig.data.currentFuelRawLph, expectedFuelLph));
+  CHECK(near(rig.data.currentFuelLph, expectedFuelLph));
+  CHECK(rig.data.consumptionIsPerHour);
+  CHECK(near(rig.data.currentConsumption, expectedFuelLph));
+  CHECK(near(rig.trip.rawPetrolLiters, expectedFuelLph / 3600.0));
+}
+
+void testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.fuelSource = FuelSource::SpeedDensity;
+  config.lpgEnabled = true;
+  config.lpgAfr = 15.5f;
+  config.lpgDensity = 540.0f;
+  config.lpgCorrection = 1.1f;
+  rig.data.rpm.set(750.0f, 2000);
+  rig.data.mapKpa.set(30.0f, 2000);
+  rig.data.intakeAirC.set(27.0f, 2000);
+  rig.data.rawSpeedKph.set(0.0f, 2000);
+  rig.engine.update(2000, config, true);
+
+  const double expectedAirGps =
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      (8.314 * (27.0 + 273.15));
+  const double expectedRawLph =
+      expectedAirGps * 3600.0 / (config.lpgAfr * config.lpgDensity);
+  CHECK(rig.data.fuelMode == FuelMode::Lpg);
+  CHECK(rig.data.fuelValueValid);
+  CHECK(near(rig.data.currentFuelRawLph, expectedRawLph));
+  CHECK(near(rig.data.currentFuelLph, expectedRawLph * config.lpgCorrection));
+  CHECK(rig.data.consumptionIsPerHour);
+
+  // RPM and MAP are refreshed, but IAT is now older than its 5-second limit.
+  rig.data.rpm.set(750.0f, 8001);
+  rig.data.mapKpa.set(30.0f, 8001);
+  rig.engine.update(8001, config, true);
+  CHECK(!rig.data.fuelValueValid);
+  CHECK(isnan(rig.data.speedDensityAirflowGps));
+}
+
 void testFuelSourceSelectionAndStaleFallback() {
   Rig rig;
   ConfigData config = testConfig();
@@ -231,6 +291,28 @@ void testServiceLiveRefreshDoesNotIntegrateTrip() {
   CHECK(rig.data.fuelMode == FuelMode::Unknown);
   CHECK(near(rig.trip.totalDistanceKm, 0.0));
   CHECK(near(rig.trip.rawLpgLiters, 0.0));
+}
+
+void testServiceRefreshKeepsSpeedDensityAirflowLiveWithoutTripIntegration() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.fuelSource = FuelSource::SpeedDensity;
+  rig.data.rpm.set(750.0f, 1000);
+  rig.data.mapKpa.set(30.0f, 1000);
+  rig.data.intakeAirC.set(27.0f, 1000);
+
+  rig.engine.refreshLiveTelemetry(1000, config, false);
+
+  const double expectedAirGps =
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      (8.314 * (27.0 + 273.15));
+  CHECK(near(rig.data.speedDensityAirflowGps, expectedAirGps));
+  CHECK(!rig.data.fuelValueValid);  // service refresh does not run fuel/trip integration
+  CHECK(near(rig.trip.totalDistanceKm, 0.0));
+  CHECK(near(rig.trip.rawPetrolLiters, 0.0));
+
+  rig.engine.refreshLiveTelemetry(7001, config, false);
+  CHECK(isnan(rig.data.speedDensityAirflowGps));
 }
 
 void testFuelModeAndFuelTrimWarningDelay() {
@@ -410,12 +492,18 @@ int main() {
   test("PID fuel correction, consumption and trip accounting",
        testPidFuelCorrectionConsumptionAndTripAccounting);
   test("MAF formula and equivalence ratio", testMafFormulaEquivalenceRatioAndCorrection);
+  test("Speed-Density produces stationary L/h without MAF/PID 5E",
+       testSpeedDensityCalculatesStationaryLitersPerHourWithoutMafOrPid5E);
+  test("Speed-Density supports LPG and rejects stale IAT",
+       testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals);
   test("fuel source selection and stale fallback",
        testFuelSourceSelectionAndStaleFallback);
   test("LPG uses MAF and separate counters", testLpgUsesMafAndTracksSeparateCounters);
   test("DFCO threshold", testDfcoThresholdAndZeroFuelValidity);
   test("service live refresh without trip integration",
        testServiceLiveRefreshDoesNotIntegrateTrip);
+  test("service refresh keeps Speed-Density airflow live",
+       testServiceRefreshKeepsSpeedDensityAirflowLiveWithoutTripIntegration);
   test("fuel mode and trim warning delay", testFuelModeAndFuelTrimWarningDelay);
   test("barometric pressure source selection", testBaroSelectionAndStartupMapCapture);
   test("boost derivation and smoothing", testBoostDerivationAndSmoothing);

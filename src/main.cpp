@@ -12,6 +12,9 @@
 #include "input_manager.h"
 #include "littlefs_storage.h"
 #include "obd_client.h"
+#ifdef H2G_DIAGNOSTIC_BUILD
+#include "obd_trace.h"
+#endif
 #include "ota_diagnostics.h"
 #include "pins.h"
 #include "power_manager.h"
@@ -37,6 +40,9 @@ DtcHistoryPersistence dtcHistoryPersistence;
 TelemetryEngine telemetryEngine(telemetry);
 CanMonitor canMonitor;
 ObdClient obdClient(telemetry, configStore.data(), canMonitor);
+#ifdef H2G_DIAGNOSTIC_BUILD
+ObdTraceRecorder diagnosticTrace;
+#endif
 DashboardUi dashboard;
 OneButton button;
 LpgValveInput lpgInput;
@@ -47,7 +53,11 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
                             dtcHistoryPersistence, assetStore, littleFsStorage,
                             canMonitor, obdClient, brightnessManager,
-                            otaDiagnostics);
+                            otaDiagnostics
+#ifdef H2G_DIAGNOSTIC_BUILD
+                            , diagnosticTrace
+#endif
+                            );
 
 bool serviceMode = false;
 bool engineWasRunning = false;
@@ -76,6 +86,101 @@ void serviceDtcPersistence(uint32_t now) {
     }
   }
 }
+
+#ifdef H2G_DIAGNOSTIC_BUILD
+namespace {
+uint32_t diagnosticAgeMs(const TimedFloat& value, uint32_t now) {
+  return value.updatedAt != 0 ? now - value.updatedAt
+                              : ObdTraceSample::kUnknownAgeMs;
+}
+
+uint32_t diagnosticTimestampAgeMs(uint32_t updatedAt, uint32_t now) {
+  return updatedAt != 0 ? now - updatedAt
+                        : ObdTraceSample::kUnknownAgeMs;
+}
+
+uint32_t lastDiagnosticSampleAt = 0;
+bool diagnosticSampleInitialized = false;
+
+void captureDiagnosticTrace(uint32_t now) {
+  if (!diagnosticTrace.captureActive()) return;
+  if (diagnosticSampleInitialized &&
+      now - lastDiagnosticSampleAt < ObdTraceRecorder::kSampleIntervalMs) {
+    return;
+  }
+  diagnosticSampleInitialized = true;
+  lastDiagnosticSampleAt = now;
+
+  ObdTraceSample sample{};
+  sample.uptimeMs = now;
+  sample.rpm = telemetry.rpm.value;
+  sample.mapKpa = telemetry.mapKpa.value;
+  sample.baroKpa = telemetry.baroKpa.value;
+  sample.mafGps = telemetry.mafGps.value;
+  sample.fuelRateLph = telemetry.fuelRateLph.value;
+  sample.speedKph = telemetry.speedKph.value;
+  sample.boostRawBar = telemetry.boostBar;
+  sample.boostFilteredBar = telemetry.filteredBoostBar;
+  sample.fuelRawLph = telemetry.currentFuelRawLph;
+  sample.fuelCorrectedLph = telemetry.currentFuelLph;
+  sample.consumption = telemetry.currentConsumption;
+  sample.fuelTrimPercent = telemetry.fuelTrimSumPercent;
+  sample.rpmAgeMs = diagnosticAgeMs(telemetry.rpm, now);
+  sample.mapAgeMs = diagnosticAgeMs(telemetry.mapKpa, now);
+  sample.baroAgeMs = diagnosticAgeMs(telemetry.baroKpa, now);
+  sample.mafAgeMs = diagnosticAgeMs(telemetry.mafGps, now);
+  sample.fuelRateAgeMs = diagnosticAgeMs(telemetry.fuelRateLph, now);
+  sample.speedAgeMs = diagnosticAgeMs(telemetry.speedKph, now);
+  sample.obdLastResponseAgeMs =
+      diagnosticTimestampAgeMs(telemetry.lastObdResponseAt, now);
+  sample.obdResponseCount = telemetry.obdResponseCount;
+  sample.obdTimeoutCount = telemetry.obdTimeoutCount;
+  sample.canErrorCount = telemetry.canErrorCount;
+  sample.ecuResponseId = telemetry.ecuResponseId;
+  sample.fuelMode = static_cast<uint8_t>(telemetry.fuelMode);
+  sample.fuelSource = static_cast<uint8_t>(configStore.data().fuelSource);
+
+  if (telemetry.rpm.valid(now)) sample.validityFlags |= ObdTraceValidity::RpmFresh;
+  if (telemetry.mapKpa.valid(now)) sample.validityFlags |= ObdTraceValidity::MapFresh;
+  if (telemetry.baroKpa.valid(now, 15000)) sample.validityFlags |= ObdTraceValidity::BaroFresh;
+  if (telemetry.mafGps.valid(now)) sample.validityFlags |= ObdTraceValidity::MafFresh;
+  if (telemetry.fuelRateLph.valid(now)) sample.validityFlags |= ObdTraceValidity::FuelRateFresh;
+  if (telemetry.speedKph.valid(now)) sample.validityFlags |= ObdTraceValidity::SpeedFresh;
+  if (telemetry.obdConnected(now)) sample.validityFlags |= ObdTraceValidity::ObdConnected;
+  if (telemetry.fuelValueValid) sample.validityFlags |= ObdTraceValidity::FuelValueValid;
+  if (telemetry.rpm.valid(now) && telemetry.rpm.value > 200.0f) {
+    sample.validityFlags |= ObdTraceValidity::EngineRunning;
+  }
+  if (telemetry.lpgInputActive) sample.validityFlags |= ObdTraceValidity::LpgInputActive;
+  if (telemetry.dfcoActive) sample.validityFlags |= ObdTraceValidity::DfcoActive;
+  if (telemetry.consumptionIsPerHour) {
+    sample.validityFlags |= ObdTraceValidity::ConsumptionPerHour;
+  }
+
+  const uint8_t* pidIds = ObdClient::kDiagnosticPidIds_;
+  for (size_t i = 0; i < ObdTraceSample::kPidCount; ++i) {
+    const ObdPidStats* stats = obdClient.diagnosticPidStats(pidIds[i]);
+    if (!stats) continue;
+    sample.pidRequests[i] = stats->requestCount;
+    sample.pidResponses[i] = stats->responseCount;
+    sample.pidTimeouts[i] = stats->timeoutCount;
+    sample.pidTimeoutStreaks[i] = stats->consecutiveTimeouts;
+    sample.pidLastLatencyMs[i] = stats->lastResponseLatencyMs;
+    sample.pidRequestAgeMs[i] =
+        diagnosticTimestampAgeMs(stats->lastRequestAt, now);
+    sample.pidResponseAgeMs[i] =
+        diagnosticTimestampAgeMs(stats->lastResponseAt, now);
+    sample.pidUnsolicitedResponses[i] = stats->unsolicitedResponseCount;
+  }
+  const ObdOtherEcuStats* otherEcus = obdClient.otherEcuStats();
+  for (size_t i = 0; i < 8; ++i) {
+    sample.alternateEcuResponseCount += otherEcus[i].responseCount;
+  }
+
+  diagnosticTrace.record(sample);
+}
+}  // namespace
+#endif
 
 [[noreturn]] void enterLowVoltageSleep() {
   ESP_LOGW(kTag, "Entering low-voltage deep sleep at %.2f V",
@@ -110,6 +215,9 @@ void serviceDtcPersistence(uint32_t now) {
 void enterServiceMode() {
   if (serviceMode) return;
   serviceMode = true;
+#ifdef H2G_DIAGNOSTIC_BUILD
+  diagnosticTrace.setCaptureActive(false);
+#endif
   obdClient.pause(true);
   // Keep the ordinary Mode 01 discovery/poller alive in the portal so live MAP
   // and fuel-input state can be inspected. Auto DTC scans remain paused.
@@ -278,6 +386,9 @@ void loop() {
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
+#ifdef H2G_DIAGNOSTIC_BUILD
+  captureDiagnosticTrace(now);
+#endif
   if (telemetry.rpm.valid(now)) {
     const bool engineRunning = telemetry.rpm.value > 200.0f;
     const bool engineStopped = telemetry.rpm.value < 50.0f;

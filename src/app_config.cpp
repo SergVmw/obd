@@ -61,7 +61,11 @@ ConfigData ConfigStore::defaults() {
   c.boostDangerBar = 1.15f;
   c.smoothingMs = 250;
 
+#ifdef H2G_SPEED_DENSITY_BUILD
+  c.fuelSource = FuelSource::SpeedDensity;
+#else
   c.fuelSource = FuelSource::Auto;
+#endif
   c.petrolCorrection = 1.0f;
   c.lpgCorrection = 1.0f;
   c.petrolAfr = 14.7f;
@@ -236,6 +240,14 @@ bool ConfigStore::begin() {
     config_.fuelSource = FuelSource::Auto;
     needsSave = true;
   }
+#ifdef H2G_SPEED_DENSITY_BUILD
+  // This experimental image intentionally has one fuel model and no 0x10/0x5E
+  // polling. Preserve the rest of the user's saved configuration.
+  if (config_.fuelSource != FuelSource::SpeedDensity) {
+    config_.fuelSource = FuelSource::SpeedDensity;
+    needsSave = true;
+  }
+#endif
 
   return !needsSave || save();
 }

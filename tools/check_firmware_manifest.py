@@ -12,12 +12,14 @@ parser.add_argument(
     default=str(ROOT / ".pio/build/esp32s3_n16r8/firmware.bin"),
 )
 parser.add_argument("--expected-version")
+parser.add_argument("--expected-target")
 args = parser.parse_args()
 IMAGE = Path(args.image)
 version_text = (ROOT / "include/version.h").read_text(encoding="utf-8")
 source_version = re.search(r'H2G_FW_VERSION\s+"([^"]+)"', version_text).group(1)
 expected_version = args.expected_version or source_version
-expected_target = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', version_text).group(1)
+source_target = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', version_text).group(1)
+expected_target = args.expected_target or source_target
 slots_source = (ROOT / "src/firmware_slots.cpp").read_text(encoding="utf-8")
 legacy_body = re.search(r"kV036ElfSha256\[32\]\s*=\s*\{([^}]+)\}", slots_source, re.S).group(1)
 legacy_bytes = bytes(int(x, 16) for x in re.findall(r"0x([0-9a-fA-F]{2})", legacy_body))

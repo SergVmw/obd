@@ -31,6 +31,7 @@ struct TelemetryData {
   TimedFloat speedKph;          // raw + ConfigData::speedCorrectionKph
   TimedFloat mapKpa;
   TimedFloat baroKpa;
+  TimedFloat intakeAirC;
   TimedFloat mafGps;
   TimedFloat fuelRateLph;
   TimedFloat equivalenceRatio;
@@ -70,6 +71,7 @@ struct TelemetryData {
   float filteredBoostBar = 0.0f;
   float currentFuelRawLph = 0.0f;
   float currentFuelLph = 0.0f;
+  float speedDensityAirflowGps = NAN;
   float currentConsumption = 0.0f;
   bool consumptionIsPerHour = true;
   bool fuelValueValid = false;
@@ -174,6 +176,7 @@ class TelemetryEngine {
  private:
   float chooseBaro(uint32_t now, const ConfigData& config);
   float calculateMafFuelLph(float mafGps, float phi, float afr, float density) const;
+  float calculateSpeedDensityAirflowGps(uint32_t now) const;
 
   TelemetryData& data_;
   TripState* trip_ = nullptr;

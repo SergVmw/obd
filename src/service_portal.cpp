@@ -13,7 +13,11 @@
 #include <math.h>
 #include <string.h>
 #include "version.h"
+#ifdef H2G_DIAGNOSTIC_BUILD
+#include "diagnostic_web_ui_gz.h"
+#else
 #include "web_ui_gz.h"
+#endif
 
 namespace {
 constexpr const char* kTag = "WEB";
@@ -315,6 +319,10 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
   server_.on("/api/config", HTTP_POST, [this]() { receiveConfig(); });
   server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
+#ifdef H2G_DIAGNOSTIC_BUILD
+  server_.on("/api/diagnostics/trace", HTTP_GET,
+             [this]() { sendDiagnosticTrace(); });
+#endif
   server_.on("/api/assets/status", HTTP_GET,
              [this]() { sendAssetStatus(); });
   server_.on("/api/assets/preflight", HTTP_POST,
@@ -446,8 +454,14 @@ void ServicePortal::sendIndex() {
   touch();
   server_.sendHeader("Content-Encoding", "gzip");
   server_.sendHeader("Cache-Control", "no-store");
+#ifdef H2G_DIAGNOSTIC_BUILD
+  server_.send_P(200, "text/html",
+                 reinterpret_cast<const char*>(DIAGNOSTIC_INDEX_HTML_GZ),
+                 DIAGNOSTIC_INDEX_HTML_GZ_LEN);
+#else
   server_.send_P(200, "text/html", reinterpret_cast<const char*>(INDEX_HTML_GZ),
                  INDEX_HTML_GZ_LEN);
+#endif
 }
 
 void ServicePortal::sendConfig() {
@@ -493,6 +507,9 @@ void ServicePortal::sendConfig() {
 
   JsonObject fuel = doc["fuel"].to<JsonObject>();
   fuel["fuelSource"] = static_cast<uint8_t>(c.fuelSource);
+#ifdef H2G_SPEED_DENSITY_BUILD
+  fuel["speedDensityOnly"] = true;
+#endif
   fuel["petrolCorrection"] = c.petrolCorrection;
   fuel["lpgCorrection"] = c.lpgCorrection;
   fuel["lpgAfr"] = c.lpgAfr;
@@ -706,6 +723,9 @@ void ServicePortal::receiveConfig() {
   if (!c.lpgEnabled && c.fuelSource == FuelSource::BrcKLine) {
     c.fuelSource = FuelSource::Auto;
   }
+#ifdef H2G_SPEED_DENSITY_BUILD
+  c.fuelSource = FuelSource::SpeedDensity;
+#endif
 
   JsonObjectConst controls = doc["controls"];
   if (!controls.isNull()) {
@@ -904,6 +924,20 @@ void ServicePortal::sendStatus() {
     doc["baroKpa"] = nullptr;
     doc["baroAgeMs"] = nullptr;
   }
+  if (telemetry_.intakeAirC.valid(now, 5000)) {
+    doc["intakeAirC"] = telemetry_.intakeAirC.value;
+    doc["intakeAirAgeMs"] = now - telemetry_.intakeAirC.updatedAt;
+  } else {
+    doc["intakeAirC"] = nullptr;
+    doc["intakeAirAgeMs"] = nullptr;
+  }
+  if (isfinite(telemetry_.speedDensityAirflowGps)) {
+    doc["speedDensityAirflowGps"] = telemetry_.speedDensityAirflowGps;
+  } else {
+    doc["speedDensityAirflowGps"] = nullptr;
+  }
+  doc["fuelValueValid"] = telemetry_.fuelValueValid;
+  doc["fuelSource"] = static_cast<uint8_t>(configStore_.data().fuelSource);
   doc["effectiveBaroKpa"] = telemetry_.effectiveBaroKpa;
 
   JsonObject mapPid = doc["mapPid"].to<JsonObject>();
@@ -930,9 +964,126 @@ void ServicePortal::sendStatus() {
     mapPid["lastResponseLatencyMs"] = nullptr;
   }
 
+  JsonObject iatPid = doc["iatPid"].to<JsonObject>();
+  const ObdPidStats& iatStats = obdClient_.iatPidStats();
+  iatPid["supportKnown"] = iatStats.supportKnown;
+  if (iatStats.supportKnown) iatPid["supported"] = iatStats.supported;
+  else iatPid["supported"] = nullptr;
+  iatPid["requestCount"] = iatStats.requestCount;
+  iatPid["responseCount"] = iatStats.responseCount;
+  iatPid["timeoutCount"] = iatStats.timeoutCount;
+  iatPid["pending"] = obdClient_.iatPidRequestPending();
+  if (iatStats.lastRequestAt != 0) {
+    iatPid["lastRequestAgeMs"] = now - iatStats.lastRequestAt;
+  } else {
+    iatPid["lastRequestAgeMs"] = nullptr;
+  }
+  if (iatStats.lastResponseAt != 0) {
+    iatPid["lastResponseAgeMs"] = now - iatStats.lastResponseAt;
+    iatPid["lastResponseLatencyMs"] = iatStats.lastResponseLatencyMs;
+  } else {
+    iatPid["lastResponseAgeMs"] = nullptr;
+    iatPid["lastResponseLatencyMs"] = nullptr;
+  }
+
+  const bool rpmFresh = telemetry_.rpm.valid(now);
+#ifdef H2G_DIAGNOSTIC_BUILD
+  JsonObject diagnostic = doc["diagnostic"].to<JsonObject>();
+  diagnostic["schema"] = "h2-obd-diagnostic-v1";
+  diagnostic["sampleIntervalMs"] = ObdTraceRecorder::kSampleIntervalMs;
+  diagnostic["sampleCapacity"] = ObdTraceRecorder::kSampleCapacity;
+  diagnostic["sampleCount"] = diagnosticTrace_.sampleCount();
+  diagnostic["sampleWindowMs"] = diagnosticTrace_.sampleCount() > 1
+      ? (diagnosticTrace_.sampleCount() - 1) *
+            ObdTraceRecorder::kSampleIntervalMs
+      : 0;
+  diagnostic["droppedSamples"] = diagnosticTrace_.droppedSamples();
+  diagnostic["eventCapacity"] = ObdTraceRecorder::kEventCapacity;
+  diagnostic["eventCount"] = diagnosticTrace_.eventCount();
+  diagnostic["droppedEvents"] = diagnosticTrace_.droppedEvents();
+  diagnostic["captureActive"] = diagnosticTrace_.captureActive();
+  diagnostic["captureNote"] =
+      "RAM ring sampled during normal driving; frozen after entering service";
+  diagnostic["rpmFresh"] = rpmFresh;
+  if (rpmFresh) diagnostic["rpm"] = telemetry_.rpm.value;
+  else diagnostic["rpm"] = nullptr;
+  if (telemetry_.rpm.updatedAt != 0) {
+    diagnostic["rpmAgeMs"] = now - telemetry_.rpm.updatedAt;
+  } else {
+    diagnostic["rpmAgeMs"] = nullptr;
+  }
+  diagnostic["fuelValueValid"] = telemetry_.fuelValueValid;
+  if (telemetry_.fuelValueValid) {
+    diagnostic["fuelRawLph"] = telemetry_.currentFuelRawLph;
+    diagnostic["fuelCorrectedLph"] = telemetry_.currentFuelLph;
+    diagnostic["consumption"] = telemetry_.currentConsumption;
+  } else {
+    diagnostic["fuelRawLph"] = nullptr;
+    diagnostic["fuelCorrectedLph"] = nullptr;
+    diagnostic["consumption"] = nullptr;
+  }
+  diagnostic["fuelMode"] = fuelModeName(telemetry_.fuelMode);
+  diagnostic["fuelSource"] = static_cast<uint8_t>(configStore_.data().fuelSource);
+  diagnostic["lpgInputActive"] = telemetry_.lpgInputActive;
+  diagnostic["dfcoActive"] = telemetry_.dfcoActive;
+  diagnostic["consumptionIsPerHour"] = telemetry_.consumptionIsPerHour;
+
+  JsonArray diagnosticPids = diagnostic["pids"].to<JsonArray>();
+  for (size_t i = 0; i < ObdClient::kDiagnosticPidCount; ++i) {
+    const uint8_t pid = ObdClient::kDiagnosticPidIds_[i];
+    const ObdPidStats* stats = obdClient_.diagnosticPidStats(pid);
+    if (!stats) continue;
+    JsonObject item = diagnosticPids.add<JsonObject>();
+    item["pid"] = pid;
+    char pidHex[5];
+    snprintf(pidHex, sizeof(pidHex), "0x%02X", pid);
+    item["pidHex"] = pidHex;
+    item["name"] = pid == 0x0B ? "map_kpa"
+                    : pid == 0x0C ? "rpm"
+                    : pid == 0x10 ? "maf_gps"
+                    : pid == 0x33 ? "baro_kpa"
+                                  : "fuel_rate_lph";
+    item["supportKnown"] = stats->supportKnown;
+    if (stats->supportKnown) item["supported"] = stats->supported;
+    else item["supported"] = nullptr;
+    item["requestCount"] = stats->requestCount;
+    item["responseCount"] = stats->responseCount;
+    item["timeoutCount"] = stats->timeoutCount;
+    item["consecutiveTimeouts"] = stats->consecutiveTimeouts;
+    item["maxConsecutiveTimeouts"] = stats->maxConsecutiveTimeouts;
+    item["unsolicitedResponseCount"] = stats->unsolicitedResponseCount;
+    item["pending"] = obdClient_.diagnosticPidRequestPending(pid);
+    if (stats->lastRequestAt != 0) {
+      item["lastRequestAgeMs"] = now - stats->lastRequestAt;
+    } else {
+      item["lastRequestAgeMs"] = nullptr;
+    }
+    if (stats->lastResponseAt != 0) {
+      item["lastResponseAgeMs"] = now - stats->lastResponseAt;
+      item["lastResponseLatencyMs"] = stats->lastResponseLatencyMs;
+    } else {
+      item["lastResponseAgeMs"] = nullptr;
+      item["lastResponseLatencyMs"] = nullptr;
+    }
+  }
+
+  JsonArray otherEcus = diagnostic["otherEcus"].to<JsonArray>();
+  const ObdOtherEcuStats* otherEcuStats = obdClient_.otherEcuStats();
+  for (size_t i = 0; i < 8; ++i) {
+    const ObdOtherEcuStats& stats = otherEcuStats[i];
+    if (stats.responseCount == 0) continue;
+    JsonObject item = otherEcus.add<JsonObject>();
+    char responseId[8];
+    snprintf(responseId, sizeof(responseId), "0x%03X", stats.responseId);
+    item["ecuId"] = responseId;
+    item["responseCount"] = stats.responseCount;
+    item["lastPid"] = stats.lastPid;
+    item["lastResponseAgeMs"] = now - stats.lastResponseAt;
+  }
+#endif
+
   const ConfigData& config = configStore_.data();
   const bool lpgEnabled = config.lpgEnabled;
-  const bool rpmFresh = telemetry_.rpm.valid(now);
   doc["fuelSelection"] = telemetry_.lpgInputActive ? "LPG" : "95";
   doc["lpgInputActive"] = telemetry_.lpgInputActive;
   doc["lpgEnabled"] = lpgEnabled;
@@ -949,9 +1100,11 @@ void ServicePortal::sendStatus() {
   } else {
     doc["rpmAgeMs"] = nullptr;
   }
-  doc["fuelLph"] = telemetry_.fuelValueValid && rpmFresh
-                       ? telemetry_.currentFuelLph
-                       : 0.0f;
+  if (telemetry_.fuelValueValid && rpmFresh) {
+    doc["fuelLph"] = telemetry_.currentFuelLph;
+  } else {
+    doc["fuelLph"] = nullptr;
+  }
   doc["tripPetrolLiters"] = engine_.petrolLiters(config);
   doc["tripLpgLiters"] = engine_.lpgLiters(configStore_.data());
   doc["rawSpeedKph"] = telemetry_.rawSpeedKph.valid(now)
@@ -1177,11 +1330,203 @@ void ServicePortal::sendStatus() {
   bl["storageHealthy"] = brightness_.storageHealthy();
 
   String output;
+#ifdef H2G_DIAGNOSTIC_BUILD
+  output.reserve(8192);
+#else
   output.reserve(4608);
+#endif
   serializeJson(doc, output);
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);
 }
+
+#ifdef H2G_DIAGNOSTIC_BUILD
+namespace {
+void appendTraceUInt(String& output, uint32_t value) {
+  char buffer[12];
+  snprintf(buffer, sizeof(buffer), "%lu", static_cast<unsigned long>(value));
+  output += buffer;
+}
+
+void appendTraceFloat(String& output, float value) {
+  if (!isfinite(value)) {
+    output += "null";
+    return;
+  }
+  char buffer[28];
+  snprintf(buffer, sizeof(buffer), "%.3f", static_cast<double>(value));
+  output += buffer;
+}
+
+void appendTraceAge(String& output, uint32_t value) {
+  if (value == ObdTraceSample::kUnknownAgeMs) output += "null";
+  else appendTraceUInt(output, value);
+}
+
+void appendTraceBool(String& output, bool value) {
+  output += value ? "true" : "false";
+}
+
+void appendTraceSample(String& output, const ObdTraceSample& sample) {
+  output += '[';
+  appendTraceUInt(output, sample.uptimeMs);
+  output += ',';
+  appendTraceUInt(output, sample.ecuResponseId);
+  output += ',';
+  appendTraceUInt(output, sample.validityFlags);
+  output += ',';
+  appendTraceUInt(output, sample.eventFlags);
+
+  output += ",[";
+  const float signals[] = {
+      sample.rpm, sample.mapKpa, sample.baroKpa, sample.mafGps,
+      sample.fuelRateLph, sample.speedKph, sample.boostRawBar,
+      sample.boostFilteredBar};
+  for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) {
+    if (i != 0) output += ',';
+    appendTraceFloat(output, signals[i]);
+  }
+
+  output += "],[";
+  const uint32_t ages[] = {
+      sample.rpmAgeMs, sample.mapAgeMs, sample.baroAgeMs, sample.mafAgeMs,
+      sample.fuelRateAgeMs, sample.speedAgeMs,
+      sample.obdLastResponseAgeMs};
+  for (size_t i = 0; i < sizeof(ages) / sizeof(ages[0]); ++i) {
+    if (i != 0) output += ',';
+    appendTraceAge(output, ages[i]);
+  }
+
+  output += "],[";
+  appendTraceFloat(output, sample.fuelRawLph);
+  output += ',';
+  appendTraceFloat(output, sample.fuelCorrectedLph);
+  output += ',';
+  appendTraceBool(output,
+      (sample.validityFlags & ObdTraceValidity::FuelValueValid) != 0);
+  output += ',';
+  appendTraceFloat(output, sample.consumption);
+  output += ',';
+  appendTraceBool(output,
+      (sample.validityFlags & ObdTraceValidity::ConsumptionPerHour) != 0);
+  output += ',';
+  appendTraceUInt(output, sample.fuelMode);
+  output += ',';
+  appendTraceUInt(output, sample.fuelSource);
+  output += ',';
+  appendTraceBool(output,
+      (sample.validityFlags & ObdTraceValidity::LpgInputActive) != 0);
+  output += ',';
+  appendTraceBool(output,
+      (sample.validityFlags & ObdTraceValidity::DfcoActive) != 0);
+  output += ',';
+  appendTraceFloat(output, sample.fuelTrimPercent);
+
+  output += "],[";
+  appendTraceBool(output,
+      (sample.validityFlags & ObdTraceValidity::ObdConnected) != 0);
+  output += ',';
+  appendTraceUInt(output, sample.obdResponseCount);
+  output += ',';
+  appendTraceUInt(output, sample.obdTimeoutCount);
+  output += ',';
+  appendTraceUInt(output, sample.canErrorCount);
+  output += ',';
+  appendTraceUInt(output, sample.alternateEcuResponseCount);
+
+  output += "],[";
+  for (size_t i = 0; i < ObdTraceSample::kPidCount; ++i) {
+    if (i != 0) output += ',';
+    output += '[';
+    appendTraceUInt(output, sample.pidRequests[i]);
+    output += ',';
+    appendTraceUInt(output, sample.pidResponses[i]);
+    output += ',';
+    appendTraceUInt(output, sample.pidTimeouts[i]);
+    output += ',';
+    appendTraceUInt(output, sample.pidTimeoutStreaks[i]);
+    output += ',';
+    if (sample.pidResponses[i] == 0) output += "null";
+    else appendTraceUInt(output, sample.pidLastLatencyMs[i]);
+    output += ',';
+    if (sample.pidRequests[i] == 0) output += "null";
+    else appendTraceAge(output, sample.pidRequestAgeMs[i]);
+    output += ',';
+    if (sample.pidResponses[i] == 0) output += "null";
+    else appendTraceAge(output, sample.pidResponseAgeMs[i]);
+    output += ',';
+    appendTraceUInt(output, sample.pidUnsolicitedResponses[i]);
+    output += ']';
+  }
+  output += "]]";
+}
+}  // namespace
+
+void ServicePortal::sendDiagnosticTrace() {
+  touch();
+  String output;
+  if (!output.reserve(90000)) {
+    server_.send(503, "application/json",
+                 "{\"error\":\"not enough memory to export diagnostic trace\"}");
+    return;
+  }
+
+  output += "{\"schema\":\"h2-obd-trace-v1\",\"firmwareVersion\":\"";
+  output += H2G_FW_VERSION;
+  output += "\",\"buildTarget\":\"";
+  output += H2G_BUILD_TARGET;
+  output += "\",\"capturedAtUptimeMs\":";
+  appendTraceUInt(output, millis());
+  output += ",\"captureActive\":";
+  appendTraceBool(output, diagnosticTrace_.captureActive());
+  output += ",\"sampleIntervalMs\":";
+  appendTraceUInt(output, ObdTraceRecorder::kSampleIntervalMs);
+  output += ",\"sampleCapacity\":";
+  appendTraceUInt(output, ObdTraceRecorder::kSampleCapacity);
+  output += ",\"sampleCount\":";
+  appendTraceUInt(output, diagnosticTrace_.sampleCount());
+  output += ",\"droppedSamples\":";
+  appendTraceUInt(output, diagnosticTrace_.droppedSamples());
+  output += ",\"eventCapacity\":";
+  appendTraceUInt(output, ObdTraceRecorder::kEventCapacity);
+  output += ",\"eventCount\":";
+  appendTraceUInt(output, diagnosticTrace_.eventCount());
+  output += ",\"droppedEvents\":";
+  appendTraceUInt(output, diagnosticTrace_.droppedEvents());
+  output += ",\"ecuIdEncoding\":\"decimal CAN response ID\"";
+  output += ",\"pidOrder\":[11,12,16,51,94]";
+  output += ",\"sampleColumns\":[\"uptimeMs\",\"ecuResponseId\",\"validityFlags\",\"eventFlags\",\"signals\",\"signalAgesMs\",\"fuel\",\"obd\",\"pids\"]";
+  output += ",\"signalsOrder\":[\"rpm\",\"mapKpa\",\"baroKpa\",\"mafGps\",\"fuelRateLph\",\"speedKph\",\"boostRawBar\",\"boostFilteredBar\"]";
+  output += ",\"signalAgesOrder\":[\"rpm\",\"map\",\"baro\",\"maf\",\"fuelRate\",\"speed\",\"lastObdResponse\"]";
+  output += ",\"fuelOrder\":[\"rawLph\",\"correctedLph\",\"valid\",\"consumption\",\"consumptionIsPerHour\",\"fuelModeCode\",\"fuelSourceCode\",\"lpgInputActive\",\"dfcoActive\",\"fuelTrimPercent\"]";
+  output += ",\"obdOrder\":[\"connected\",\"responses\",\"timeouts\",\"canErrors\",\"alternateEcuResponses\"]";
+  output += ",\"pidColumns\":[\"requests\",\"responses\",\"timeouts\",\"consecutiveTimeouts\",\"lastResponseLatencyMs\",\"lastRequestAgeMs\",\"lastResponseAgeMs\",\"unsolicitedResponses\"]";
+  output += ",\"validityFlags\":{\"rpmFresh\":1,\"mapFresh\":2,\"baroFresh\":4,\"mafFresh\":8,\"fuelRateFresh\":16,\"speedFresh\":32,\"obdConnected\":64,\"fuelValueValid\":128,\"engineRunning\":256,\"lpgInputActive\":512,\"dfcoActive\":1024,\"consumptionPerHour\":2048}";
+  output += ",\"eventFlags\":{\"rpmStale\":1,\"obdDisconnected\":2,\"fuelCalculationInvalid\":4,\"lpgInputChanged\":8,\"mapTimeoutBurst\":16,\"rpmTimeoutBurst\":32,\"mafTimeoutBurst\":64,\"baroTimeoutBurst\":128,\"fuelRateTimeoutBurst\":256,\"unsolicitedMode01Response\":512,\"alternateEcuResponse\":1024}";
+
+  output += ",\"samples\":[";
+  for (size_t i = 0; i < diagnosticTrace_.sampleCount(); ++i) {
+    if (i != 0) output += ',';
+    appendTraceSample(output, diagnosticTrace_.sampleAt(i));
+  }
+  output += "],\"events\":[";
+  for (size_t i = 0; i < diagnosticTrace_.eventCount(); ++i) {
+    if (i != 0) output += ',';
+    const ObdTraceEventSnapshot& event = diagnosticTrace_.eventAt(i);
+    output += "{\"reasonFlags\":";
+    appendTraceUInt(output, event.reasonFlags);
+    output += ",\"sample\":";
+    appendTraceSample(output, event.sample);
+    output += '}';
+  }
+  output += "]}";
+
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.sendHeader("Content-Disposition",
+                     "attachment; filename=h2-gauge-diagnostic-trace.json");
+  server_.send(200, "application/json", output);
+}
+#endif
 
 void ServicePortal::sendPetrolCalibration() {
   touch();

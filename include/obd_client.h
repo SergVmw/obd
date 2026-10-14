@@ -19,7 +19,21 @@ struct ObdPidStats {
   uint32_t lastRequestAt = 0;
   uint32_t lastResponseAt = 0;
   uint32_t lastResponseLatencyMs = 0;
+#ifdef H2G_DIAGNOSTIC_BUILD
+  uint32_t consecutiveTimeouts = 0;
+  uint32_t maxConsecutiveTimeouts = 0;
+  uint32_t unsolicitedResponseCount = 0;
+#endif
 };
+
+#ifdef H2G_DIAGNOSTIC_BUILD
+struct ObdOtherEcuStats {
+  uint16_t responseId = 0;
+  uint32_t responseCount = 0;
+  uint32_t lastResponseAt = 0;
+  uint8_t lastPid = 0;
+};
+#endif
 
 class ObdClient {
  public:
@@ -46,6 +60,17 @@ class ObdClient {
   bool discoveryDone() const { return discoveryDone_; }
   bool mapPidRequestPending() const;
   const ObdPidStats& mapPidStats() const { return mapPidStats_; }
+  bool iatPidRequestPending() const;
+  const ObdPidStats& iatPidStats() const { return iatPidStats_; }
+#ifdef H2G_DIAGNOSTIC_BUILD
+  static constexpr size_t kDiagnosticPidCount = 5;
+  static const uint8_t kDiagnosticPidIds_[kDiagnosticPidCount];
+  const ObdPidStats* diagnosticPidStats(uint8_t pid) const;
+  bool diagnosticPidRequestPending(uint8_t pid) const;
+  const ObdOtherEcuStats* otherEcuStats() const {
+    return diagnosticOtherEcuStats_;
+  }
+#endif
   bool requestDtcScan(uint32_t now) { return diagnostics_.requestScan(now); }
   bool requestDtcClear(uint32_t now) { return diagnostics_.requestClear(now); }
   bool confirmDtcPreclearPreserved(bool success, uint32_t now) {
@@ -87,6 +112,12 @@ class ObdClient {
   void runPolling(uint32_t now);
   void finishPending(bool timeout);
   void storeSupportedMask(uint8_t basePid, const uint8_t* data);
+#ifdef H2G_DIAGNOSTIC_BUILD
+  ObdPidStats* mutableDiagnosticPidStats(uint8_t pid);
+  void refreshDiagnosticSupportStats();
+  void recordOtherEcuResponse(uint16_t responseId, uint8_t pid,
+                              uint32_t now);
+#endif
 
   TelemetryData& telemetry_;
   const ConfigData& config_;
@@ -113,18 +144,25 @@ class ObdClient {
   uint32_t supportedMasks_[3]{};
   bool maskKnown_[3]{};
   ObdPidStats mapPidStats_{};
+  ObdPidStats iatPidStats_{};
+#ifdef H2G_DIAGNOSTIC_BUILD
+  ObdPidStats diagnosticPidStats_[kDiagnosticPidCount - 1]{};
+  ObdOtherEcuStats diagnosticOtherEcuStats_[8]{};
+#endif
 
   // RPM is discovered first so the first valid PID 0C response binds the
   // engine ECU before support masks or normal telemetry are accepted.
   static constexpr uint8_t kDiscoveryPids_[4] = {0x0C, 0x00, 0x20, 0x40};
-  PollItem poll_[13] = {
+#ifdef H2G_SPEED_DENSITY_BUILD
+  // The Speed-Density test image never requests unsupported PID 10 (MAF) or
+  // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).
+  PollItem poll_[12] = {
       {0x01, 500, 0},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100, 0},   // MAP
       {0x0C, 150, 0},   // RPM
       {0x0D, 200, 0},   // speed
-      {0x10, 200, 0},   // MAF
+      {0x0F, 1000, 0},  // intake air temperature for Speed-Density
       {0x11, 200, 0},   // absolute throttle position
-      {0x5E, 200, 0},   // fuel rate
       {0x44, 250, 0},   // commanded equivalence ratio
       {0x06, 500, 0},   // short-term fuel trim bank 1
       {0x07, 500, 0},   // long-term fuel trim bank 1
@@ -132,4 +170,22 @@ class ObdClient {
       {0x05, 1000, 0},  // coolant
       {0x33, 10000, 0}  // barometric pressure
   };
+#else
+  PollItem poll_[14] = {
+      {0x01, 500, 0},   // monitor status / MIL / confirmed DTC count
+      {0x0B, 100, 0},   // MAP
+      {0x0C, 150, 0},   // RPM
+      {0x0D, 200, 0},   // speed
+      {0x0F, 1000, 0},  // IAT, scheduled only in Speed-Density mode
+      {0x10, 200, 0},   // MAF, skipped in Speed-Density mode
+      {0x11, 200, 0},   // absolute throttle position
+      {0x5E, 200, 0},   // fuel rate, skipped in Speed-Density mode
+      {0x44, 250, 0},   // commanded equivalence ratio
+      {0x06, 500, 0},   // short-term fuel trim bank 1
+      {0x07, 500, 0},   // long-term fuel trim bank 1
+      {0x42, 1000, 0},  // ECU voltage
+      {0x05, 1000, 0},  // coolant
+      {0x33, 10000, 0}  // barometric pressure
+  };
+#endif
 };

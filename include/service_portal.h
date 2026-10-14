@@ -14,6 +14,9 @@
 #include "dtc_history_persistence.h"
 #include "firmware_slots.h"
 #include "obd_client.h"
+#ifdef H2G_DIAGNOSTIC_BUILD
+#include "obd_trace.h"
+#endif
 #include "ota_diagnostics.h"
 #include "runtime_persistence.h"
 #include "telemetry.h"
@@ -27,14 +30,22 @@ class ServicePortal {
                 DtcHistoryPersistence& dtcHistoryPersistence,
                 AssetStore& assets, LittleFsStorage& littleFs,
                 CanMonitor& canMonitor, ObdClient& obdClient,
-                BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics)
+                BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics
+#ifdef H2G_DIAGNOSTIC_BUILD
+                , ObdTraceRecorder& diagnosticTrace
+#endif
+                )
       : configStore_(configStore), telemetry_(telemetry), engine_(engine),
         tripStore_(tripStore),
         petrolCalibrationStore_(petrolCalibrationStore),
         persistence_(persistence), dtcHistoryPersistence_(dtcHistoryPersistence),
         assets_(assets), littleFs_(littleFs), canMonitor_(canMonitor),
         obdClient_(obdClient),
-        brightness_(brightness), otaDiagnostics_(otaDiagnostics), server_(80) {}
+        brightness_(brightness), otaDiagnostics_(otaDiagnostics)
+#ifdef H2G_DIAGNOSTIC_BUILD
+        , diagnosticTrace_(diagnosticTrace)
+#endif
+        , server_(80) {}
 
   bool begin();
   void loop();
@@ -50,6 +61,9 @@ class ServicePortal {
   void receiveConfig();
   void setTemporaryBrightness();
   void sendStatus();
+#ifdef H2G_DIAGNOSTIC_BUILD
+  void sendDiagnosticTrace();
+#endif
   void sendPetrolCalibration();
   void startPetrolCalibration();
   void applyPetrolCalibration();
@@ -121,6 +135,9 @@ class ServicePortal {
   ObdClient& obdClient_;
   BrightnessManager& brightness_;
   OtaDiagnostics& otaDiagnostics_;
+#ifdef H2G_DIAGNOSTIC_BUILD
+  ObdTraceRecorder& diagnosticTrace_;
+#endif
   FirmwareSlots firmwareSlots_;
   DNSServer dns_;
   WebServer server_;

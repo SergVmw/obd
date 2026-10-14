@@ -4,6 +4,14 @@
 #include <cstring>
 #include <math.h>
 
+namespace {
+constexpr float kEngineDisplacementM3 = 0.001497f;  // GW4G15B: 1497 cm3
+constexpr float kSpeedDensityVolumetricEfficiency = 0.85f;  // initial estimate
+constexpr float kAirMolarMassGramsPerMol = 28.97f;
+constexpr float kGasConstantJoulesPerMolKelvin = 8.314f;
+constexpr uint32_t kIntakeAirMaxAgeMs = 5000;
+}  // namespace
+
 uint32_t TripStore::checksum(const TripState& trip) {
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&trip);
   const size_t length = offsetof(TripState, checksum);
@@ -134,8 +142,43 @@ float TelemetryEngine::chooseBaro(uint32_t now, const ConfigData& config) {
 
 float TelemetryEngine::calculateMafFuelLph(float mafGps, float phi,
                                            float afr, float density) const {
-  if (mafGps < 0.0f || afr < 1.0f || density < 100.0f) return NAN;
+  if (!isfinite(mafGps) || mafGps < 0.0f || !isfinite(phi) || phi <= 0.0f ||
+      !isfinite(afr) || afr < 1.0f || !isfinite(density) || density < 100.0f) {
+    return NAN;
+  }
   return mafGps * phi * 3600.0f / (afr * density);
+}
+
+float TelemetryEngine::calculateSpeedDensityAirflowGps(uint32_t now) const {
+  if (!data_.mapKpa.valid(now) || !data_.rpm.valid(now) ||
+      !data_.intakeAirC.valid(now, kIntakeAirMaxAgeMs)) {
+    return NAN;
+  }
+
+  const float mapKpa = data_.mapKpa.value;
+  const float rpm = data_.rpm.value;
+  const float temperatureKelvin = data_.intakeAirC.value + 273.15f;
+  if (!isfinite(mapKpa) || mapKpa <= 0.0f || mapKpa > 255.0f ||
+      !isfinite(rpm) || rpm <= 200.0f || rpm > 12000.0f ||
+      !isfinite(temperatureKelvin) || temperatureKelvin < 150.0f ||
+      temperatureKelvin > 423.15f) {
+    return NAN;
+  }
+
+  // MAP is absolute pressure in kPa. RPM is reported per minute, so the
+  // four-stroke intake-cycle rate is RPM / 120 per second. This is equivalent
+  // to RPM / 60 divided by the two revolutions per intake cycle; using /2
+  // alone would overstate airflow by a factor of 60.
+  const float pressurePa = mapKpa * 1000.0f;
+  const float intakeCyclesPerSecond = rpm / 120.0f;
+  const float airflowGps =
+      pressurePa * intakeCyclesPerSecond * kEngineDisplacementM3 *
+      kSpeedDensityVolumetricEfficiency * kAirMolarMassGramsPerMol /
+      (kGasConstantJoulesPerMolKelvin * temperatureKelvin);
+  if (!isfinite(airflowGps) || airflowGps <= 0.0f || airflowGps > 500.0f) {
+    return NAN;
+  }
+  return airflowGps;
 }
 
 void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
@@ -181,6 +224,14 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
   } else {
     data_.fuelMode = data_.lpgInputActive ? FuelMode::Lpg : FuelMode::Petrol;
   }
+
+  // Keep the derived airflow live in service mode too. refreshLiveTelemetry()
+  // deliberately does not integrate fuel/distance into trip counters.
+  data_.speedDensityAirflowGps =
+      config.fuelSource == FuelSource::SpeedDensity && rpmValid &&
+              data_.rpm.value > 200.0f
+          ? calculateSpeedDensityAirflowGps(now)
+          : NAN;
 }
 
 void TelemetryEngine::update(uint32_t now, const ConfigData& config,
@@ -214,6 +265,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
 
   data_.currentFuelRawLph = 0.0f;
   data_.currentFuelLph = 0.0f;
+  data_.speedDensityAirflowGps = NAN;
   data_.fuelValueValid = false;
   data_.dfcoActive = false;
 
@@ -226,7 +278,16 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     }
 
     float rawLph = NAN;
-    if (data_.fuelMode == FuelMode::Lpg) {
+    if (config.fuelSource == FuelSource::SpeedDensity) {
+      data_.speedDensityAirflowGps = calculateSpeedDensityAirflowGps(now);
+      if (isfinite(data_.speedDensityAirflowGps)) {
+        const bool lpg = data_.fuelMode == FuelMode::Lpg;
+        rawLph = calculateMafFuelLph(
+            data_.speedDensityAirflowGps, phi,
+            lpg ? config.lpgAfr : config.petrolAfr,
+            lpg ? config.lpgDensity : config.petrolDensity);
+      }
+    } else if (data_.fuelMode == FuelMode::Lpg) {
       // PID 5E is not treated as real liquid LPG consumption.
       if (data_.mafGps.valid(now)) {
         rawLph = calculateMafFuelLph(data_.mafGps.value, phi,
@@ -243,7 +304,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
         rawLph = calculateMafFuelLph(data_.mafGps.value, phi,
                                      config.petrolAfr, config.petrolDensity);
       }
-      // Haval CAN, BRC K-Line and speed-density remain disabled placeholders.
+      // Haval CAN and BRC K-Line remain disabled placeholders.
     }
 
     if (config.dfcoEnabled() && data_.throttlePercent.valid(now) &&
