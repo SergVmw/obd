@@ -40,7 +40,7 @@ Mode 01 PID 09 вместо Service 09 PID 02, проверка ждала фо�
 
 Отчёт: [`releases/README-v0.4.6.md`](releases/README-v0.4.6.md).
 
-## Предыдущий production-релиз 0.4.5 (оставлен для отката)
+## Релиз 0.4.5 (артефакты удалены, доступны по метке `v0.4.5`)
 
 Экран «ГБО: коррекции», VIN, вкладка «Диагностика» с выгрузкой JSON, удаление
 временной яркости и усреднение крупного расхода за минуту. Отдельно
@@ -58,9 +58,9 @@ Mode 01 PID 09 вместо Service 09 PID 02, проверка ждала фо�
 **Потеря данных при обновлении:** запись выросла со 156 до 164 байт, поездка
 обнулится один раз.
 
-Отчёт: [`releases/README-v0.4.5.md`](releases/README-v0.4.5.md).
+Отчёт и артефакты: [метка `v0.4.5`](https://github.com/SergVmw/obd/blob/v0.4.5/releases/) — из рабочего дерева удалены.
 
-## Предыдущий production-релиз 0.4.4 (оставлен для отката)
+## Релиз 0.4.4 (артефакты удалены, доступны по метке `v0.4.4`)
 
 Цель — только ESP32-S3 DevKitC-1 N16R8. **0.4.4** — это 0.4.3 плюс пять исправлений, найденных на автомобиле. Расход в 0.4.3 не появлялся вообще: `observeEngineResponse` защёлкивал первый ответивший блок на PID `0xC`, а в поле это оказался блок АКПП `0x7E9`, тогда как двигатель `0x7E8` ответил 1428 раз и все ответы были отброшены. Теперь маски поддержки объединяются по всем ответившим блокам, и сигнал двигателя берётся у того, кто его реально имеет; PID `01` (MIL и счётчик неисправностей) исключён намеренно, чтобы лампа Check Engine не следовала за блоком АКПП.
 
@@ -78,9 +78,9 @@ Mode 01 PID 09 вместо Service 09 PID 02, проверка ждала фо�
 
 Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
 
-**Статус:** 0.4.4 локально собран и проверен всеми host/static/font/browser gates, manifest, app/factory layout и SHA-256. Расход, разделение простоев и среднее по движению проверены в дороге на автомобиле владельца. Предыдущий production-релиз 0.4.3 сохранён отдельно и его hashes не изменялись; артефакты 0.4.2 были удалены из репозитория, поэтому пакетный гейт теперь защищает 0.4.3. Аппаратно подтверждённым OTA-основанием проекта остаётся 0.3.9 (2026-09-23). Config schema остаётся **6**.
+**Статус:** 0.4.4 был проверен в дороге на автомобиле владельца — расход, разделение простоев и среднее по движению. Артефакты 0.4.3, 0.4.4 и 0.4.5 удалены из рабочего дерева при переходе к 0.4.6/0.4.7 и остались в истории по меткам. Аппаратно подтверждённым OTA-основанием проекта остаётся 0.3.9 (2026-09-23). Config schema остаётся **6**.
 
-История: [`CHANGELOG.md`](CHANGELOG.md). Release report и контрольные суммы: [`releases/README-v0.4.4.md`](releases/README-v0.4.4.md), [`releases/SHA256SUMS-v0.4.4.txt`](releases/SHA256SUMS-v0.4.4.txt). Дополнительные документы: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md), [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md), [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md), [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md), [DTC safety](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+История: [`CHANGELOG.md`](CHANGELOG.md). Release report и контрольные суммы: [Метка `v0.4.4`](https://github.com/SergVmw/obd/blob/v0.4.4/releases/). Дополнительные документы: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md), [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md), [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md), [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md), [DTC safety](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
 ## Реализовано
 
@@ -263,7 +263,7 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая объединение масок PID, полосу стояния скорости, разделение простоев, отбрасывание интервала при неизвестной скорости, яркость, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.4 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check дополнительно проверяет, что прежние артефакты 0.4.3 и их SHA-256 не удалены/не изменены; ранее он ссылался на 0.4.2, которых в репозитории нет, поэтому гейт не мог пройти ни для одной версии. Два гейта (`check_ota_transport`, `check_diagnostic_integration`) проверяли версию литералом `0.4.3` и падали на любом её изменении; теперь они проверяют форму — строка в кавычках длиной не более 15 символов, потому что манифест хранит её в `firmwareVersion[16]`. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая объединение масок PID, полосу стояния скорости, разделение простоев, отбрасывание интервала при неизвестной скорости, яркость, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check дополнительно проверяет, что предыдущий production-релиз и его SHA-256 не удалены и не изменены; версия берётся из `previous_version`, а не из литерала, потому что раньше ссылка на 0.4.2, которого в репозитории нет, делала гейт непроходимым ни для одной версии. Правка на 0.4.3 и удаление артефактов повторили бы это, поэтому удалённые релизы остаются доступны по меткам. Два гейта (`check_ota_transport`, `check_diagnostic_integration`) проверяли версию литералом `0.4.3` и падали на любом её изменении; теперь они проверяют форму — строка в кавычках длиной не более 15 символов, потому что манифест хранит её в `firmwareVersion[16]`. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
 
 ## Упакованный release 0.4.7
 
@@ -281,8 +281,12 @@ SHA-256: d9f951ccab211c3db3febee13e97032e428792563262cbd6684ce73b226cdb37
 image для чистой записи с offset `0x0`. Полный отчёт:
 [`releases/README-v0.4.7.md`](releases/README-v0.4.7.md).
 
-Артефакты 0.4.6, 0.4.5, 0.4.4 и 0.4.3 оставлены рядом без изменения их
-SHA-256 и служат точками отката. 0.4.6 — рабочая версия.
+Рядом лежат артефакты 0.4.6 — предыдущий production-релиз, рабочая версия для
+отката. Релизы 0.4.5, 0.4.4 и 0.4.3 удалены из рабочего дерева, чтобы не держать
+четыре релиза подряд; их файлы и отчёты остались в истории по меткам
+[`v0.4.5`](https://github.com/SergVmw/obd/blob/v0.4.5/releases/),
+[`v0.4.4`](https://github.com/SergVmw/obd/blob/v0.4.4/releases/) и
+[`v0.4.3`](https://github.com/SergVmw/obd/blob/v0.4.3/releases/).
 
 ## Flash и PSRAM
 

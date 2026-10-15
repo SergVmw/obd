@@ -85,7 +85,7 @@
 
 `TripState` вырос с 80 до 88 байт, запись со 156 до 164, поэтому поездка обнулится один раз. Возврат на 0.4.4 тоже начнёт поездку заново, потому что 0.4.4 читает записи по 156 байт. Калибровка бака хранится отдельно.
 
-Подробности: [`releases/README-v0.4.5.md`](releases/README-v0.4.5.md), [`releases/SHA256SUMS-v0.4.5.txt`](releases/SHA256SUMS-v0.4.5.txt).
+Подробности: [Метка `v0.4.5`](https://github.com/SergVmw/obd/blob/v0.4.5/releases/) — отчёт и контрольные суммы в истории; из рабочего дерева удалены.
 
 ## 0.4.4 — 2026-10-15
 ## 0.4.4 — 2026-10-15
@@ -120,7 +120,7 @@ Production-релиз поверх 0.4.3; Config schema остаётся 6. Со
 
 Manifest `0.4.4 / esp32s3-n16r8`, app offset `0x1c354`. App: 1 208 960 байт, SHA-256 `4ad2cb3a77e237709e669db7a30da97ea5e8cfde35de7c640a65682df276e82f`; factory: 1 274 496 байт, SHA-256 `3c0e7201115e0eea5122fc247f1f359726034134b6a252e351b5771044b4ea2e`.
 
-Подробности: [`releases/README-v0.4.4.md`](releases/README-v0.4.4.md), [`releases/SHA256SUMS-v0.4.4.txt`](releases/SHA256SUMS-v0.4.4.txt).
+Подробности: [Метка `v0.4.4`](https://github.com/SergVmw/obd/blob/v0.4.4/releases/) — отчёт и контрольные суммы в истории; из рабочего дерева удалены.
 
 ## 0.4.3 — 2026-10-13
 
@@ -138,7 +138,7 @@ Production-релиз поверх 0.4.2; Config schema остаётся 6. Вы
 - Пройдены host, static, font и browser gates, а также PlatformIO build/manifest/package checks. Manifest: `0.4.3 / esp32s3-n16r8`, app offset `0x1c314`. App: 1 198 752 байта, SHA-256 `52b36d55420d6aa1866777efbf90021638e92a4a1655dd291ced914aca9d43f6`; factory: 1 264 288 байт, SHA-256 `5cd473554172237454be5e5a89854e1463d2106d34361d328922d3c17c30141d`.
 - 0.4.3 локально собран и проверен, но не устанавливался на автомобиль. TWAI self-test не выполнялся и в release отсутствует.
 
-Подробности и полные контрольные суммы: [`releases/README-v0.4.3.md`](releases/README-v0.4.3.md), [`releases/SHA256SUMS-v0.4.3.txt`](releases/SHA256SUMS-v0.4.3.txt).
+Подробности и полные контрольные суммы: [Метка `v0.4.3`](https://github.com/SergVmw/obd/blob/v0.4.3/releases/) — отчёт и контрольные суммы в истории; из рабочего дерева удалены.
 
 ## 0.4.2 — 2026-09-30
 

@@ -1112,17 +1112,6 @@ App image для загрузки через эту веб-страницу. В�
 Выпущенный релиз — 0.4.5.
 
 ```text
-releases/h2-gauge-v0.4.4-esp32s3-n16r8.bin
-Размер: 1 208 960 байт
-SHA-256: 4ad2cb3a77e237709e669db7a30da97ea5e8cfde35de7c640a65682df276e82f
-
-releases/h2-gauge-v0.4.4-esp32s3-n16r8-factory.bin
-Размер: 1 274 496 байт
-SHA-256: 3c0e7201115e0eea5122fc247f1f359726034134b6a252e351b5771044b4ea2e
-```
-
-Артефакты 0.4.2 были удалены из репозитория, поэтому в этом разделе они больше
-не упоминаются: сверить с ними контрольную сумму нечем. Отчёт по 0.4.4 —
-[`../releases/README-v0.4.4.md`](../releases/README-v0.4.4.md).
+Релизы 0.4.3, 0.4.4 и 0.4.5 удалены из рабочего дерева, чтобы не держать четыре релиза подряд; их артефакты и отчёты доступны по меткам [`v0.4.5`](https://github.com/SergVmw/obd/blob/v0.4.5/releases/) и [`v0.4.4`](https://github.com/SergVmw/obd/blob/v0.4.4/releases/). Актуальные файлы — 0.4.6 и 0.4.7.
 
 Штатный web OTA 0.3.7→0.3.9 аппаратно подтверждён 2026-09-23: после автоматического reboot current/running/boot = APP0/0.3.9, APP1 = 0.3.7, state = `valid`. Отдельно остаются visual-проверка assets и random-cut persistence. Factory image `h2-gauge-v0.3.9-esp32s3-n16r8-factory.bin` через web OTA не загружать: он предназначен только для действительно чистой USB-прошивки с offset `0x0`. При предварительном erase он удаляет NVS и LittleFS вместе с journal/custom assets.
