@@ -575,9 +575,11 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
   }
 
   if (pciType == 0x1) {
-    // PID 0C is a four-byte payload and must fit in a Single Frame. Reject a
-    // functional First Frame so responses from multiple ECUs cannot share one
-    // ISO-TP assembly context before the engine ECU is locked.
+    // Discovery only ever accepts a Single Frame, so a First Frame here is a
+    // functional request answered with a multi-frame reply. Rejecting it keeps
+    // several ECUs from sharing one ISO-TP assembly context before the engine
+    // ECU is locked. Every request after discovery already carries a responseId_
+    // pinned by buildRequest, so there is nothing here to fix up.
     if (discovery) return false;
     if (message.data_length_code < 3) return false;
     const size_t payloadLength =
@@ -586,7 +588,6 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     if (payloadLength == 0) return false;
     const uint8_t first = message.data[2];
     if (first != expectedService && first != 0x7F) return false;
-    if (discovery) responseId_ = message.identifier;
 
     resetAssembly();
     responseExpected_ = payloadLength;
