@@ -229,22 +229,23 @@ const char* resetReasonName(esp_reset_reason_t reason) {
   }
 }
 
-// The current-code list and the history list describe the same entry the same
-// way. They carried two copies of this block and had already drifted once:
-// `kind` was written by only one of them, which is exactly the failure this
-// removes. Anything added here now reaches both.
-void appendCodeJson(JsonObject item, const DtcEntry& entry) {
+// The current-code list and the history list describe an entry the same way.
+// They carried two copies of this block and had already drifted once: `kind`
+// was written by only one of them. The two lists iterate different structs —
+// DtcEntry and DtcHistoryEntry — which share exactly the two fields this needs,
+// so the helper takes those rather than either type.
+void appendCodeJson(JsonObject item, uint16_t raw, uint16_t ecuResponseId) {
   char code[6];
   char description[112];
   char codeEcu[12];
-  ObdDiagnostics::formatCode(entry.raw, code);
-  ObdDiagnostics::describeCodeRu(entry.raw, description, sizeof(description));
-  snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
+  ObdDiagnostics::formatCode(raw, code);
+  ObdDiagnostics::describeCodeRu(raw, description, sizeof(description));
+  snprintf(codeEcu, sizeof(codeEcu), "0x%03X", ecuResponseId);
   item["code"] = code;
-  item["raw"] = entry.raw;
+  item["raw"] = raw;
   item["ecuId"] = codeEcu;
   item["description"] = description;
-  item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
+  item["misfire"] = ObdDiagnostics::isMisfire(raw);
 }
 }  // namespace
 
@@ -2008,7 +2009,7 @@ void ServicePortal::sendDtcStatus() {
     else if (entry.kind == DtcKind::Pending) ++pendingCount;
     else ++permanentCount;
     JsonObject item = codes.add<JsonObject>();
-    appendCodeJson(item, entry);
+    appendCodeJson(item, entry.raw, entry.ecuResponseId);
     item["kind"] = ObdDiagnostics::kindName(entry.kind);
   }
   JsonObject counts = doc["counts"].to<JsonObject>();
@@ -2045,7 +2046,7 @@ void ServicePortal::sendDtcStatus() {
       }
     }
     JsonObject item = historyEntries.add<JsonObject>();
-    appendCodeJson(item, entry);
+    appendCodeJson(item, entry.raw, entry.ecuResponseId);
     item["currentlyListed"] = currentlyListed;
     item["historicalOnly"] = currentStateKnown && !currentlyListed;
     item["occurrenceCount"] = entry.occurrenceCount;
