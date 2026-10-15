@@ -39,3 +39,10 @@ ota-forensics-*/
 
 # Locally assembled source archives
 H2-Gauge-*-git-ready.zip
+
+# Experimental build output, produced by tools/build_diagnostic_firmware.py and
+# tools/build_speed_density_firmware.py. These carry no release promise and go
+# stale the moment the code moves, so only releases/ is tracked. The 0.4.3
+# copies that were committed here predated the ECU-mask and standing-band
+# fixes and still had a permanently dead fuel readout.
+artifacts/

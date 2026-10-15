@@ -21,17 +21,38 @@ PROTECTED = (
 
 
 def locate_platformio() -> str:
-    for candidate in (
+    # Presence is not enough: a distribution package can put an older
+    # PlatformIO on PATH that cannot even start under a newer Python. Probing
+    # each candidate keeps a working install reachable instead of failing on
+    # whichever broken one happens to be first on PATH.
+    candidates = (
         shutil.which("pio"),
         shutil.which("platformio"),
         str(ROOT / ".venv/bin/pio"),
         str(Path.home() / ".local/bin/pio"),
         str(Path.home() / ".platformio/penv/bin/pio"),
         str(Path.home() / ".platformio/penv/bin/platformio"),
-    ):
-        if candidate and Path(candidate).is_file():
+    )
+    broken: list[str] = []
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        probe = subprocess.run(
+            [candidate, "--version"], capture_output=True, timeout=120
+        )
+        if probe.returncode == 0:
             return candidate
-    raise SystemExit("PlatformIO CLI not found; install requirements-dev.txt and retry")
+        broken.append(candidate)
+    detail = (
+        f" Found but unusable: {', '.join(broken)}." if broken else ""
+    )
+    raise SystemExit(
+        "No working PlatformIO CLI found."
+        + detail
+        + " Install requirements-dev.txt, or put a working 'pio' on PATH"
+        " (a system package built for another Python version is the usual"
+        " cause and cannot be used)."
+    )
 
 
 def sha256(path: Path) -> str:
