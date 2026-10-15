@@ -152,35 +152,26 @@ int main() {
       }
     }
   });
-  test("temporary brightness override is immediate, volatile and independent", [] {
+  test("Day and Night are the only brightness settings", [] {
+    // The RAM-only override is gone: it could not be persisted, so it vanished
+    // on every reboot, and while it was active the saved sliders looked dead.
+    // What must hold now is that a reboot changes nothing and the saved values
+    // are what the logic returns.
     ConfigData config = ConfigStore::defaults();
     const uint8_t savedDay = config.brightnessDay;
     const uint8_t savedNight = config.brightnessNight;
     BrightnessLogic logic;
     logic.begin(0, config.brightness, savedDay, savedNight);
-    CHECK(!logic.temporaryOverrideActive());
-    CHECK(!logic.setTemporaryOverride(4));
-    CHECK(!logic.setTemporaryOverride(101));
-    CHECK(logic.setTemporaryOverride(47));
-    CHECK(logic.temporaryOverrideActive());
-    CHECK(logic.temporaryOverridePercent() == 47);
-    CHECK(near(logic.currentPercent(), 47));
+    CHECK(near(logic.currentPercent(), savedDay));
+
     for (uint32_t now = 50; now <= 2000; now += 50) {
       logic.sample(now, 0, config.brightness, savedDay, savedNight);
-      CHECK(near(logic.currentPercent(), 47));
+      CHECK(near(logic.currentPercent(), savedDay));
     }
     CHECK(config.brightnessDay == savedDay && config.brightnessNight == savedNight);
 
-    logic.clearTemporaryOverride();
-    CHECK(!logic.temporaryOverrideActive());
-    for (uint32_t now = 2050; now <= 5050; now += 50) {
-      logic.sample(now, 4095, config.brightness, savedDay, savedNight);
-    }
-    CHECK(near(logic.currentPercent(), savedDay));
-
     BrightnessLogic afterReboot;
     afterReboot.begin(0, config.brightness, savedDay, savedNight);
-    CHECK(!afterReboot.temporaryOverrideActive());
     CHECK(near(afterReboot.currentPercent(), savedDay));
   });
   test("Auto startup uses the first ADC instead of flashing daylight level", [] {

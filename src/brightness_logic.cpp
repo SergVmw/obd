@@ -108,21 +108,6 @@ void BrightnessLogic::resetCalibration(uint32_t now) {
   pendingDirection_ = 0;
 }
 
-bool BrightnessLogic::setTemporaryOverride(uint8_t percent) {
-  if (percent < 5 || percent > 100) return false;
-  temporaryOverrideActive_ = true;
-  temporaryOverridePercent_ = percent;
-  currentPercent_ = targetPercent_ = percent;
-  pendingDirection_ = 0;
-  directionQualified_ = false;
-  return true;
-}
-
-void BrightnessLogic::clearTemporaryOverride() {
-  temporaryOverrideActive_ = false;
-  pendingDirection_ = 0;
-  directionQualified_ = false;
-}
 
 void BrightnessLogic::learn(uint32_t now, uint16_t adc) {
   // Learning is opt-in through Auto mode. An unwired ADC must not learn a
@@ -161,7 +146,6 @@ void BrightnessLogic::learn(uint32_t now, uint16_t adc) {
 }
 
 float BrightnessLogic::desiredPercent() const {
-  if (temporaryOverrideActive_) return temporaryOverridePercent_;
   if (settings_.mode != BrightnessMode::Auto) {
     return initialPercent(settings_, dayPercent_, nightPercent_);
   }
@@ -220,11 +204,7 @@ void BrightnessLogic::sample(uint32_t now, uint16_t raw,
   }
 
   const float desired = desiredPercent();
-  if (temporaryOverrideActive_) {
-    targetPercent_ = currentPercent_ = desired;
-    pendingDirection_ = 0;
-    directionQualified_ = false;
-  } else if (settings_.mode != BrightnessMode::Auto) {
+  if (settings_.mode != BrightnessMode::Auto) {
     targetPercent_ = desired;
     pendingDirection_ = 0;
   } else {

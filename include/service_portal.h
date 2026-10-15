@@ -59,7 +59,6 @@ class ServicePortal {
   void sendIndex();
   void sendConfig();
   void receiveConfig();
-  void setTemporaryBrightness();
   void sendStatus();
 #ifdef H2G_DIAGNOSTIC_BUILD
   void sendDiagnosticTrace();

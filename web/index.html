@@ -74,13 +74,6 @@
    <div class="rangeSetting"><label for="brightnessDay">Дневная яркость, % · сохраняется</label><input id="brightnessDay" type="range" min="10" max="100" step="1" value="82" required><div class="range-value"><span>День</span><b id="brightnessDayValue">82%</b></div></div>
    <div class="rangeSetting"><label for="brightnessNight">Ночная яркость, % · сохраняется</label><input id="brightnessNight" type="range" min="5" max="80" step="1" value="26" required><div class="range-value"><span>Ночь</span><b id="brightnessNightValue">26%</b></div></div>
   </div>
-  <div class="section" id="temporaryBrightnessSettings"><h3>Текущая яркость · временно</h3>
-   <label for="temporaryBrightness">Фактическая яркость подсветки сейчас</label><input id="temporaryBrightness" type="range" min="5" max="100" step="1" value="82" aria-describedby="temporaryBrightnessState">
-   <div class="range-value"><span>Отдельно от настроек День / Ночь</span><b id="temporaryBrightnessValue">—%</b></div>
-   <div class="buttons"><button class="btn" id="clearTemporaryBrightness" disabled>Вернуть сохранённый режим</button></div>
-   <p class="note" id="temporaryBrightnessState" style="margin-top:12px">Ожидание статуса ESP32.</p>
-   <p class="desc" style="margin:10px 0 0">Этот ползунок сразу меняет текущую яркость поверх любого режима, но не сохраняет её и не меняет День / Ночь. Переопределение действует до перезагрузки; кнопка возвращает управление сохранённому режиму раньше.</p>
-  </div>
   <div id="autoBrightnessFields" hidden>
    <p class="note" style="margin:13px 0">Ниже ночного порога — ночная яркость, выше дневного — дневная. Между ними яркость меняется плавно. Фильтрация, гистерезис и задержки уменьшают реакцию на фонари и короткие тени. Это регулировка PWM по внешнему свету, не измерение яркости экрана.</p>
    <div class="grid">
@@ -251,7 +244,7 @@
 </main>
 <script>
 const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).value, c=id=>$(id).checked;
-let otaActive=false,otaMaxImageBytes=4194304,otaProbeBytes=288,otaTimeoutMs=180000,temporaryBrightnessEditing=false;
+let otaActive=false,otaMaxImageBytes=4194304,otaProbeBytes=288,otaTimeoutMs=180000;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')});
 async function api(path,opt={}){const r=await fetch(path,{cache:'no-store',...opt}),text=await r.text();if(!r.ok){let message=text;try{const j=JSON.parse(text),code=j.code?` [${j.code}]`:'',retry=Number(j.retryAfterSeconds)>0?` Повторите через ${j.retryAfterSeconds} с.`:'';message=(j.error||j.message||text)+code+retry}catch{}throw Error(message||`HTTP ${r.status}`)}if(!text)return null;return r.headers.get('content-type')?.includes('json')?JSON.parse(text):text}
 function set(id,value){const e=$(id);if(!e||value===undefined)return;e.type==='checkbox'?e.checked=!!value:e.value=value}
@@ -277,14 +270,10 @@ function brightnessFormError(){
  return '';
 }
 function brightnessStatus(s){
- if(!s){for(const id of ['lightRaw','lightFiltered','lightPercent','lightLevel'])$(id).textContent='—';$('lightAdcBar').style.width='0%';$('lightLive').textContent='Нет актуальных данных ESP32. Последние показания не используются как текущие.';$('temporaryBrightnessState').textContent='Нет актуального статуса прибора.';$('clearTemporaryBrightness').disabled=true;return}
+ if(!s){for(const id of ['lightRaw','lightFiltered','lightPercent','lightLevel'])$(id).textContent='—';$('lightAdcBar').style.width='0%';$('lightLive').textContent='Нет актуальных данных ESP32. Последние показания не используются как текущие.';return}
  const fmt=x=>x==null?'—':String(x),levels={night:'Ночь',day:'День',adaptive:'Адаптация',fixed:'Один уровень'};
  $('lightRaw').textContent=fmt(s.rawAdc);$('lightFiltered').textContent=fmt(s.filteredAdc);$('lightPercent').textContent=Number(s.percent).toFixed(1)+'%';$('lightLevel').textContent=levels[s.level]||'—';$('lightAdcBar').style.width=(Math.max(0,Math.min(4095,s.filteredAdc||0))/4095*100)+'%';
- const temporary=!!s.temporaryOverrideActive,shown=temporary?s.temporaryPercent:s.percent;
- if(!temporaryBrightnessEditing&&shown!=null){$('temporaryBrightness').value=Math.round(Math.max(5,Math.min(100,Number(shown))));$('temporaryBrightnessValue').textContent=$('temporaryBrightness').value+'%'}
- $('clearTemporaryBrightness').disabled=!temporary;
- $('temporaryBrightnessState').textContent=temporary?`Временное значение ${s.temporaryPercent}% активно до перезагрузки; сохранённые День / Ночь не менялись.`:'Временного переопределения нет; ползунок показывает текущую фактическую яркость.';
- const modes=['Авто','Ручное','Всегда день','Всегда ночь'];
+  const modes=['Авто','Ручное','Всегда день','Всегда ночь'];
  let text=`На приборе: ${modes[s.mode]||'—'}. Цель ${Number(s.targetPercent).toFixed(1)}%; PWM ${s.pwmDuty}/255. Рабочие пороги: ночь ${s.nightAdc}, день ${s.dayAdc} (${s.thresholdSource==='learned'?'автокалибровка':'из настроек'}). `;
  text+=`Измеренный диапазон: ${fmt(s.observedMinAdc)}…${fmt(s.observedMaxAdc)}. `;
  text+=s.calibrationReady?'Диапазон обучен. ':s.calibrationLearning?'Обучение: ждём устойчивые минимум и максимум с разницей ≥ 800 ADC. ':'Обучение приостановлено. ';
@@ -299,18 +288,6 @@ $('resetLightCalibration').onclick=async()=>{
  const button=$('resetLightCalibration');button.disabled=true;
  try{await api('/api/brightness/calibration/reset',{method:'POST',headers:{'X-H2G-Action':'light-calibration-reset'}});$('msg').textContent='Автокалибровка света сброшена. До обучения используются исходные пороги.';await status()}catch(e){$('msg').textContent='Свет: '+e.message}
  setTimeout(()=>button.disabled=false,10000);
-};
-$('temporaryBrightness').addEventListener('input',()=>{temporaryBrightnessEditing=true;$('temporaryBrightnessValue').textContent=$('temporaryBrightness').value+'%';$('temporaryBrightnessState').textContent='После отпускания ползунка значение будет применено только до перезагрузки.'});
-$('temporaryBrightness').addEventListener('change',async()=>{
- const percent=Number($('temporaryBrightness').value);
- try{await api('/api/brightness/temporary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({percent})});$('msg').textContent=`Текущая яркость ${percent}% применена временно; День / Ночь не изменены.`}
- catch(e){$('msg').textContent='Временная яркость: '+e.message}
- temporaryBrightnessEditing=false;await status();
-});
-$('clearTemporaryBrightness').onclick=async()=>{
- try{await api('/api/brightness/temporary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clear:true})});$('msg').textContent='Временная яркость сброшена; снова действует сохранённый режим.'}
- catch(e){$('msg').textContent='Сброс временной яркости: '+e.message}
- temporaryBrightnessEditing=false;await status();
 };
 $('brightnessDay').addEventListener('input',updateBrightnessValueLabels);$('brightnessNight').addEventListener('input',updateBrightnessValueLabels);
 let assetBusy=false,assetState=null;

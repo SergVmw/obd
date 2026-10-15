@@ -345,8 +345,6 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/assets/logo", HTTP_POST,
              [this]() { handleAssetFinished(VisualAssetType::Logo); },
              [this]() { handleAssetBody(VisualAssetType::Logo); });
-  server_.on("/api/brightness/temporary", HTTP_POST,
-             [this]() { setTemporaryBrightness(); });
   server_.on("/api/brightness/calibration/reset", HTTP_POST, [this]() {
     touch();
     if (!requireAction("light-calibration-reset", lastLightResetAt_, 10000)) return;
@@ -826,54 +824,6 @@ void ServicePortal::receiveConfig() {
     return;
   }
   server_.send(200, "application/json", "{\"ok\":true,\"brightnessAppliedLive\":true,\"rebootRecommended\":true}");
-}
-
-void ServicePortal::setTemporaryBrightness() {
-  touch();
-  if (!server_.hasArg("plain")) {
-    server_.send(400, "application/json",
-                 "{\"error\":\"JSON body required\"}");
-    return;
-  }
-
-  JsonDocument request;
-  if (deserializeJson(request, server_.arg("plain"))) {
-    server_.send(400, "application/json",
-                 "{\"error\":\"invalid JSON\"}");
-    return;
-  }
-
-  const JsonVariantConst clear = request["clear"];
-  if (!clear.isUnbound() && !clear.is<bool>()) {
-    server_.send(422, "application/json",
-                 "{\"error\":\"clear must be a boolean\"}");
-    return;
-  }
-  if (clear.is<bool>() && clear.as<bool>()) {
-    brightness_.clearTemporaryOverride();
-    server_.send(200, "application/json",
-                 "{\"ok\":true,\"temporaryOverride\":false}");
-    return;
-  }
-
-  const JsonVariantConst value = request["percent"];
-  if (!value.is<int>() || value.as<int>() < 5 || value.as<int>() > 100) {
-    server_.send(422, "application/json",
-                 "{\"error\":\"percent must be an integer from 5 to 100\"}");
-    return;
-  }
-  const uint8_t percent = static_cast<uint8_t>(value.as<int>());
-  if (!brightness_.setTemporaryOverride(percent)) {
-    server_.send(422, "application/json",
-                 "{\"error\":\"temporary brightness is out of range\"}");
-    return;
-  }
-
-  char response[96];
-  snprintf(response, sizeof(response),
-           "{\"ok\":true,\"temporaryOverride\":true,\"percent\":%u}",
-           static_cast<unsigned>(percent));
-  server_.send(200, "application/json", response);
 }
 
 const char* ServicePortal::fuelModeName(FuelMode mode) {
@@ -1415,12 +1365,6 @@ void ServicePortal::sendStatus() {
   }
   bl["percent"] = light.currentPercent();
   bl["targetPercent"] = light.targetPercent();
-  bl["temporaryOverrideActive"] = light.temporaryOverrideActive();
-  if (light.temporaryOverrideActive()) {
-    bl["temporaryPercent"] = light.temporaryOverridePercent();
-  } else {
-    bl["temporaryPercent"] = nullptr;
-  }
   bl["pwmDuty"] = light.pwmDuty();
   bl["nightAdc"] = light.nightThreshold();
   bl["dayAdc"] = light.dayThreshold();

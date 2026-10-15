@@ -11,10 +11,6 @@ class BrightnessManager {
   void update(uint32_t now, const ConfigData& config);
   bool checkpoint();
   bool resetCalibration(uint32_t now);
-  bool setTemporaryOverride(uint8_t percent) {
-    return logic_.setTemporaryOverride(percent);
-  }
-  void clearTemporaryOverride() { logic_.clearTemporaryOverride(); }
   const BrightnessLogic& state() const { return logic_; }
   bool storageHealthy() const { return storageHealthy_; }
 

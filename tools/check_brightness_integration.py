@@ -71,17 +71,22 @@ assert 'light-calibration-reset' in html and 'light-calibration-reset' in portal
 assert 'brightnessStatus(null)' in html, "stale live readings must be cleared on failure"
 assert 'BrightnessLogic::validSettings' in portal
 assert portal.index('BrightnessLogic::validSettings') < portal.index('configStore_.data() = candidate')
-for control in ('brightnessDay', 'brightnessNight', 'temporaryBrightness'):
+for control in ('brightnessDay', 'brightnessNight'):
     assert re.search(rf'id="{control}"[^>]*type="range"', html), f"{control} must be a slider"
 assert 'brightnessDayValue' in ids and 'brightnessNightValue' in ids
-assert 'temporaryBrightnessValue' in ids and 'clearTemporaryBrightness' in ids
-assert '/api/brightness/temporary' in html and '/api/brightness/temporary' in portal
-assert 'setTemporaryOverride' in portal and 'temporaryOverrideActive' in portal
-assert 'temporaryPercent' in portal and 'clearTemporaryOverride' in portal
-assert 'temporaryOverrideActive_' in (ROOT / 'src/brightness_logic.cpp').read_text(encoding='utf-8')
-assert 'temporary brightness' in (ROOT / 'tests/host/brightness_tests.cpp').read_text(encoding='utf-8')
-temporary_handler = portal[portal.index('void ServicePortal::setTemporaryBrightness()'):portal.index('const char* ServicePortal::fuelModeName')]
-assert 'configStore_.save' not in temporary_handler, "temporary brightness must never be persisted"
+# The RAM-only temporary override was removed: it could not be persisted, so it
+# vanished on every reboot, and while it was active the saved Day/Night
+# sliders looked broken. The gate now asserts the opposite, that the override
+# and its route are gone everywhere, so they cannot return unnoticed.
+for name, text in (('portal', portal), ('html', html),
+                   ('logic', (ROOT / 'src/brightness_logic.cpp').read_text(encoding='utf-8')),
+                   ('logic header', (ROOT / 'include/brightness_logic.h').read_text(encoding='utf-8'))):
+    for token in ('emporaryOverride', 'temporaryPercent', 'setTemporaryBrightness',
+                  'temporaryBrightnessValue', 'clearTemporaryBrightness'):
+        assert token not in text, f"removed temporary brightness survived in {name}: {token}"
+assert '/api/brightness/temporary' not in portal
+# Day and Night remain the only two brightness settings.
+assert 'brightnessDayValue' in ids and 'brightnessNightValue' in ids
 assert 'refreshLiveTelemetry(now' in main, "service status must refresh fuel mode/boost without counting a trip"
 compressed = bytes(int(h, 16) for h in re.findall(r'0x([0-9a-fA-F]{2})', embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), "embedded UI is stale"
