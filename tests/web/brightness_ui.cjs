@@ -10,7 +10,6 @@ const vm = require('node:vm');
   const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8');
   let saved = vm.runInNewContext('(' + html.match(/const DEFAULT_CONFIG=(.*);\n/)[1] + ')');
   let posts = 0, resetHeader = '', otaHeader = '', otaPreflightHeader = '';
-  let temporaryOverride = false, temporaryPercent = 54;
   let dtcScanHeader = '', dtcClearHeader = '', dtcClearBody = null;
   let otaBytes = 0, otaPreflights = 0, otaBehavior = 'jsonError';
   let otaPreflightReject = true, otaStatusError = null, offline = false;
@@ -114,9 +113,7 @@ const vm = require('node:vm');
                 running: false, bootSelected: false, nextUpdate: true, state: 'valid' },
             ],
             last: otaLast }, 
-          brightness: { ...sample, percent: temporaryOverride ? temporaryPercent : sample.percent,
-            temporaryOverrideActive: temporaryOverride,
-            temporaryPercent: temporaryOverride ? temporaryPercent : null,
+          brightness: { ...sample, percent: sample.percent,
             mode: saved.display.brightnessMode, manualNight: saved.display.manualNight,
             calibrationLearning: saved.display.brightnessMode === 0 && saved.display.lightAutoCalibrate },
           persistence: { littlefsMounted: true, littlefsStatus: 'mounted', journalHealthy: true,
@@ -186,12 +183,6 @@ const vm = require('node:vm');
         dtcClearHeader = req.headers()['x-h2g-action'];
         dtcClearBody = req.postDataJSON();
         return json({ ok: true, accepted: true, operation: 'preclear_scan' });
-      }
-      if (url.pathname === '/api/brightness/temporary') {
-        const body = req.postDataJSON();
-        if (body.clear) temporaryOverride = false;
-        else { assert.ok(Number.isInteger(body.percent) && body.percent >= 5 && body.percent <= 100); temporaryOverride = true; temporaryPercent = body.percent; }
-        return json({ ok: true, temporaryOverride, percent: temporaryPercent });
       }
       if (url.pathname === '/api/brightness/calibration/reset') {
         resetHeader = req.headers()['x-h2g-action'];
@@ -284,16 +275,25 @@ const vm = require('node:vm');
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /P0302/);
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /Исчез \/ история/);
     assert.match(await page.locator('#dtcHistoryState').textContent(), /LittleFS: OK, NVS: OK, CRC: OK/);
-    const savedBeforeTemporary = JSON.stringify(saved.display), postsBeforeTemporary = posts;
-    await setRange('temporaryBrightness', 47);
-    await page.waitForFunction(() => document.getElementById('temporaryBrightnessState').textContent.includes('Временное значение 47%'));
-    assert.equal(posts, postsBeforeTemporary, 'temporary brightness must not POST saved configuration');
-    assert.equal(JSON.stringify(saved.display), savedBeforeTemporary, 'temporary override changed saved day/night values');
-    assert.equal(await page.locator('#temporaryBrightnessValue').textContent(), '47%');
-    assert.equal(await page.locator('#clearTemporaryBrightness').isEnabled(), true);
-    await page.click('#clearTemporaryBrightness');
-    await page.waitForFunction(() => document.getElementById('temporaryBrightnessState').textContent.includes('Временного переопределения нет'));
-    assert.equal(posts, postsBeforeTemporary);
+    // The RAM-only temporary override is gone. What must hold is that the two
+    // real sliders still move the reported brightness and that touching them
+    // posts nothing until the settings are saved: the override used to look
+    // live while the saved Day/Night values did nothing, which is the reason
+    // it was removed.
+    const postsBeforeSliders = posts;
+    await setRange('brightnessDay', 77);
+    await page.waitForFunction(() => document.getElementById('brightnessDayValue').textContent === '77%');
+    await setRange('brightnessNight', 33);
+    assert.equal(await page.locator('#brightnessNightValue').textContent(), '33%');
+    assert.equal(posts, postsBeforeSliders, 'moving a brightness slider must not POST on its own');
+    assert.equal(await page.locator('#temporaryBrightness').count(), 0,
+      'the temporary brightness control must not come back');
+    assert.equal(await page.locator('#clearTemporaryBrightness').count(), 0);
+    assert.equal(await page.locator('#temporaryBrightnessState').count(), 0);
+    // The sliders hold their value; only "Save settings" writes.
+    assert.equal(await page.locator('#brightnessDay').inputValue(), '77');
+    assert.equal(await page.locator('#brightnessNight').inputValue(), '33');
+    await setRange('brightnessDay', 82);
     dtcFixture.scan.responsePending = true;
     dtcFixture.scan.responsePendingCount = 3;
     dtcFixture.clear.postClearVerificationPending = true;

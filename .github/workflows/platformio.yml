@@ -54,9 +54,17 @@ jobs:
 
       - name: Check build and committed release artifacts
         run: |
+          # The version is read from the source rather than repeated here. It
+          # was hardcoded, which meant every release either skipped checking
+          # its own artifact or broke the job on a stale name.
+          VERSION=$(sed -n 's/^#define H2G_FW_VERSION "\(.*\)"$/\1/p' include/version.h)
+          TARGET=$(sed -n 's/^#define H2G_BUILD_TARGET "\(.*\)"$/\1/p' include/version.h)
+          echo "Checking release artifacts for $VERSION / $TARGET"
           python tools/check_firmware_manifest.py
-          python tools/check_firmware_manifest.py releases/h2-gauge-v0.4.3-esp32s3-n16r8.bin --expected-version 0.4.3
-          (cd releases && sha256sum -c SHA256SUMS-v0.4.3.txt)
+          python tools/check_firmware_manifest.py \
+            "releases/h2-gauge-v${VERSION}-${TARGET}.bin" \
+            --expected-version "$VERSION"
+          (cd releases && sha256sum -c "SHA256SUMS-v${VERSION}.txt")
           python tools/check_packaged_artifacts.py
 
       - name: Upload ESP32-S3 build artifacts
