@@ -54,7 +54,7 @@ assert RELEASE_README.is_file()
 # Keep the previous production release intact while packaging the new one.
 # Older releases were deleted from the repository upstream, which left this gate
 # unable to pass for any version at all. It protects the most recent one that exists.
-previous_version = "0.4.4"
+previous_version = "0.4.5"
 previous_names = (
     f"h2-gauge-v{previous_version}-{TARGET}.bin",
     f"h2-gauge-v{previous_version}-{TARGET}-factory.bin",
