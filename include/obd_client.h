@@ -136,6 +136,10 @@ class ObdClient {
   void parseResponse(const twai_message_t& message, uint32_t now);
   void handleAlerts(uint32_t now);
   void runDiscovery(uint32_t now);
+  // Periodic re-read of the support masks, so a block that stayed quiet
+  // during the boot window is eventually polled rather than never.
+  static constexpr uint32_t kMaskRefreshIntervalMs = 120000;
+  void refreshSupportMasks(uint32_t now);
   void runPolling(uint32_t now);
   void finishPending(bool timeout);
   void storeSupportedMask(uint8_t basePid, const uint8_t* data,
@@ -181,6 +185,8 @@ class ObdClient {
   bool vinAttempted_ = false;
 
   bool discoveryDone_ = false;
+  uint32_t maskRefreshDueAt_ = 0;
+  uint8_t maskRefreshIndex_ = 0;
   uint8_t discoveryIndex_ = 0;
   uint8_t pollCursor_ = 0;
   // Support masks from every ECU that answered, combined. A single block can no

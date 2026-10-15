@@ -545,6 +545,46 @@ void testPureIdlingYieldsNoAverage() {
   CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
 }
 
+void testStandingCostIsPerHourOfStandingNotOfTheTrip() {
+  // The figure a queue costs. Dividing the standing litres by the whole trip
+  // folded in every moving interval and reported a rate the car never sat at,
+  // so this checks the denominator is the standing time alone.
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+
+  // Ten minutes on a stand. The exact second count is not asserted: begin()
+  // seeds lastUpdateAt_ at the first timestamp, so the opening tick of a
+  // segment integrates nothing. What matters is the ratio.
+  runSegment(rig, config, 1000, 600, 900.0f, 1.0f, 0.0f);
+  const uint32_t standingAfterStand = rig.trip.petrolIdleSeconds;
+  const double standingLiters = rig.trip.idlePetrolLiters;
+  CHECK(standingAfterStand > 500);
+  CHECK(standingLiters > 0.0);
+  // The figure is standing litres per hour of standing, and nothing else.
+  const double expectedRate =
+      static_cast<float>(standingLiters) / (standingAfterStand / 3600.0f);
+  CHECK(near(rig.engine.idleLitersPerHour(config), expectedRate, 1e-3));
+
+  // An hour of driving adds moving fuel and no standing time, so the rate
+  // must not fall. Under the old denominator, which was the whole trip, this
+  // is exactly where it would have collapsed.
+  runSegment(rig, config, 620000, 3600, 2000.0f, 10.0f, 50.0f);
+  CHECK(rig.trip.petrolIdleSeconds == standingAfterStand);
+  CHECK(rig.trip.petrolSeconds > standingAfterStand + 3000);
+  CHECK(rig.trip.idlePetrolLiters == standingLiters);
+  CHECK(near(rig.engine.idleLitersPerHour(config), expectedRate, 1e-3));
+}
+
+void testNoStandingTimeMeansNoStandingRate() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+  runSegment(rig, config, 1000, 600, 2000.0f, 10.0f, 50.0f);
+  CHECK(near(rig.trip.petrolIdleSeconds, 0.0));
+  CHECK(near(rig.engine.idleLitersPerHour(config), 0.0));
+}
+
 void testRecentAverageSmoothsTheLargeReadout() {
   // The large number must settle instead of chasing every sample, and it must
   // be a ratio of smoothed litres to smoothed distance, not a smoothed rate.
@@ -738,6 +778,9 @@ int main() {
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
   test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
   test("pure idling yields no average", testPureIdlingYieldsNoAverage);
+  test("standing cost is per hour of standing, not of the trip",
+       testStandingCostIsPerHourOfStandingNotOfTheTrip);
+  test("no standing time means no standing rate", testNoStandingTimeMeansNoStandingRate);
   test("recent average smooths the large readout", testRecentAverageSmoothsTheLargeReadout);
   test("recent average restarts on fuel change", testRecentAverageRestartsOnFuelChange);
   test("stale speed drops the interval instead of banking idle fuel",

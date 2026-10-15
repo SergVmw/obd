@@ -108,6 +108,13 @@ void ObdClient::loop(uint32_t now) {
   if (!discoveryDone_) {
     runDiscovery(now);
   } else {
+    // Two minutes is far more often than a block takes to wake up, and each
+    // pass is three requests spread over the interval, so the cost is
+    // negligible next to the protection against a mask that never arrived.
+    if (!paused_ && pendingRequest_ == PendingRequest::None &&
+        now >= maskRefreshDueAt_) {
+      refreshSupportMasks(now);
+    }
     runPolling(now);
   }
 }
@@ -570,6 +577,12 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   telemetry_.lastObdResponseAt = now;
   telemetry_.obdResponseCount++;
   telemetry_.ecuResponseId = static_cast<uint16_t>(message.identifier);
+  // The engine identity is decided once, by PID 0C, and mirrored here so the
+  // dashboard and the portal can show it without reaching into the
+  // diagnostics transport. ecuResponseId above is deliberately left as the
+  // last responder and must not be presented as the engine ECU.
+  telemetry_.engineEcuResponseId = diagnostics_.state().engineResponseId;
+  telemetry_.engineEcuLocked = diagnostics_.state().engineEcuLocked;
 
   switch (pid) {
     case 0x00:
@@ -745,6 +758,24 @@ void ObdClient::runDiscovery(uint32_t now) {
   if (sendPid(kDiscoveryPids_[discoveryIndex_], now)) {
     ++discoveryIndex_;
   }
+}
+
+// The support masks are read once after boot and then believed for the rest of
+// the session. A block that stayed quiet in that half-second window had its
+// mask missed, and its PIDs would never be polled again until a power cycle.
+// Masks are therefore re-read periodically. PID 0C is deliberately not part of
+// this: re-observing the engine ECU would disturb the lock that PID 01, the DTC
+// read and Mode 04 all depend on, and that binding is meant to be decided once.
+void ObdClient::refreshSupportMasks(uint32_t now) {
+  static constexpr uint8_t kMaskPids[3] = {0x00, 0x20, 0x40};
+  if (maskRefreshIndex_ >= 3) {
+    maskRefreshIndex_ = 0;
+    maskRefreshDueAt_ = now + kMaskRefreshIntervalMs;
+    return;
+  }
+  if (now < maskRefreshDueAt_) return;
+  if (!sendPid(kMaskPids[maskRefreshIndex_], now)) return;
+  ++maskRefreshIndex_;
 }
 
 void ObdClient::runPolling(uint32_t now) {

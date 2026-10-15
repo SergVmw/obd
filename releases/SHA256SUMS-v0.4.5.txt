@@ -1,0 +1,2 @@
+eb73e16f796cb362aa43b0a7fab4fcfdfbeb653bc43db4df00f40c56f609d395  h2-gauge-v0.4.5-esp32s3-n16r8.bin
+2f8d4dd7b347cc6503e587ecdf515f767ade6059532d131e2dd6943cd6081bcf  h2-gauge-v0.4.5-esp32s3-n16r8-factory.bin

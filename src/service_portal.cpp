@@ -849,7 +849,20 @@ void ServicePortal::sendStatus() {
   char ecu[10];
   if (telemetry_.ecuResponseId) snprintf(ecu, sizeof(ecu), "0x%03X", telemetry_.ecuResponseId);
   else strlcpy(ecu, "", sizeof(ecu));
+  // ecuId is the block that answered last, which need not be the engine. The
+  // engine identity is reported beside it so neither value is ambiguous.
   doc["ecuId"] = ecu;
+  {
+    char engineEcu[10];
+    if (telemetry_.engineEcuLocked && telemetry_.engineEcuResponseId) {
+      snprintf(engineEcu, sizeof(engineEcu), "0x%03X",
+               telemetry_.engineEcuResponseId);
+    } else {
+      strlcpy(engineEcu, "", sizeof(engineEcu));
+    }
+    doc["engineEcuId"] = engineEcu;
+    doc["engineEcuLocked"] = telemetry_.engineEcuLocked;
+  }
 
   // Keep both raw pressure inputs, their ages and both derived boost values
   // visible. A stale/missing MAP remains null rather than a fabricated zero.
@@ -1078,6 +1091,7 @@ void ServicePortal::sendStatus() {
     petrol["recentAverageL100"] = engine_.recentAverage();
     petrol["distanceKm"] = static_cast<float>(trip.petrolDistanceKm);
     petrol["engineSeconds"] = trip.petrolSeconds;
+    petrol["standingSeconds"] = trip.petrolIdleSeconds;
     if (trip.petrolDistanceKm >= 0.1) {
       petrol["averageL100"] = static_cast<float>(
           trip.rawPetrolLiters * config.petrolCorrection * 100.0 /
@@ -1107,6 +1121,7 @@ void ServicePortal::sendStatus() {
         static_cast<float>(trip.idleLpgLiters * gasConfig.lpgCorrection);
     lpg["distanceKm"] = static_cast<float>(trip.lpgDistanceKm);
     lpg["engineSeconds"] = trip.lpgSeconds;
+    lpg["standingSeconds"] = trip.lpgIdleSeconds;
     if (trip.lpgDistanceKm >= 0.1) {
       lpg["averageL100"] = static_cast<float>(
           trip.rawLpgLiters * gasConfig.lpgCorrection * 100.0 /

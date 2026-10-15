@@ -35,6 +35,8 @@ TripState sampleTrip() {
   trip.totalDistanceKm = 177.75;
   trip.petrolSeconds = 4567;
   trip.lpgSeconds = 1234;
+  trip.petrolIdleSeconds = 600;
+  trip.lpgIdleSeconds = 120;
   return trip;
 }
 
@@ -149,10 +151,10 @@ void testSequenceOrderingAndWrap() {
 }  // namespace
 
 int main() {
-  // Bumped from 140 when TripState gained the standing-petrol and standing-LPG
-  // litre counters. Records written by an older schema are rejected by the
+  // Bumped 140 -> 156 for the standing litre counters, then 156 -> 164 for the
+  // standing seconds. Records written by an older schema are rejected by the
   // magic and CRC check, so the trip restarts once on this upgrade.
-  static_assert(PersistenceSnapshot::kRecordBytes == 156,
+  static_assert(PersistenceSnapshot::kRecordBytes == 164,
                 "record format regression");
   testCrc32();
   testSnapshotRoundTrip();

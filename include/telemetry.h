@@ -58,6 +58,13 @@ struct TelemetryData {
   // VIN as read from the vehicle, empty until it is known. The client owns the
   // one-shot request and copies the result here so the dashboard and the
   // portal do not need a dependency on the transport.
+  // Two different things that used to share one field. ecuResponseId is
+  // whichever block answered last, which after the union of support masks can
+  // be the transmission: calling that "the ECU" on the diagnostics screen was
+  // wrong. engineEcuResponseId is the block that actually raised the engine
+  // identity, the one PID 01 and the DTC read are bound to.
+  uint16_t engineEcuResponseId = 0;
+  bool engineEcuLocked = false;
   char vin[18] = {0};
   uint32_t vinValidAt = 0;
   uint32_t obdTimeoutCount = 0;
@@ -118,6 +125,12 @@ struct TripState {
   double totalDistanceKm = 0.0;
   uint32_t petrolSeconds = 0;
   uint32_t lpgSeconds = 0;
+  // Engine time spent covering no distance, per fuel. Kept apart from the
+  // engine totals above so the standing cost can be expressed as litres per
+  // hour: dividing by the whole trip would fold in every moving interval and
+  // report a rate the vehicle never sat at.
+  uint32_t petrolIdleSeconds = 0;
+  uint32_t lpgIdleSeconds = 0;
   uint32_t checksum = 0;
 };
 

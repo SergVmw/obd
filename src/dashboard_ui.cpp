@@ -1004,9 +1004,23 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
                : translated(config, "CAN НЕТ СВЯЗИ", "CAN OFFLINE"),
            31, 58, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
 
-  snprintf(line, sizeof(line),
-           isRussian(config) ? "ЭБУ: 0x%03X" : "ECU: 0x%03X",
-           data.ecuResponseId);
+  // Naming the engine ECU here rather than the last block to answer: since
+  // engine signals are accepted from whichever powertrain block has them, the
+  // last responder can be the transmission, and on a gassed car that is the
+  // difference between the right block and the wrong one. Before the engine is
+  // locked, say which of the two is being shown instead of implying an ECU.
+  if (data.engineEcuLocked && data.engineEcuResponseId) {
+    snprintf(line, sizeof(line),
+             isRussian(config) ? "ЭБУ: 0x%03X" : "ECU: 0x%03X",
+             data.engineEcuResponseId);
+  } else if (data.ecuResponseId) {
+    snprintf(line, sizeof(line),
+             isRussian(config) ? "ОТВЕТИЛ: 0x%03X" : "RESPONDER: 0x%03X",
+             data.ecuResponseId);
+  } else {
+    strlcpy(line, translated(config, "ЭБУ: НЕТ СВЯЗИ", "ECU: NO LINK"),
+            sizeof(line));
+  }
   drawText(line, 31, 83, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
 

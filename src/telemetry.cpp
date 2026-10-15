@@ -404,6 +404,10 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   recentFedSec_ += dtSec;
 
   trip_->totalDistanceKm += distance;
+  // Standing time is accumulated on the same second tick as the engine
+  // total, and only on intervals that covered no distance. Using the same tick
+  // keeps the two counters from drifting apart, which matters because the
+  // standing rate is their ratio.
   if (data_.fuelMode == FuelMode::Lpg) {
     trip_->rawLpgLiters += rawLiters;
     trip_->idleLpgLiters += idleLiters;
@@ -411,6 +415,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     lpgTimeRemainderMs_ += dtMs;
     while (lpgTimeRemainderMs_ >= 1000) {
       ++trip_->lpgSeconds;
+      if (distance <= 0.0) ++trip_->lpgIdleSeconds;
       lpgTimeRemainderMs_ -= 1000;
     }
   } else {
@@ -420,6 +425,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     petrolTimeRemainderMs_ += dtMs;
     while (petrolTimeRemainderMs_ >= 1000) {
       ++trip_->petrolSeconds;
+      if (distance <= 0.0) ++trip_->petrolIdleSeconds;
       petrolTimeRemainderMs_ -= 1000;
     }
 
@@ -561,12 +567,14 @@ float TelemetryEngine::idleShareOfTrip() const {
 
 float TelemetryEngine::idleLitersPerHour(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  const uint32_t seconds = data_.fuelMode == FuelMode::Lpg ? trip_->lpgSeconds
-                                                          : trip_->petrolSeconds;
-  if (seconds == 0) return 0.0f;
-  // A whole-trip idle rate understates a queue: it folds in the fuel burnt
-  // while the engine was merely idling during stops, not the long stationary
-  // stretches. It is still the honest running cost of "standing" per the same
-  // definition the rest of this page uses.
-  return idleLiters(config) / (static_cast<float>(seconds) / 3600.0f);
+  // Divided by standing time, not by the whole trip. Dividing by the trip
+  // folded every moving interval into the denominator and reported a rate the
+  // vehicle never sat at: two hours of driving with a ten-minute queue would
+  // come out as a twelfth of the true standing rate. This is now the cost of
+  // standing, which is what a queue actually costs.
+  const uint32_t standing = data_.fuelMode == FuelMode::Lpg
+                                ? trip_->lpgIdleSeconds
+                                : trip_->petrolIdleSeconds;
+  if (standing == 0) return 0.0f;
+  return idleLiters(config) / (static_cast<float>(standing) / 3600.0f);
 }

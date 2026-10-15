@@ -53,6 +53,8 @@ TripState canonicalTrip(const TripState& source) {
   output.totalDistanceKm = source.totalDistanceKm;
   output.petrolSeconds = source.petrolSeconds;
   output.lpgSeconds = source.lpgSeconds;
+  output.petrolIdleSeconds = source.petrolIdleSeconds;
+  output.lpgIdleSeconds = source.lpgIdleSeconds;
   TripStore::seal(output);
   return output;
 }
@@ -76,7 +78,7 @@ PetrolCalibrationState canonicalCalibration(
 
 static_assert(sizeof(double) == 8, "Persistence format requires 64-bit double");
 static_assert(sizeof(float) == 4, "Persistence format requires 32-bit float");
-static_assert(sizeof(TripState) == 80,
+static_assert(sizeof(TripState) == 88,
               "TripState layout changed; bump persistence schema");
 static_assert(sizeof(PetrolCalibrationState) == 56,
               "Calibration layout changed; bump persistence schema");
@@ -84,7 +86,7 @@ static_assert(std::is_trivially_copyable<TripState>::value,
               "TripState must remain trivially copyable");
 static_assert(std::is_trivially_copyable<PetrolCalibrationState>::value,
               "Calibration state must remain trivially copyable");
-static_assert(kRecordBytes == 156, "Unexpected persistence record size");
+static_assert(kRecordBytes == 164, "Unexpected persistence record size");
 
 bool encode(uint32_t sequenceValue, const TripState& trip,
             const PetrolCalibrationState& calibration,
