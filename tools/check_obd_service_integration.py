@@ -14,7 +14,7 @@ platformio = (ROOT / "platformio.ini").read_text(encoding="utf-8")
 
 # Production continues to use the existing functional Mode 01 request and
 # scheduler entry for MAP; no diagnostic/self-test request path is introduced.
-assert re.search(r'\{\s*0x0B\s*,\s*100\s*,\s*0\s*\}', header)
+assert re.search(r'\{\s*0x0B\s*,\s*100\s*\}', header)
 assert 'message.identifier = 0x7DF;' in obd
 assert 'message.data[1] = 0x01;' in obd and 'message.data[2] = pid;' in obd
 assert 'if (!isSupported(item.pid)) continue;' in obd

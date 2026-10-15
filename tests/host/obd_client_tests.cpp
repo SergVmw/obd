@@ -193,6 +193,74 @@ void queueVinAnswer(uint16_t responder = 0x7E8) {
   h2g_twai_stub::queueRx(fromEcu(responder, third, sizeof(third)));
 }
 
+// Is one PID set in a J1979 mask word? `first` is the lowest PID the group
+// covers, since bit 31 of a word is that group's first parameter.
+bool pollsPid(uint32_t mask, uint8_t first, uint8_t pid) {
+  if (pid < first || pid > static_cast<uint8_t>(first + 31U)) return false;
+  return (mask & (1ul << (31U - (pid - first)))) != 0;
+}
+
+// The portal marks the PIDs this image actually requests. The set is derived
+// from the poll profile rather than restated, so a PID added to the profile and
+// not to the list — the failure the standing counters had — shows up here.
+void testPolledPidMaskFollowsThePollProfile() {
+  // The configuration this vehicle actually runs: Speed-Density, LPG with fuel
+  // trim warnings, DFCO. It is the interesting one because Speed-Density is the
+  // only mode where the poller drops the two fuel-flow inputs and adds IAT, so
+  // a set computed from the profile alone would mark exactly the wrong PIDs.
+  ConfigData config = ConfigStore::defaults();
+  config.fuelSource = FuelSource::SpeedDensity;
+  config.lpgEnabled = true;
+  config.setFuelTrimEnabled(true);
+  config.setDfcoEnabled(true);
+
+  const uint32_t group00 = ObdClient::polledPidMask(0, config);
+  CHECK(pollsPid(group00, 0x01, 0x01));   // monitor status / MIL / DTC count
+  CHECK(pollsPid(group00, 0x01, 0x0B));   // MAP
+  CHECK(pollsPid(group00, 0x01, 0x0C));   // RPM
+  CHECK(pollsPid(group00, 0x01, 0x0D));   // speed
+  CHECK(pollsPid(group00, 0x01, 0x0F));   // intake air temperature, SD only
+  CHECK(pollsPid(group00, 0x01, 0x11));   // absolute throttle position
+  CHECK(pollsPid(group00, 0x01, 0x06));   // short-term fuel trim
+  CHECK(pollsPid(group00, 0x01, 0x07));   // long-term fuel trim
+  // Speed-Density never asks for the two fuel-flow inputs.
+  CHECK(!pollsPid(group00, 0x01, 0x10));  // MAF
+  // Supported by most engines and never requested at all.
+  CHECK(!pollsPid(group00, 0x01, 0x03));  // calculated engine load
+  CHECK(!pollsPid(group00, 0x01, 0x08));  // intake manifold pressure
+
+  CHECK(pollsPid(ObdClient::polledPidMask(1, config), 0x21, 0x33));  // BARO
+
+  const uint32_t group40 = ObdClient::polledPidMask(2, config);
+  CHECK(pollsPid(group40, 0x41, 0x42));   // control module voltage
+  CHECK(pollsPid(group40, 0x41, 0x44));   // commanded equivalence ratio
+  CHECK(!pollsPid(group40, 0x41, 0x5E));  // fuel rate, SD only
+
+  // MAF-based mode puts the two fuel-flow inputs back and takes IAT away.
+  ConfigData maf = config;
+  maf.fuelSource = FuelSource::Maf;
+  CHECK(pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x10));
+  CHECK(pollsPid(ObdClient::polledPidMask(2, maf), 0x41, 0x5E));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x0F));
+
+  // Each remaining condition has to take its PID out too, or the page answers
+  // "we read this" about a signal that never arrives.
+  ConfigData noTrims = config;
+  noTrims.setFuelTrimEnabled(false);
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x06));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x07));
+
+  ConfigData noLpg = config;
+  noLpg.lpgEnabled = false;
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noLpg), 0x01, 0x07));
+
+  ConfigData noDfco = config;
+  noDfco.setDfcoEnabled(false);
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noDfco), 0x01, 0x11));
+
+  CHECK(ObdClient::polledPidMask(3, config) == 0);  // no fourth group exists
+}
+
 // VIN is Service 09, PID 02. Mode 01 PID 09 is the long-term fuel trim for
 // bank 2 and never arrives as more than one frame, so asking for it means the
 // answer can never arrive at all.
@@ -432,6 +500,8 @@ void testTheRetryCanStillSucceed() {
 }  // namespace
 
 int main() {
+  test("the polled PID set follows the poll profile",
+       testPolledPidMaskFollowsThePollProfile);
   test("VIN is requested as Service 09 PID 02",
        testVinIsRequestedAsService09Pid02);
   test("a real VIN answer is accepted", testRealVinAnswerIsAccepted);

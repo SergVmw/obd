@@ -247,6 +247,22 @@ void appendCodeJson(JsonObject item, uint16_t raw, uint16_t ecuResponseId) {
   item["description"] = description;
   item["misfire"] = ObdDiagnostics::isMisfire(raw);
 }
+
+// Mask bit to readable label, shared by the supported list and the polled
+// subset. Both have to format the same PID identically, or the page cannot tell
+// which entry to mark.
+void appendMaskPid(JsonArray target, uint8_t first, uint32_t mask,
+                   uint16_t& count) {
+  for (uint8_t bit = 0; bit < 32; ++bit) {
+    if ((mask & (1ul << (31 - bit))) == 0) continue;
+    const uint8_t pid = static_cast<uint8_t>(first + bit);
+    if (pid < first || pid > first + 31) continue;
+    char label[80];
+    snprintf(label, sizeof(label), "0x%02X %s", pid, PidNames::name(pid));
+    target.add(label);
+    ++count;
+  }
+}
 }  // namespace
 
 bool ServicePortal::begin() {
@@ -1851,16 +1867,18 @@ void ServicePortal::sendPidSupportReport() {
       const uint8_t first = PidSupportTable::kGroupBasePid[group] + 1;
       JsonArray pids = row["pids"].to<JsonArray>();
       uint16_t count = 0;
-      for (uint8_t bit = 0; bit < 32; ++bit) {
-        if ((mask & (1ul << (31 - bit))) == 0) continue;
-        const uint8_t pid = static_cast<uint8_t>(first + bit);
-        if (pid < first || pid > first + 31) continue;
-        char label[80];
-        snprintf(label, sizeof(label), "0x%02X %s", pid, PidNames::name(pid));
-        pids.add(label);
-        ++count;
-      }
+      appendMaskPid(pids, first, mask, count);
       row["count"] = count;
+
+      // The subset the firmware actually requests, so the page separates "the
+      // car supports this" from "we read this". Derived from the poll profile
+      // and filtered by the same conditions runPolling applies.
+      const uint32_t polled =
+          ObdClient::polledPidMask(static_cast<uint8_t>(group), configStore_.data());
+      JsonArray polledPids = row["polledPids"].to<JsonArray>();
+      uint16_t polledCount = 0;
+      appendMaskPid(polledPids, first, polled, polledCount);
+      row["polledCount"] = polledCount;
     }
   }
 

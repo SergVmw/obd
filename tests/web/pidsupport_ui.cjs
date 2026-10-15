@@ -10,16 +10,20 @@ const SAMPLE = {
   responders: [
     { id: '0x7E8', address: 2024, groups: [
       { base: '0x00', known: true, mask: '41 9D F1 80', count: 21,
-        pids: ['0x01 Monitor status / MIL / DTC count','0x03 Calculated engine load','0x0C Engine speed (RPM)'] },
-      { base: '0x20', known: true, mask: '00 00 00 00', count: 0, pids: [] },
-      { base: '0x40', known: true, mask: '21 00 01 80', count: 5,
-        pids: ['0x42 Control module voltage','0x44 Commanded equivalence ratio'] },
+        polledCount: 8,
+        polledPids: ['0x01 Monitor status / MIL / DTC count','0x03 Calculated engine load','0x05 Engine coolant temperature','0x0B Intake manifold absolute pressure','0x0C Engine speed (RPM)','0x0D Vehicle speed','0x0F Intake air temperature','0x11 Absolute throttle position'],
+        pids: ['0x01 Monitor status / MIL / DTC count','0x03 Calculated engine load','0x05 Engine coolant temperature','0x0B Intake manifold absolute pressure','0x0C Engine speed (RPM)','0x0D Vehicle speed','0x0F Intake air temperature','0x11 Absolute throttle position','0x1C Status of MONO or group injection','0x1F Run time since engine start'] },
+      { base: '0x20', known: true, mask: '00 00 00 00', count: 0, polledCount: 0, polledPids: [], pids: [] },
+      { base: '0x40', known: true, mask: '21 00 01 80', count: 5, polledCount: 3,
+        polledPids: ['0x42 Control module voltage','0x44 Commanded equivalence ratio','0x5E Fuel rate engine'],
+        pids: ['0x42 Control module voltage','0x44 Commanded equivalence ratio','0x45 Relative throttle position','0x5E Fuel rate engine','0x5F Engine fuel temperature'] },
     ]},
     { id: '0x7E9', address: 2025, groups: [
-      { base: '0x00', known: true, mask: '00 08 00 00', count: 1,
+      { base: '0x00', known: true, mask: '00 08 00 00', count: 1, polledCount: 1,
+        polledPids: ['0x0D Vehicle speed'],
         pids: ['0x0D Vehicle speed'] },
-      { base: '0x20', known: false, mask: '00 00 00 00', count: 0, pids: [] },
-      { base: '0x40', known: false, mask: '00 00 00 00', count: 0, pids: [] },
+      { base: '0x20', known: false, mask: '00 00 00 00', count: 0, polledCount: 0, polledPids: [], pids: [] },
+      { base: '0x40', known: false, mask: '00 00 00 00', count: 0, polledCount: 0, polledPids: [], pids: [] },
     ]},
   ],
   union: [ { base: '0x00', known: true, sources: 2, mask: '41 9D F1 80' } ],
@@ -50,8 +54,17 @@ const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8
   // match a multi-word name. Normalise before comparing.
   const text = (await page.locator('#pidSupportBox').textContent())
     .replace(/ /g, ' ');
-  for (const needle of ['0x7E8', '0x7E9', '41 9D F1 80', 'Calculated engine load', 'Vehicle speed', 'не ответил', '2 из 8']) {
+  for (const needle of ['0x7E8', '0x7E9', '41 9D F1 80', 'Calculated engine load', 'Vehicle speed', 'не ответил', '2 из 8', 'опрос: 8']) {
     if (!text.includes(needle)) throw new Error('missing from panel: ' + needle);
+  }
+  // A polled PID must be marked, and one that is merely supported must not be.
+  // The panel substitutes non-breaking spaces, so compare against the rendered
+  // text with those folded back to plain spaces.
+  const marked = (await page.locator('#pidSupportBox b').allTextContents())
+    .map(t => t.replace(/ /g, ' '));
+  if (!marked.some(t => t.includes('Engine speed'))) throw new Error('polled PID is not marked');
+  for (const unpolled of ['Engine fuel temperature', 'Relative throttle position', 'Run time since engine start']) {
+    if (marked.some(t => t.includes(unpolled))) throw new Error('unpolled PID is marked as polled: ' + unpolled);
   }
   if (served < 1) throw new Error('panel never fetched /api/pid-support');
   await page.click('#pidSupportRefresh');

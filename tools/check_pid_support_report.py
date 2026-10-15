@@ -126,6 +126,23 @@ require(
     "the diagnostics bundle must include the support-mask report as a source",
 )
 
+# 7. The page has to separate "the car supports it" from "the firmware reads it".
+#    A mask lists every parameter a block offers, most of which the poller never
+#    asks for, and without the distinction the listing answers a question nobody
+#    asked.
+require(
+    re.search(r'polledPids', portal) and re.search(r'ObdClient::polledPidMask\s*\(', portal),
+    "the portal must report which of the supported PIDs this image requests",
+)
+require(
+    re.search(r'static\s+uint32_t\s+polledPidMask\s*\(', client),
+    "the polled set must be derived from the poll profile, not restated",
+)
+require(
+    re.search(r'polledPids', html) and re.search(r'polledCount', html),
+    "the web interface must mark the polled PIDs and say how many there are",
+)
+
 if failures:
     print("support-mask report is not wired end to end:", file=sys.stderr)
     for failure in failures:
@@ -133,5 +150,5 @@ if failures:
     sys.exit(1)
 print(
     "Support-mask report is exposed: table accessors, portal route, decoded "
-    "per-block listing, web interface and bundle source"
+    "per-block listing, polled subset, web interface and bundle source"
 )

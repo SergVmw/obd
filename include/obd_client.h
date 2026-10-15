@@ -38,6 +38,23 @@ struct ObdOtherEcuStats {
 
 class ObdClient {
  public:
+  // Whether this image is the Speed-Density build. sendPid drops the two
+  // fuel-flow inputs in that mode, and the set the portal reports as polled has
+  // to drop them for the same reason, so both read one constant instead of
+  // repeating the conditional compilation.
+#ifdef H2G_SPEED_DENSITY_BUILD
+  static constexpr bool kSpeedDensityBuild = true;
+#else
+  static constexpr bool kSpeedDensityBuild = false;
+#endif
+
+  // The PIDs this image actually requests with the given configuration, as SAE
+  // J1979 support-mask bits: one 32-bit word per group, where 0x00 covers
+  // 0x01..0x20, 0x20 covers 0x21..0x40 and 0x40 covers 0x41..0x60. Read from
+  // the same profile the poller walks and filtered by the same conditions, so
+  // the portal cannot report a PID the scheduler would skip.
+  static uint32_t polledPidMask(uint8_t group, const ConfigData& config);
+
   ObdClient(TelemetryData& telemetry, const ConfigData& config,
             CanMonitor& monitor)
       : telemetry_(telemetry), config_(config), monitor_(monitor),
@@ -101,10 +118,15 @@ class ObdClient {
   uint32_t vinReadAt() const { return vinReadAt_; }
 
  private:
+  // The poll profile is constant and shared: the scheduler walks it, and
+  // polledPidMask() reads it to tell the portal which PIDs this image asks for.
+  // The mutable part is only the per-entry timestamp, which is why scheduling
+  // state lives in pollLastSentAt_ rather than inside the table. A table that
+  // holds both cannot be constexpr, and a non-constant one cannot answer that
+  // question without an instance the portal does not have.
   struct PollItem {
     uint8_t pid;
     uint16_t intervalMs;
-    uint32_t lastSentAt;
   };
 
   enum class PendingRequest : uint8_t {
@@ -223,36 +245,41 @@ class ObdClient {
 #ifdef H2G_SPEED_DENSITY_BUILD
   // The Speed-Density test image never requests unsupported PID 10 (MAF) or
   // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).
-  PollItem poll_[12] = {
-      {0x01, 500, 0},   // monitor status / MIL / confirmed DTC count
-      {0x0B, 100, 0},   // MAP
-      {0x0C, 150, 0},   // RPM
-      {0x0D, 200, 0},   // speed
-      {0x0F, 1000, 0},  // intake air temperature for Speed-Density
-      {0x11, 200, 0},   // absolute throttle position
-      {0x44, 250, 0},   // commanded equivalence ratio
-      {0x06, 500, 0},   // short-term fuel trim bank 1
-      {0x07, 500, 0},   // long-term fuel trim bank 1
-      {0x42, 1000, 0},  // ECU voltage
-      {0x05, 1000, 0},  // coolant
-      {0x33, 10000, 0}  // barometric pressure
+  static constexpr PollItem kPollProfile[12] = {
+      {0x01, 500},   // monitor status / MIL / confirmed DTC count
+      {0x0B, 100},   // MAP
+      {0x0C, 150},   // RPM
+      {0x0D, 200},   // speed
+      {0x0F, 1000},  // intake air temperature for Speed-Density
+      {0x11, 200},   // absolute throttle position
+      {0x44, 250},   // commanded equivalence ratio
+      {0x06, 500},   // short-term fuel trim bank 1
+      {0x07, 500},   // long-term fuel trim bank 1
+      {0x42, 1000},  // ECU voltage
+      {0x05, 1000},  // coolant
+      {0x33, 10000}  // barometric pressure
   };
+  static constexpr uint8_t kPollCount = 12;
 #else
-  PollItem poll_[14] = {
-      {0x01, 500, 0},   // monitor status / MIL / confirmed DTC count
-      {0x0B, 100, 0},   // MAP
-      {0x0C, 150, 0},   // RPM
-      {0x0D, 200, 0},   // speed
-      {0x0F, 1000, 0},  // IAT, scheduled only in Speed-Density mode
-      {0x10, 200, 0},   // MAF, skipped in Speed-Density mode
-      {0x11, 200, 0},   // absolute throttle position
-      {0x5E, 200, 0},   // fuel rate, skipped in Speed-Density mode
-      {0x44, 250, 0},   // commanded equivalence ratio
-      {0x06, 500, 0},   // short-term fuel trim bank 1
-      {0x07, 500, 0},   // long-term fuel trim bank 1
-      {0x42, 1000, 0},  // ECU voltage
-      {0x05, 1000, 0},  // coolant
-      {0x33, 10000, 0}  // barometric pressure
+  static constexpr PollItem kPollProfile[14] = {
+      {0x01, 500},   // monitor status / MIL / confirmed DTC count
+      {0x0B, 100},   // MAP
+      {0x0C, 150},   // RPM
+      {0x0D, 200},   // speed
+      {0x0F, 1000},  // IAT, requested only in Speed-Density mode
+      {0x10, 200},   // MAF, skipped in Speed-Density mode
+      {0x11, 200},   // absolute throttle position, DFCO only
+      {0x5E, 200},   // fuel rate, skipped in Speed-Density mode
+      {0x44, 250},   // commanded equivalence ratio
+      {0x06, 500},   // short-term fuel trim bank 1, LPG + trims only
+      {0x07, 500},   // long-term fuel trim bank 1, LPG + trims only
+      {0x42, 1000},  // ECU voltage
+      {0x05, 1000},  // coolant
+      {0x33, 10000}  // barometric pressure
   };
+  static constexpr uint8_t kPollCount = 14;
 #endif
+  // Mutable half of the schedule, split out so the profile above can stay
+  // constant and be read by polledPidMask() without an instance.
+  uint32_t pollLastSentAt_[kPollCount]{};
 };

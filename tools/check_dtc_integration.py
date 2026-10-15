@@ -19,7 +19,7 @@ dashboard = (ROOT / "src/dashboard_ui.cpp").read_text(encoding="utf-8")
 html = (ROOT / "web/index.html").read_text(encoding="utf-8")
 embedded = (ROOT / "src/web_ui_gz.h").read_text(encoding="utf-8")
 
-assert "{0x01, 500, 0}" in client_h, "MIL PID 01 must be polled at 500 ms"
+assert "{0x01, 500}" in client_h, "MIL PID 01 must be polled at 500 ms"
 assert "diagnostics_.observeMonitorStatus" in client
 for service in ("ReadStored", "ReadPending", "ReadPermanent"):
     assert service in diag_h and service in diag

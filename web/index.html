@@ -314,13 +314,18 @@ async function loadPidSupport(){
   }
   const rows=r.responders.map(b=>{
    const groups=b.groups.map(g=>{
-    const list=g.pids&&g.pids.length?g.pids.map(p=>'<span style="color:var(--m)">'+p.replace(/ /g,'&nbsp;')+'</span>').join('<br>'):'<span style="color:var(--m)">'+(g.known?'нет параметров':'не ответил')+'</span>';
-    return '<tr><td style="white-space:nowrap"><b>Маска '+g.base+'</b><br><span style="color:var(--m)">'+g.mask+'</span></td><td>'+list+'</td></tr>';
+    const polled=new Set(g.polledPids||[]);
+    const fmt=p=>p.replace(/ /g,'&nbsp;');
+    const list=g.pids&&g.pids.length?g.pids.map(p=>polled.has(p)
+      ?'<span style="color:var(--a)"><b>'+fmt(p)+'</b></span>'
+      :'<span style="color:var(--m)">'+fmt(p)+'</span>').join('<br>'):'<span style="color:var(--m)">'+(g.known?'нет параметров':'не ответил')+'</span>';
+    return '<tr><td style="white-space:nowrap"><b>Маска '+g.base+'</b><br><span style="color:var(--m)">'+g.mask+'</span><br><span style="color:var(--m)">опрос: '+fmt(String(g.polledCount||0))+'</span></td><td>'+list+'</td></tr>';
    }).join('');
    return '<tr><td style="white-space:nowrap"><b>'+b.id+'</b><br><span style="color:var(--m)">адрес '+b.address+'</span></td><td>'+groups+'</td></tr>';
   }).join('');
   box.innerHTML='<table class="cantable"><thead><tr><th>БЛОК</th><th>ПОДДЕРЖИВАЕМЫЕ PID</th></tr></thead><tbody>'+rows+'</tbody></table>'+
-   '<p class="note" style="margin-top:12px">Блоков отвечает: '+r.responderCount+' из '+r.maxResponders+' возможных адресов 0x7E8–0x7EF. Пустые группы — блок не ответил на этот запрос маски.</p>';
+   '<p class="note" style="margin-top:12px">Жирным отмечены PID, которые прошивка реально опрашивает; остальные автомобиль поддерживает, но прибор их не читает. Пустые группы — блок не ответил на этот запрос маски.</p>'+
+   '<p class="note">Блоков отвечает: '+r.responderCount+' из '+r.maxResponders+' возможных адресов 0x7E8–0x7EF.</p>';
  }catch(e){box.innerHTML='<p class="note" style="margin:0;color:var(--w)">Не удалось прочитать: '+e.message+'</p>';}
 }
 $('pidSupportRefresh').onclick=()=>loadPidSupport();

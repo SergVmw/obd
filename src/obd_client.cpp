@@ -194,12 +194,40 @@ void ObdClient::handleAlerts(uint32_t now) {
   }
 }
 
+// C++14: a constexpr static data member is not implicitly inline, and both the
+// scheduler and polledPidMask() walk this table, so it needs a definition in
+// this translation unit. The length comes from kPollCount rather than a literal
+// so the Speed-Density variant cannot mismatch its own count.
+constexpr ObdClient::PollItem
+    ObdClient::kPollProfile[ObdClient::kPollCount];
+
+uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config) {
+  if (group >= PidSupportTable::kGroupCount) return 0;
+  // Group bases are 0x00/0x20/0x40 and each covers the 32 PIDs that follow, so
+  // bit 31 of the word is the first PID of the group, as J1979 stores it.
+  const uint32_t first = PidSupportTable::kGroupBasePid[group] + 1U;
+  const bool speedDensity =
+      kSpeedDensityBuild || config.fuelSource == FuelSource::SpeedDensity;
+  uint32_t mask = 0;
+  for (uint8_t i = 0; i < kPollCount; ++i) {
+    const uint32_t pid = kPollProfile[i].pid;
+    // The same four conditions runPolling applies, in the same order. Marking a
+    // PID the scheduler would skip is worse than not marking it at all: the
+    // page would answer "we read this" about a signal that never arrives.
+    if (pid == 0x0F && !speedDensity) continue;
+    if (speedDensity && (pid == 0x10 || pid == 0x5E)) continue;
+    if ((pid == 0x06 || pid == 0x07) &&
+        (!config.lpgEnabled || !config.fuelTrimEnabled())) {
+      continue;
+    }
+    if (pid == 0x11 && !config.dfcoEnabled()) continue;
+    if (pid < first || pid > first + 31U) continue;
+    mask |= 1UL << (31U - (pid - first));
+  }
+  return mask;
+}
+
 bool ObdClient::sendPid(uint8_t pid, uint32_t now) {
-#if defined(H2G_SPEED_DENSITY_BUILD)
-  constexpr bool kSpeedDensityBuild = true;
-#else
-  constexpr bool kSpeedDensityBuild = false;
-#endif
   // Speed-Density uses only MAP/RPM/IAT as its airflow input. Reject the two
   // unsupported fuel-flow inputs even if a caller accidentally schedules them.
   if ((kSpeedDensityBuild || config_.fuelSource == FuelSource::SpeedDensity) &&
@@ -809,7 +837,6 @@ void ObdClient::refreshSupportMasks(uint32_t now) {
 }
 
 void ObdClient::runPolling(uint32_t now) {
-  constexpr uint8_t kPollCount = sizeof(poll_) / sizeof(poll_[0]);
   // Deliberately keyed on the raw PID 0D reading, never on the corrected
   // speed: the correction must not be able to influence the poll profile. The
   // fuel and display paths agree with this decision by construction, because
@@ -817,8 +844,7 @@ void ObdClient::runPolling(uint32_t now) {
   const bool parked = telemetry_.rawSpeedKph.valid(now) &&
                       telemetry_.rawSpeedKph.value < kParkedRawSpeedKph;
 
-  PollItem* selected = nullptr;
-  uint8_t selectedIndex = 0;
+  uint8_t selectedIndex = kPollCount;
   uint32_t selectedAge = 0;
   uint32_t selectedInterval = 1;
 
@@ -828,7 +854,7 @@ void ObdClient::runPolling(uint32_t now) {
   // the sum of all requested rates. pollCursor_ resolves equal startup scores.
   for (uint8_t checked = 0; checked < kPollCount; ++checked) {
     const uint8_t index = (pollCursor_ + checked) % kPollCount;
-    auto& item = poll_[index];
+    const PollItem& item = kPollProfile[index];
     if (!isSupported(item.pid)) continue;
     const bool speedDensity = config_.fuelSource == FuelSource::SpeedDensity;
     if (item.pid == 0x0F && !speedDensity) continue;
@@ -841,13 +867,12 @@ void ObdClient::runPolling(uint32_t now) {
 
     uint32_t intervalMs = item.intervalMs;
     if (parked && intervalMs < 1000) intervalMs = 1000;
-    const uint32_t age = now - item.lastSentAt;
+    const uint32_t age = now - pollLastSentAt_[index];
     if (age < intervalMs) continue;
 
-    if (selected == nullptr ||
+    if (selectedIndex == kPollCount ||
         static_cast<uint64_t>(age) * selectedInterval >
             static_cast<uint64_t>(selectedAge) * intervalMs) {
-      selected = &item;
       selectedIndex = index;
       selectedAge = age;
       selectedInterval = intervalMs;
@@ -859,8 +884,8 @@ void ObdClient::runPolling(uint32_t now) {
   // chance even when the Mode 01 demand reaches the global rate cap.
   if (sendMode22(now)) return;
 
-  if (selected != nullptr && sendPid(selected->pid, now)) {
-    selected->lastSentAt = now;
+  if (selectedIndex != kPollCount && sendPid(kPollProfile[selectedIndex].pid, now)) {
+    pollLastSentAt_[selectedIndex] = now;
     pollCursor_ = (selectedIndex + 1) % kPollCount;
   }
 }
