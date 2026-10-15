@@ -19,8 +19,11 @@ assert "H2G_FW_VERSION_OVERRIDE" in platformio
 
 # In the isolated image, the actual poll table contains 0F and omits both
 # unsupported fuel inputs. A sendPid guard protects against accidental callers.
-sd_table = header.split("#ifdef H2G_SPEED_DENSITY_BUILD", 1)[1].split("#else", 1)[0]
-assert re.search(r"\{\s*0x0F\s*,\s*1000\s*,\s*0\s*\}", sd_table)
+# The split is anchored on the profile itself rather than on the first #ifdef
+# with that name: kSpeedDensityBuild above also carries that directive, so
+# "first occurrence" silently stopped being the poll table.
+sd_table = header.split("kPollProfile[12] = {", 1)[1].split("};", 1)[0]
+assert re.search(r"\{\s*0x0F\s*,\s*1000\s*\}", sd_table)
 assert not re.search(r"\{\s*0x10\s*,", sd_table)
 assert not re.search(r"\{\s*0x5E\s*,", sd_table)
 assert "pid == 0x10 || pid == 0x5E" in obd
