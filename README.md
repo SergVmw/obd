@@ -65,7 +65,7 @@ VIN оставался пустым на всю поездку: две попы�
 
 Опубликованный 0.4.7 не переписан: правки вышли отдельной версией.
 
-Отчёт: [`releases/README-v0.4.8.md`](releases/README-v0.4.8.md).
+Отчёт: [метка `v0.4.8`](https://github.com/SergVmw/obd/blob/v0.4.8/releases/) — из рабочего дерева удалён.
 
 ## Релиз 0.4.7 (оставлен для отката)
 
@@ -83,7 +83,7 @@ VIN оставался пустым на всю поездку: две попы�
 
 **Потеря данных при обновлении:** нет, схема записи не менялась.
 
-Отчёт: [`releases/README-v0.4.7.md`](releases/README-v0.4.7.md).
+Отчёт: [метка `v0.4.7`](https://github.com/SergVmw/obd/blob/v0.4.7/releases/) — из рабочего дерева удалён.
 
 ## Релиз 0.4.6 (оставлен для отката)
 
@@ -94,7 +94,7 @@ Mode 01 PID 09 вместо Service 09 PID 02, проверка ждала фо�
 
 **Потеря данных при обновлении:** нет, схема записи не менялась.
 
-Отчёт: [`releases/README-v0.4.6.md`](releases/README-v0.4.6.md).
+Отчёт: [метка `v0.4.6`](https://github.com/SergVmw/obd/blob/v0.4.6/releases/) — из рабочего дерева удалён.
 
 ## Релиз 0.4.5 (артефакты удалены, доступны по метке `v0.4.5`)
 
@@ -319,7 +319,7 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая объединение масок PID, полосу стояния скорости, разделение простоев, отбрасывание интервала при неизвестной скорости, яркость, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check дополнительно проверяет, что предыдущий production-релиз и его SHA-256 не удалены и не изменены; версия берётся из `previous_version`, а не из литерала, потому что раньше ссылка на 0.4.2, которого в репозитории нет, делала гейт непроходимым ни для одной версии. Правка на 0.4.3 и удаление артефактов повторили бы это, поэтому удалённые релизы остаются доступны по меткам. Два гейта (`check_ota_transport`, `check_diagnostic_integration`) проверяли версию литералом `0.4.3` и падали на любом её изменении; теперь они проверяют форму — строка в кавычках длиной не более 15 символов, потому что манифест хранит её в `firmwareVersion[16]`. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая объединение масок PID, полосу стояния скорости, разделение простоев, отбрасывание интервала при неизвестной скорости, яркость, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check проверяет, что `releases/` содержит только артефакты текущей версии и что их SHA-256 совпадает с содержимым; прежде он дополнительно сверял предыдущий production-релиз по литералу `previous_version`, но после того как в дереве остался один релиз, проверять там было нечего, и она бы молча проходила вхолостую. Два гейта (`check_ota_transport`, `check_diagnostic_integration`) проверяли версию литералом `0.4.3` и падали на любом её изменении; теперь они проверяют форму — строка в кавычках длиной не более 15 символов, потому что манифест хранит её в `firmwareVersion[16]`. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
 
 ## Упакованный release 0.4.9
 
@@ -337,8 +337,10 @@ SHA-256: a54b3f4af2a31ef3cb2cdb13b1eda0434b37261dff90e1f96f8df7837cac4fa7
 image для чистой записи с offset `0x0`. Полный отчёт:
 [`releases/README-v0.4.9.md`](releases/README-v0.4.9.md).
 
-Рядом лежат артефакты 0.4.8 и 0.4.7 — предыдущие production-релизы, рабочие
-версии для отката, их SHA-256 не изменены.
+В `releases/` лежит только текущий релиз. Артефакты 0.4.8, 0.4.7, 0.4.6 и более
+ранних — по меткам [`v0.4.8`](https://github.com/SergVmw/obd/blob/v0.4.8/releases/)
+и [`v0.4.6`](https://github.com/SergVmw/obd/blob/v0.4.6/releases/); их SHA-256 не
+изменены.
 
 Релизы 0.4.6, 0.4.5, 0.4.4 и 0.4.3: 0.4.6 остаётся в дереве как предыдущий
 предыдущий, остальные удалены, чтобы не держать пять релизов подряд; их файлы и

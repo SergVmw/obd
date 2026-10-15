@@ -51,24 +51,30 @@ release_dir = ROOT / "releases"
 assert sorted(path.name for path in release_dir.glob(f"h2-gauge-v{VERSION}-*.bin")) == sorted((APP.name, FACTORY.name))
 assert RELEASE_README.is_file()
 
-# Keep the previous production release intact while packaging the new one.
-# Older releases were deleted from the repository upstream, which left this gate
-# unable to pass for any version at all. It protects the most recent one that exists.
-previous_version = "0.4.8"
-previous_names = (
-    f"h2-gauge-v{previous_version}-{TARGET}.bin",
-    f"h2-gauge-v{previous_version}-{TARGET}-factory.bin",
-    f"SHA256SUMS-v{previous_version}.txt",
-    f"README-v{previous_version}.md",
+# The tree keeps one release: the current one. Older releases stay reachable by
+# tag, which is where their reports, checksums and binaries live, so duplicating
+# their binaries here would only bloat every clone without adding a copy
+# anything could lose.
+#
+# This gate used to prove that the previous release was still intact, by reading
+# previous_version and re-hashing its artifacts. Under that policy there is no
+# previous release in the tree to prove anything about, and a check that has
+# quietly stopped checking is worse than no check at all — the Speed-Density
+# gate sat unwired for this project's whole life and nobody noticed, because a
+# gate that never fails looks exactly like a gate that passes. So the check is
+# replaced by one that enforces the policy it now describes: releases/ holds
+# this version's artifacts and nothing older.
+older = sorted(
+    path.name
+    for path in release_dir.glob("h2-gauge-v*-esp32s3-n16r8*.bin")
+    if not path.name.startswith(f"h2-gauge-v{VERSION}-")
 )
-assert all((release_dir / name).is_file() for name in previous_names), previous_names
-previous_sums = (release_dir / f"SHA256SUMS-v{previous_version}.txt").read_text("ascii")
-for line in previous_sums.splitlines():
-    expected_hash, filename = line.split(None, 1)
-    filename = filename.strip()
-    assert sha(release_dir / filename) == expected_hash, f"historical release changed: {filename}"
+assert not older, (
+    f"releases/ must hold only the current version's artifacts, found older: {older}"
+)
 
 print(
     f"Artifacts OK: app={len(app)} ({len(app) % 1436}-byte final raw "
-    f"fragment), factory={len(factory)}"
+    f"fragment), factory={len(factory)}; releases/ holds only {VERSION}, "
+    f"older releases are reachable by tag"
 )
