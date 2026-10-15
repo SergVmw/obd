@@ -1,5 +1,7 @@
 #include "service_portal.h"
 
+#include "pid_names.h"
+
 #include <ArduinoJson.h>
 #include <esp_app_format.h>
 #include <esp_err.h>
@@ -359,6 +361,8 @@ void ServicePortal::setupRoutes() {
              [this]() { sendCanSnapshot(); });
   server_.on("/api/can/clear", HTTP_POST,
              [this]() { clearCanSnapshot(); });
+  server_.on("/api/pid-support", HTTP_GET,
+             [this]() { sendPidSupportReport(); });
   server_.on("/api/diagnostics/dtc", HTTP_GET,
              [this]() { sendDtcStatus(); });
   server_.on("/api/diagnostics/dtc/scan", HTTP_POST,
@@ -1765,6 +1769,102 @@ void ServicePortal::applyPetrolCalibration() {
   output.reserve(256);
   serializeJson(response, output);
   server_.send(200, "application/json", output);
+}
+
+// Which blocks are on the bus, and which parameters each of them supports.
+//
+// The masks arrive with every discovery pass and with the two-minute refresh,
+// and until this existed there was no way to read them: isSupported() answers
+// about the union, which is what the poller needs and is silent about which
+// blocks were out there. On a vehicle whose comfort modules sit on another bus
+// the answer is a short list, and that list is the cheapest way to tell what
+// this car will ever be able to report.
+//
+// A separate route rather than a field of /api/status: the decoded listing can
+// reach 96 parameters per block across eight blocks, and /api/status is polled
+// every 1.2 seconds.
+void ServicePortal::sendPidSupportReport() {
+  touch();
+  const PidSupportTable& table = obdClient_.pidSupport();
+
+  JsonDocument doc;
+  doc["generatedAtMs"] = millis();
+  doc["responderCount"] = table.responderCount();
+  doc["maxResponders"] = PidSupportTable::kMaxResponders;
+  doc["note"] =
+      "Mode 01 PIDs 00/20/40 answered by each block. Response IDs are the "
+      "diagnostic segment 0x7E8-0x7EF; a block that does not answer is not "
+      "reachable from the OBD connector at all.";
+
+  JsonArray responders = doc["responders"].to<JsonArray>();
+  for (size_t index = 0; index < table.responderCount(); ++index) {
+    JsonObject entry = responders.add<JsonObject>();
+    char id[12];
+    snprintf(id, sizeof(id), "0x%03X",
+             static_cast<unsigned>(table.responderIdAt(index)));
+    entry["id"] = id;
+    entry["address"] = table.responderIdAt(index);
+
+    JsonArray groups = entry["groups"].to<JsonArray>();
+    for (size_t group = 0; group < PidSupportTable::kGroupCount; ++group) {
+      JsonObject row = groups.add<JsonObject>();
+      char base[8];
+      snprintf(base, sizeof(base), "0x%02X",
+               PidSupportTable::kGroupBasePid[group]);
+      row["base"] = base;
+      row["known"] = table.responderGroupKnown(index, group);
+
+      const uint32_t mask = table.responderMask(index, group);
+      char hex[12];
+      snprintf(hex, sizeof(hex), "%02lX %02lX %02lX %02lX",
+               static_cast<unsigned long>((mask >> 24) & 0xFF),
+               static_cast<unsigned long>((mask >> 16) & 0xFF),
+               static_cast<unsigned long>((mask >> 8) & 0xFF),
+               static_cast<unsigned long>(mask & 0xFF));
+      row["mask"] = hex;
+
+      // Most significant bit first per J1979, so PID 0x01 is bit 31 of group 0.
+      const uint8_t first = PidSupportTable::kGroupBasePid[group] + 1;
+      JsonArray pids = row["pids"].to<JsonArray>();
+      uint16_t count = 0;
+      for (uint8_t bit = 0; bit < 32; ++bit) {
+        if ((mask & (1ul << (31 - bit))) == 0) continue;
+        const uint8_t pid = static_cast<uint8_t>(first + bit);
+        if (pid < first || pid > first + 31) continue;
+        char label[80];
+        snprintf(label, sizeof(label), "0x%02X %s", pid, PidNames::name(pid));
+        pids.add(label);
+        ++count;
+      }
+      row["count"] = count;
+    }
+  }
+
+  JsonArray unionRows = doc["union"].to<JsonArray>();
+  for (size_t group = 0; group < PidSupportTable::kGroupCount; ++group) {
+    JsonObject row = unionRows.add<JsonObject>();
+    char base[8];
+    snprintf(base, sizeof(base), "0x%02X", PidSupportTable::kGroupBasePid[group]);
+    row["base"] = base;
+    row["known"] = table.groupKnown(group);
+    row["sources"] = table.groupSources(group);
+    char hex[12];
+    const uint32_t mask = table.unionMask(group);
+    snprintf(hex, sizeof(hex), "%02lX %02lX %02lX %02lX",
+             static_cast<unsigned long>((mask >> 24) & 0xFF),
+             static_cast<unsigned long>((mask >> 16) & 0xFF),
+             static_cast<unsigned long>((mask >> 8) & 0xFF),
+             static_cast<unsigned long>(mask & 0xFF));
+    row["mask"] = hex;
+  }
+
+  char payload[12288];
+  const size_t written =
+      serializeJson(doc, payload, sizeof(payload));
+  server_.send(200, "application/json", payload);
+  ESP_LOGI(kTag, "pid-support report: %u responder(s), %u bytes",
+           static_cast<unsigned>(table.responderCount()),
+           static_cast<unsigned>(written));
 }
 
 void ServicePortal::sendCanSnapshot() {

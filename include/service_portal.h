@@ -67,6 +67,7 @@ class ServicePortal {
   void startPetrolCalibration();
   void applyPetrolCalibration();
   void sendCanSnapshot();
+  void sendPidSupportReport();
   void clearCanSnapshot();
   void sendDtcStatus();
   void startDtcScan();

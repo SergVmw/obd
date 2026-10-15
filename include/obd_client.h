@@ -58,6 +58,9 @@ class ObdClient {
   }
   bool isSupported(uint8_t pid) const;
   bool pidSupportKnown(uint8_t pid) const;
+  // The portal reports this to the user. Without it the masks are collected and
+  // discarded, and which blocks a vehicle exposes can only be guessed.
+  const PidSupportTable& pidSupport() const { return supportTable_; }
   bool discoveryDone() const { return discoveryDone_; }
   bool mapPidRequestPending() const;
   const ObdPidStats& mapPidStats() const { return mapPidStats_; }

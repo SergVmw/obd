@@ -1,5 +1,9 @@
 #include "pid_support.h"
 
+// C++14: a constexpr static data member is not implicitly inline, and passing
+// this array to snprintf takes its address, so it needs a definition.
+constexpr uint8_t PidSupportTable::kGroupBasePid[PidSupportTable::kGroupCount];
+
 namespace {
 // SAE J1979 packs the support mask most significant bit first: PID 0x01 is bit
 // 31 of the 0x00 group, PID 0x20 is bit 0. A shift of 32 would be undefined, but

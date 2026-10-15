@@ -46,6 +46,24 @@ class PidSupportTable {
     return index < responderCount_ ? responderIds_[index] : 0;
   }
 
+  // Per-responder view. isSupported() answers only about the union, which is
+  // all the poller needs and none of what is wanted when the question is which
+  // blocks are on the bus at all: that requires seeing each mask on its own.
+  bool responderGroupKnown(size_t responder, size_t group) const {
+    return responder < responderCount_ && group < kGroupCount &&
+           responderKnown_[responder][group];
+  }
+  uint32_t responderMask(size_t responder, size_t group) const {
+    return responder < responderCount_ && group < kGroupCount
+               ? responderMask_[responder][group]
+               : 0u;
+  }
+  uint32_t unionMask(size_t group) const {
+    return group < kGroupCount ? unionMask_[group] : 0u;
+  }
+  // Group base PIDs, in the order the groups are stored.
+  static constexpr uint8_t kGroupBasePid[kGroupCount] = {0x00, 0x20, 0x40};
+
   // Optimistic before any mask is known, and for PIDs outside the three SAE
   // groups, so an ECU that does not answer the mask requests is still polled.
   bool isSupported(uint8_t pid) const;

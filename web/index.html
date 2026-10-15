@@ -244,6 +244,11 @@
   <div class="buttons"><button class="btn primary" id="diagAll">Скачать все доступные JSON</button></div>
   <p class="note" id="diagAllNote" style="margin-top:12px">Файлы сохраняются в загрузки браузера по одному, с меткой времени в имени.</p>
  </div>
+ <div class="section"><h3>Блоки на шине и их параметры</h3>
+  <p class="note" style="margin-bottom:12px">Прибор читает маски поддержки (Mode 01 PID 00/20/40) при загрузке и каждые две минуты. Здесь видно, какие блоки вообще отвечают с разъёма OBD и какие параметры поддерживает каждый из них — не объединённые, а по отдельности.</p>
+  <div class="buttons"><button class="btn" id="pidSupportRefresh">Опросить блоки</button></div>
+  <div id="pidSupportBox" class="canwrap" style="margin-top:12px"></div>
+ </div>
  <div class="section"><h3>Что доступно</h3>
   <div class="canwrap"><table class="cantable"><thead><tr><th>ФАЙЛ</th><th>ЧТО ВНУТРИ</th><th></th></tr></thead><tbody id="diagRows"></tbody></table></div>
   <p class="note" style="margin-top:12px">Трейс накапливается только в оперативной памяти и живёт в диагностических сборках. В обычной прошивке его нет, и строка помечена как недоступная. Перед выгрузкой встаньте на парковку с включённым зажиганием: при входе в сервисный режим сбор замораживается, чтобы не мешать расчёту поездки.</p>
@@ -293,6 +298,38 @@ function brightnessStatus(s){
  $('lightLive').textContent=text;
 }
 $('brightnessMode').addEventListener('change',syncBrightnessUi);$('lightAutoCalibrate').addEventListener('change',syncBrightnessUi);
+// Which blocks answered, and what each of them supports. Loaded on demand
+// rather than on every status poll: the decoded listing is large and it changes
+// on the order of never, so there is nothing to watch.
+let pidSupportLoaded=false;
+async function loadPidSupport(){
+ const box=$('pidSupportBox');
+ box.textContent='Опрос…';
+ try{
+  const r=await api('/api/pid-support');
+  pidSupportLoaded=true;
+  if(!r.responders.length){
+   box.innerHTML='<p class="note" style="margin:0">Ни один блок не ответил на маски поддержки. Это либо двигатель выключен, либо шина не даёт ответов — попробуйте на работающем двигателе.</p>';
+   return;
+  }
+  const rows=r.responders.map(b=>{
+   const groups=b.groups.map(g=>{
+    const list=g.pids&&g.pids.length?g.pids.map(p=>'<span style="color:var(--m)">'+p.replace(/ /g,'&nbsp;')+'</span>').join('<br>'):'<span style="color:var(--m)">'+(g.known?'нет параметров':'не ответил')+'</span>';
+    return '<tr><td style="white-space:nowrap"><b>Маска '+g.base+'</b><br><span style="color:var(--m)">'+g.mask+'</span></td><td>'+list+'</td></tr>';
+   }).join('');
+   return '<tr><td style="white-space:nowrap"><b>'+b.id+'</b><br><span style="color:var(--m)">адрес '+b.address+'</span></td><td>'+groups+'</td></tr>';
+  }).join('');
+  box.innerHTML='<table class="cantable"><thead><tr><th>БЛОК</th><th>ПОДДЕРЖИВАЕМЫЕ PID</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+   '<p class="note" style="margin-top:12px">Блоков отвечает: '+r.responderCount+' из '+r.maxResponders+' возможных адресов 0x7E8–0x7EF. Пустые группы — блок не ответил на этот запрос маски.</p>';
+ }catch(e){box.innerHTML='<p class="note" style="margin:0;color:var(--w)">Не удалось прочитать: '+e.message+'</p>';}
+}
+$('pidSupportRefresh').onclick=()=>loadPidSupport();
+// Первая загрузка при открытии вкладки: маски читаются при старте и каждые
+// две минуты, но в момент открытия вкладки они уже готовы.
+document.querySelectorAll('.tab').forEach(b=>{
+ const prev=b.onclick;
+ b.onclick=()=>{prev();if(b.dataset.tab==='diag'&&!pidSupportLoaded)loadPidSupport();};
+});
 $('diagAll').onclick=diagDownloadAll;
 $('resetLightCalibration').onclick=async()=>{
  if(!confirm('Забыть измеренный диапазон света и начать обучение заново? Настройки порогов, яркости и поездка сохранятся.'))return;
@@ -435,6 +472,7 @@ const DIAG_SOURCES=[
  {id:'petrol',file:'petrol-calibration',path:'/api/fuel/petrol-calibration',need:false,what:'Интервал калибровки бака и применённый коэффициент'},
  {id:'ota',file:'ota-slots',path:'/api/ota/status',need:false,what:'Разделы A/B, текущая и загрузочная прошивки, состояние образа'},
  {id:'assets',file:'assets',path:'/api/assets/status',need:false,what:'Пользовательские картинки: размеры, контрольные суммы, активный фон'},
+ {id:'pids',file:'pid-support',path:'/api/pid-support',need:false,what:'Какие блоки отвечают на шине и какие PID каждый поддерживает, поразборно'},
 ];
 let diagBusy=false;
 function diagStamp(){
