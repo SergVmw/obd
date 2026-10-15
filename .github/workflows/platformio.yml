@@ -11,6 +11,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          # Full history and tags. check_doc_links.py verifies that every
+          # repository link names a ref that exists, which it cannot judge from
+          # a shallow clone with no tags: every ref would look broken. It also
+          # resolves commit references, which needs history.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7

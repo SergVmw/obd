@@ -39,6 +39,38 @@ tags = set(
     ).stdout.split()
 )
 
+shallow = (
+    subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=ROOT, capture_output=True, text=True,
+    ).stdout.strip()
+    == "true"
+)
+
+# A repository link can only be judged against tags. Without any tag every ref
+# looks broken, and reporting that as eleven broken links sends the reader
+# after the documentation instead of after the checkout. A shallow clone that
+# still has its tags is fine: tag refs resolve, and so does any recent commit.
+if not tags:
+    print(
+        "cannot verify repository links: no tags in this checkout, so every ref "
+        "would look broken",
+        file=sys.stderr,
+    )
+    print(
+        "check_doc_links.py needs tags; actions/checkout must use "
+        "fetch-depth: 0",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+SHALLOW_NOTE = (
+    " (this checkout is shallow, so a commit ref may be absent from the clone "
+    "rather than nonexistent)"
+    if shallow
+    else ""
+)
+
 # blob/<ref>/<path> and tree/<ref>/<path> against this repository. The ref is
 # the segment between the kind and the path, and must survive the redirect to
 # tree/<ref>/<path>.
@@ -79,8 +111,8 @@ for document in documents:
         if probe.returncode != 0:
             fail(
                 f"{document.name}: link names ref '{ref}', which is neither a tag "
-                f"(known: {', '.join(sorted(tags)) or 'none'}) nor a commit in this "
-                f"history; the URL will 404"
+                f"(known: {', '.join(sorted(tags))}) nor a commit in this history; "
+                f"the URL will 404" + SHALLOW_NOTE
             )
 
 if failures:
