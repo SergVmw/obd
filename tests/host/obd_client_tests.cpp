@@ -112,6 +112,28 @@ struct Rig {
     }
   }
 
+  // Count the VIN requests seen on the wire so far.
+  size_t vinRequestCount() const {
+    size_t count = 0;
+    for (const twai_message_t& frame : h2g_twai_stub::transmitted()) {
+      if (!frame.rtr && frame.data_length_code >= 3 &&
+          frame.data[0] == 0x02 && frame.data[1] == 0x09) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  // Pump until exactly this many VIN requests have gone out. Catching the
+  // retry while it is still awaiting its answer is the whole point: past its
+  // timeout nobody is listening for the reply any more.
+  void pumpUntilVinRequestCount(size_t wanted, uint32_t maxSteps = 800) {
+    for (uint32_t i = 0; i < maxSteps && vinRequestCount() < wanted; ++i) {
+      hostMillis += 25;
+      client.loop(hostMillis);
+    }
+  }
+
   const twai_message_t* findRequest(uint8_t service, uint8_t pid) const {
     for (const twai_message_t& frame : h2g_twai_stub::transmitted()) {
       if (frame.rtr) continue;
@@ -315,6 +337,44 @@ void testVinIsAcceptedFromAnyPowertrainBlock() {
   CHECK(rig.client.vinEcu() == 0x7EF);
 }
 
+// A request that goes unanswered is asked once more. The first attempt is made
+// the instant discovery ends, so a busy bus or a block still waking up used to
+// cost the VIN for the whole ignition cycle.
+void testAnUnansweredVinRequestIsRetriedOnce() {
+  Rig rig;
+  rig.pumpUntilVinRequested();
+  CHECK(rig.vinRequestCount() == 1);
+
+  // Long enough to outlast the request timeout and the retry delay.
+  rig.pump(600, 25);
+  CHECK(rig.vinRequestCount() == 2);
+
+  // The identifier is constant, so the request stops there: a second failure
+  // must not turn into a poll.
+  rig.pump(600, 25);
+  CHECK(rig.vinRequestCount() == 2);
+  CHECK(!rig.client.vinValid());
+}
+
+// A retry that gets an answer still reads, so losing the first request does not
+// leave the field empty.
+void testTheRetryCanStillSucceed() {
+  Rig rig;
+  rig.pumpUntilVinRequested();
+  CHECK(rig.vinRequestCount() == 1);
+
+  // Catch the retry while it is still waiting for its answer, not after.
+  rig.pumpUntilVinRequestCount(2);
+  CHECK(rig.vinRequestCount() == 2);
+  CHECK(!rig.client.vinValid());
+
+  queueVinAnswer();
+  rig.pump(40, 25);
+
+  CHECK(rig.client.vinValid());
+  CHECK(std::string(rig.client.vin()) == std::string(kVin));
+}
+
 }  // namespace
 
 int main() {
@@ -336,6 +396,9 @@ int main() {
   test("a broken sequence is discarded", testBrokenSequenceIsDiscarded);
   test("a VIN is accepted from any powertrain block",
        testVinIsAcceptedFromAnyPowertrainBlock);
+  test("an unanswered VIN request is retried once, then stops",
+       testAnUnansweredVinRequestIsRetriedOnce);
+  test("the retry can still succeed", testTheRetryCanStillSucceed);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

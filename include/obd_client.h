@@ -175,6 +175,11 @@ class ObdClient {
   // VIN, requested once after discovery. The assembly state below is private
   // to this request so it can never interleave with the DTC transport.
   static constexpr uint32_t vinTimeoutMs_ = 2000;
+  // The identifier cannot change while the engine runs, so it is not polled.
+  // One retry covers the first request being lost to a busy bus or a block
+  // that has not finished waking up when discovery ends.
+  static constexpr uint8_t kMaxVinAttempts = 2;
+  static constexpr uint32_t kVinRetryDelayMs = 4000;
   char vin_[kVinChars + 1] = {0};
   uint8_t vinBytes_[kVinPayload] = {0};
   uint16_t vinEcu_ = 0;
@@ -185,6 +190,8 @@ class ObdClient {
   uint8_t vinNextSequence_ = 0;
   bool vinValid_ = false;
   bool vinAttempted_ = false;
+  uint8_t vinAttempts_ = 0;
+  uint32_t vinRetryDueAt_ = 0;
 
   bool discoveryDone_ = false;
   uint32_t maskRefreshDueAt_ = 0;

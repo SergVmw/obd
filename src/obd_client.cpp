@@ -96,12 +96,17 @@ void ObdClient::loop(uint32_t now) {
   if (sendDiagnostics(now)) return;
   if (paused_ && !servicePollingEnabled_) return;
 
-  // VIN is asked once, right after discovery, and never again: it cannot
+  // VIN is asked once, right after discovery, and not polled again: it cannot
   // change while the engine runs, and polling a constant would spend bus
-  // bandwidth for nothing. It waits for a free slot so its three-frame answer
-  // never shares ISO-TP state with a diagnostic request.
-  if (!vinValid_ && !vinAttempted_ && discoveryDone_ &&
-      pendingRequest_ == PendingRequest::None && !mode22_.waiting()) {
+  // bandwidth for nothing. One retry is allowed because the first attempt is
+  // made the instant discovery ends, when the bus may still be busy and the
+  // engine block may not have finished waking up. Losing that one request used
+  // to leave the field empty until the next power cycle. It waits for a free
+  // slot so its three-frame answer never shares ISO-TP state with a
+  // diagnostic request.
+  if (!vinValid_ && vinAttempts_ < kMaxVinAttempts && discoveryDone_ &&
+      pendingRequest_ == PendingRequest::None && !mode22_.waiting() &&
+      now >= vinRetryDueAt_) {
     sendVinRequest(now);
   }
 
@@ -295,6 +300,10 @@ void ObdClient::sendVinRequest(uint32_t now) {
   }
   monitor_.record(message, true, now);
   vinAttempted_ = true;
+  ++vinAttempts_;
+  // Hold off before any retry, so a block that is merely slow is not asked
+  // again inside its own answer window.
+  vinRetryDueAt_ = now + kVinRetryDelayMs;
   waiting_ = true;
   pendingRequest_ = PendingRequest::Vin;
   pendingPid_ = 0x02;
@@ -323,8 +332,8 @@ bool ObdClient::handleVinFrame(const twai_message_t& message, uint32_t now,
     if (message.data_length_code < 3) return false;
     const size_t total =
         (static_cast<size_t>(message.data[0] & 0x0FU) << 8) | message.data[1];
-    // Only a well-formed 19-byte answer is accepted; anything else is a
-    // truncated tail from some other multi-frame service.
+    // Only a well-formed answer of the VIN's own length is accepted; anything
+    // else is a truncated tail from some other multi-frame service.
     if (total != kVinPayload) {
       finishPending(true);
       return true;
@@ -524,11 +533,13 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   if (pid == 0x0C) {
     if (payloadLength < 4) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
-      const bool ecuWasAlreadyLocked =
-          diagnostics_.state().engineEcuLocked;
       if (!diagnostics_.observeEngineResponse(message.identifier)) {
 #ifdef H2G_DIAGNOSTIC_BUILD
-        if (ecuWasAlreadyLocked) {
+        // Read here rather than before the call: observeEngineResponse leaves
+        // engineEcuLocked untouched on both of its false paths, so this is the
+        // same value, and hoisting it left a variable computed and discarded in
+        // the production build.
+        if (diagnostics_.state().engineEcuLocked) {
           recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
                                  pid, now);
         }
