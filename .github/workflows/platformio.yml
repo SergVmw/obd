@@ -50,6 +50,7 @@ jobs:
           python tools/check_ota_transport.py
           python tools/check_ui_fonts.py
           python tools/check_diagnostic_integration.py
+          python tools/check_pid_support_report.py
 
       - name: Run browser OTA/UI regression
         run: |
@@ -57,6 +58,7 @@ jobs:
           npm install --no-save --no-package-lock playwright@1.55.0
           npx playwright install --with-deps chromium
           NODE_PATH="$PWD/node_modules" node tests/web/brightness_ui.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/pidsupport_ui.cjs
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
