@@ -19,7 +19,16 @@ main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
 production_html = (ROOT / "web/index.html").read_text(encoding="utf-8")
 embedded = (ROOT / "src/diagnostic_web_ui_gz.h").read_text(encoding="ascii")
 
-assert '#define H2G_FW_VERSION "0.4.3"' in version
+# The version must stay a quoted string of at most 15 characters: the manifest
+# keeps it in firmwareVersion[16]. Asserting the shape instead of a literal
+# means a version bump is not a reason to edit this gate, and a malformed
+# version still fails.
+declared = re.search(r'#define\s+H2G_FW_VERSION\s+"([^"]*)"', version)
+assert declared, "H2G_FW_VERSION must be a quoted string"
+assert 0 < len(declared.group(1)) <= 15, (
+    f"firmwareVersion holds 16 bytes, so the version must fit: "
+    f"{declared.group(1)!r} is {len(declared.group(1))} characters"
+)
 assert "[env:esp32s3_n16r8_diagnostic]" in platformio
 assert "H2G_DIAGNOSTIC_BUILD=1" in platformio
 assert "H2G_FW_VERSION_OVERRIDE" in platformio

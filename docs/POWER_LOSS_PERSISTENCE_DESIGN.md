@@ -8,7 +8,7 @@
 
 В 0.3.9 реализован append-only журнал в существующем LittleFS 7,875 МиБ:
 
-- единый 140-байтный snapshot ordinary trip + petrol calibration;
+- единый 156-байтный snapshot ordinary trip + petrol calibration (было 140; запись выросла в 0.4.4 вместе с добавлением счётчиков топлива, сгоревшего в простое);
 - interval 20 секунд, только если relevant state изменился;
 - немедленная запись на reset/start/apply calibration, входе/выходе service, low voltage, reboot и при наблюдаемом `engine running → stopped`;
 - `magic + schema + monotonically increasing sequence + CRC` у каждой записи;
@@ -41,7 +41,7 @@
 
 ### LittleFS journal
 
-Консервативная модель использует только два segment по 256 КиБ, всего 512 КиБ, и округляет каждый примерно 140–160-байтный snapshot до 256 физических байт. В таком объёме помещается около 2 048 checkpoints; при интервале 20 секунд один полный оборот получается примерно раз в 11,38 часа активной работы.
+Консервативная модель использует только два segment по 256 КиБ, всего 512 КиБ, и округляет каждый примерно 156-байтный snapshot до 256 физических байт. Запись выросла со 140 до 156 байт в 0.4.4, но округление до 256 байт не изменилось, поэтому число checkpoints на оборот осталось прежним — около 2 048; при интервале 20 секунд один полный оборот получается примерно раз в 11,38 часа активной работы.
 
 При идеальном распределении по этим 128 секторам и 100 000 erase cycles математический предел составляет около 1,14 млн активных часов, или 130 лет непрерывной работы. Чтобы не выдавать идеальную модель за реальность, при условном десятикратном write amplification нижняя расчётная граница становится около 13 лет непрерывной записи. При 2 ч/сутки это соответствует примерно 156 годам по erase budget; практический проектный предел всё равно следует считать не более 20 лет до аппаратного подтверждения и с учётом retention/температуры.
 
@@ -49,7 +49,7 @@
 
 ### NVS mirror
 
-NVS имеет пять 4-КиБ страниц; для garbage collection одна должна оставаться свободной. `TripState` сейчас занимает 64 байта и ориентировочно четыре 32-байтные NVS entries с blob index. При 126 entries на страницу и четырёх рабочих страницах консервативная ёмкость до 100 000 erase cycles составляет около 12,4 млн trip checkpoints.
+NVS имеет пять 4-КиБ страниц; для garbage collection одна должна оставаться свободной. `TripState` сейчас занимает 80 байт (в 0.4.4 добавлены `idlePetrolLiters` и `idleLpgLiters`) и записывается blob-ом через 32-байтные NVS entries — 80 байт занимают три entry вместо двух. При 126 entries на страницу и четырёх рабочих страницах консервативная ёмкость до 100 000 erase cycles составляет около 12,4 млн trip checkpoints.
 
 При записи раз в минуту:
 
@@ -105,7 +105,7 @@ Namespaces:
 | Namespace | Что хранится | Когда записывается |
 |---|---|---|
 | `h2gauge` | вся ConfigData schema 6 | сразу по web Save, factory reset, ручному Day/Night gesture |
-| `h2persist` | combined 140-byte trip + petrol-calibration snapshot с sequence/CRC | dirty-only mirror каждые 60 секунд и при forced checkpoints |
+| `h2persist` | combined 156-byte trip + petrol-calibration snapshot с sequence/CRC | dirty-only mirror каждые 60 секунд и при forced checkpoints |
 | `h2trip` | legacy petrol/LPG trip для миграции/downgrade | reset trip, engine stop, service, low-voltage sleep |
 | `h2petcal` | legacy full-tank petrol interval для миграции/downgrade | start/apply, engine stop, service, low-voltage sleep |
 | `h2light` | обученный min/max LDR | при изменении не чаще раза в 10 минут; service/reboot/sleep |

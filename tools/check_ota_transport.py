@@ -154,7 +154,14 @@ assert 'ota["slots"]' in portal and 'slot["version"]' in portal
 assert "H2G_FIRMWARE_MANIFEST" in manifest
 assert "readManifest" in slots and "esp_partition_read" in slots
 assert "kV036ElfSha256" in slots and 'return "0.3.6"' in slots
-assert 'H2G_FW_VERSION "0.4.3"' in version
+# Shape, not a literal: a version bump must not require editing this gate, but
+# a version that will not fit firmwareVersion[16] still has to fail here.
+declared = re.search(r'#define\s+H2G_FW_VERSION\s+"([^"]*)"', version)
+assert declared, "H2G_FW_VERSION must be a quoted string"
+assert 0 < len(declared.group(1)) <= 15, (
+    f"firmwareVersion holds 16 bytes, so the version must fit: "
+    f"{declared.group(1)!r} is {len(declared.group(1))} characters"
+)
 for token in ("slotCurrentVersion", "slotApp0Version", "slotApp1Version"):
     assert token in html
 

@@ -14,23 +14,27 @@
 - конфигурация: локальный Wi‑Fi service portal;
 - сборка: PlatformIO environment `esp32s3_n16r8`.
 
-## Текущий production-релиз 0.4.3
+## Текущий production-релиз 0.4.4
 
-Цель — только ESP32-S3 DevKitC-1 N16R8. **0.4.3** сохраняет DTC/OTA/persistence-функции 0.4.2 и добавляет три изменения: сохраняемые ползунки яркости «День»/«Ночь» плюс отдельную временную яркость до reboot; актуальный выбор топлива по LPG-входу отдельно от вычисленного `fuelMode` с контролем свежести RPM; наблюдаемость штатного OBD PID `0x0B` — support-mask, запросы/совпавшие ответы/тайм-ауты, сырые MAP/BARO и рассчитанный/отфильтрованный boost. Отсутствующие или устаревшие значения не изображаются нулём. В сервисном режиме разрешён тот же обычный Mode 01 poller; отдельного `fix3b` self-test/diagnostic stream в production нет. Проводка и битрейт CAN не менялись.
+Цель — только ESP32-S3 DevKitC-1 N16R8. **0.4.4** — это 0.4.3 плюс пять исправлений, найденных на автомобиле. Расход в 0.4.3 не появлялся вообще: `observeEngineResponse` защёлкивал первый ответивший блок на PID `0xC`, а в поле это оказался блок АКПП `0x7E9`, тогда как двигатель `0x7E8` ответил 1428 раз и все ответы были отброшены. Теперь маски поддержки объединяются по всем ответившим блокам, и сигнал двигателя берётся у того, кто его реально имеет; PID `01` (MIL и счётчик неисправностей) исключён намеренно, чтобы лампа Check Engine не следовала за блоком АКПП.
 
-Дневная и ночная яркость остаются независимыми сохранёнными настройками. Временный регулятор меняет фактический PWM напрямую, не пишет в конфигурацию и сбрасывается при перезагрузке; «Вернуть сохранённый режим» снимает override раньше. В сервисном режиме вход LPG продолжает debounce, а карточка показывает выбранное топливо даже тогда, когда устаревший RPM заставляет производный режим стать `UNKNOWN`.
+Остальные четыре исправления: коррекция скорости больше не применяется ниже полосы стояния, поэтому на месте перестали выдумываться километры и 45.5 л/100 км; топливо, сгоревшее без пробега, вынесено из общего счётчика, и экран расхода показывает СРЕДНИЙ, ДВИЖЕНИЕ и долю ПРОСТОИ отдельно; интервал накопления отбрасывается при неизвестной скорости, а не копит литры при неподвижном знаменателе; диагностическая сборка `esp32s3_n16r8_diagnostic` снова собирается после потерянной экранированной кавычки в `H2G_BUILD_TARGET`.
 
-Для MAP сервисная страница показывает известность/результат ECU support-mask, счётчики штатных запросов/совпавших ответов/тайм-аутов и возраст последнего образца. Появились PID `0x0B` MAP, PID `0x33` BARO, выбранная база давления и boost до/после фильтра. Неподвижные MAP/boost на холостом ходу без нагрузки могут быть физически нормальны; отсутствие свежего ответа, неподдерживаемый PID и неизвестная маска показаны отдельно.
+Потери интервалов теперь считаются и отдаются в `/api/status` → `droppedIntervals`. Профиль опроса суммарно требует около 50 запросов в секунду, поэтому рекомендованный `maxRequestsPerSecond` поднят до **50**.
 
-Сохраняются DTC safeguards 0.4.2: усечённый DTC-ответ не объявляет потерянные коды исчезнувшими, API не подтверждает неизвестное состояние как текущее, checkpoint/reset использует read-back-подтверждённую durable-копию, post-clear schedule корректен при `uint32_t` rollover. Engine ECU однократно определяется по валидному PID `0C`; PID 01, physical Mode 03/07/0A и ручной Mode 04 принимаются только от выбранного ECU. NRC `0x78` — промежуточный ResponsePending с P2*=5 с и абсолютным пределом 15 с, без повторной передачи команды. Стирание DTC не запускается автоматически и остаётся защищённым read-back, остановкой двигателя/автомобиля и сохранением history.
+**Потеря данных при обновлении:** размер `TripState` вырос с 64 до 80 байт, запись — со 140 до 156. Старые записи журнала не проходят проверку длины и CRC, поэтому **поездка один раз обнулится** при первом запуске после прошивки. Калибровка бака хранится отдельно и не затрагивается.
 
-Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. Логотип пропорционально вписывается в `220×80`, а payload имеет ровно `width×height×2` байт. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest. Передача — raw body без multipart, с TWDT-safe чтением, 2-секундным idle timeout и отдельным 30-секундным абсолютным deadline. Встроенные carbon/HAVAL всегда остаются fallback; app-only OTA LittleFS не стирает.
+Известные ограничения 0.4.4: временный регулятор яркости в портале задаёт значение только в RAM и исчезает после перезагрузки — удаление запланировано; текст диагностики использует среднюю точку `·` (U+00B7), которой нет в шрифте интерфейса, поэтому символ рисуется пустым; кадры шины комфорта недоступны, прибор подключён к сегменту OBD одним трансивером.
 
-Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. На старте выбирается новейшая валидная sequence из LittleFS/NVS, torn tail игнорируется, а reset/calibration/service/low-voltage/reboot и остановка двигателя форсируют checkpoint. Непустой не монтируемый LittleFS никогда не форматируется автоматически. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
+Сохраняются DTC safeguards 0.4.2 без изменений: усечённый DTC-ответ не объявляет потерянные коды исчезнувшими, API не подтверждает неизвестное состояние как текущее, checkpoint/reset использует read-back-подтверждённую durable-копию, post-clear schedule корректен при `uint32_t` rollover. NRC `0x78` — промежуточный ResponsePending с P2*=5 с и абсолютным пределом 15 с, без повторной передачи команды. Стирание DTC не запускается автоматически и остаётся защищённым read-back, остановкой двигателя/автомобиля и сохранением history.
 
-**Статус:** 0.4.3 локально собран, проверен host/static/font/browser gates, manifest, app/factory layout и SHA-256. Этот бинарник ещё не устанавливался и не прошёл полевую приёмку на автомобиле. Предыдущий production-релиз 0.4.2 сохранён отдельно и его hashes не изменялись. Аппаратно подтверждённым OTA-основанием проекта остаётся 0.3.9 (2026-09-23). Не выполнять TWAI self-test на подключённом автомобиле; такой поток в 0.4.3 не включён. Config schema остаётся **6**.
+Фон преобразуется браузером в строго `240×240` и `115 200` байт RGB565 little-endian. ESP32 повторно проверяет размеры, `Content-Length`, CRC32 и read-back, пишет неактивный A/B-файл и только затем атомарно переключает CRC-защищённый manifest.
 
-История: [`CHANGELOG.md`](CHANGELOG.md). Release report и контрольные суммы: [`releases/README-v0.4.3.md`](releases/README-v0.4.3.md), [`releases/SHA256SUMS-v0.4.3.txt`](releases/SHA256SUMS-v0.4.3.txt). Дополнительные документы: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md), [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md), [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md), [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md), [DTC safety](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
+Изменившееся runtime-состояние записывается единым CRC-защищённым snapshot в двухсегментный LittleFS journal каждые 20 секунд; NVS mirror обновляется каждые 60 секунд. Нормальное окно потери — 0–20 секунд, NVS fallback — 0–60 секунд.
+
+**Статус:** 0.4.4 локально собран и проверен всеми host/static/font/browser gates, manifest, app/factory layout и SHA-256. Расход, разделение простоев и среднее по движению проверены в дороге на автомобиле владельца. Предыдущий production-релиз 0.4.3 сохранён отдельно и его hashes не изменялись; артефакты 0.4.2 были удалены из репозитория, поэтому пакетный гейт теперь защищает 0.4.3. Аппаратно подтверждённым OTA-основанием проекта остаётся 0.3.9 (2026-09-23). Config schema остаётся **6**.
+
+История: [`CHANGELOG.md`](CHANGELOG.md). Release report и контрольные суммы: [`releases/README-v0.4.4.md`](releases/README-v0.4.4.md), [`releases/SHA256SUMS-v0.4.4.txt`](releases/SHA256SUMS-v0.4.4.txt). Дополнительные документы: [`docs/OTA_POSTMORTEM_2026-09-19.md`](docs/OTA_POSTMORTEM_2026-09-19.md), [`docs/OTA_HARDENING_0.3.8.md`](docs/OTA_HARDENING_0.3.8.md), [дизайн ресурсов](docs/CUSTOM_VISUAL_ASSETS_DESIGN.md), [дизайн persistence](docs/POWER_LOSS_PERSISTENCE_DESIGN.md), [DTC safety](docs/OBD_DTC_DIAGNOSTICS_DESIGN.md).
 
 ## Реализовано
 
@@ -213,21 +217,23 @@ pio run -e esp32s3_n16r8 --target upload
 
 ## GitHub Actions
 
-Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая brightness override, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.3 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check дополнительно проверяет, что прежние артефакты 0.4.2 и их SHA-256 не удалены/не изменены. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
+Workflow `.github/workflows/platformio.yml` запускает host/static/font/browser gates, включая объединение масок PID, полосу стояния скорости, разделение простоев, отбрасывание интервала при неизвестной скорости, яркость, штатный PID 0B status, DTC state-machine, truncated-history semantics, NRC 0x78/P2*/absolute deadline, exact-zero rollover, multi-ECU binding, paused post-clear continuation, persistence fault injection и Mode 04 guards; собирает только `esp32s3_n16r8`, проверяет manifest, SHA-256, побайтовое совпадение app и factory layout committed release 0.4.4 и сохраняет текущие `firmware.bin`, `bootloader.bin` и `partitions.bin` как build artifacts. Package-check дополнительно проверяет, что прежние артефакты 0.4.3 и их SHA-256 не удалены/не изменены; ранее он ссылался на 0.4.2, которых в репозитории нет, поэтому гейт не мог пройти ни для одной версии. Два гейта (`check_ota_transport`, `check_diagnostic_integration`) проверяли версию литералом `0.4.3` и падали на любом её изменении; теперь они проверяют форму — строка в кавычках длиной не более 15 символов, потому что манифест хранит её в `firmwareVersion[16]`. GCC prefix maps в `platformio.ini` нормализуют разные project/PlatformIO paths локальной машины и GitHub runner, поэтому строгая byte-equality проверка воспроизводима; анализ исправления: [`docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md`](docs/CI_REPRODUCIBLE_BUILD_2026-09-30.md).
 
-## Упакованный release 0.4.3
+## Упакованный release 0.4.4
 
 ```text
-releases/h2-gauge-v0.4.3-esp32s3-n16r8.bin
-Размер: 1 198 752 байта
-SHA-256: 52b36d55420d6aa1866777efbf90021638e92a4a1655dd291ced914aca9d43f6
+releases/h2-gauge-v0.4.4-esp32s3-n16r8.bin
+Размер: 1 208 960 байт
+SHA-256: 4ad2cb3a77e237709e669db7a30da97ea5e8cfde35de7c640a65682df276e82f
 
-releases/h2-gauge-v0.4.3-esp32s3-n16r8-factory.bin
-Размер: 1 264 288 байт
-SHA-256: 5cd473554172237454be5e5a89854e1463d2106d34361d328922d3c17c30141d
+releases/h2-gauge-v0.4.4-esp32s3-n16r8-factory.bin
+Размер: 1 274 496 байт
+SHA-256: 3c0e7201115e0eea5122fc247f1f359726034134b6a252e351b5771044b4ea2e
 ```
 
-Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, DTC history, LittleFS journal и custom assets. Локальный PlatformIO build, host/static/font/browser gates, H2 manifest, checksums, app/build byte equality и factory layout прошли. 0.4.3 ещё не устанавливался на автомобиль. Полный отчёт: [`releases/README-v0.4.3.md`](releases/README-v0.4.3.md). Артефакты 0.4.2 оставлены рядом с новой версией без изменения их SHA-256.
+Первый файл — обычный app image для штатного web OTA. Второй — merged factory image для чистой записи с offset `0x0`; он не предназначен для web OTA. При чистой установке с erase удаляются NVS, trip, калибровки, DTC history, LittleFS journal и custom assets. Локальный PlatformIO build, все host/static/font gates, H2 manifest, checksums, app/build byte equality и factory layout прошли. Расход и разделение простоя проверены в дороге на автомобиле владельца. Полный отчёт: [`releases/README-v0.4.4.md`](releases/README-v0.4.4.md). Артефакты 0.4.3 оставлены рядом без изменения их SHA-256 и служат точкой отката.
+
+При обновлении с 0.4.3 поездка обнулится один раз: запись выросла со 140 до 156 байт, старые записи журнала отвергаются проверкой длины и CRC.
 
 ## Flash и PSRAM
 

@@ -52,7 +52,9 @@ assert sorted(path.name for path in release_dir.glob(f"h2-gauge-v{VERSION}-*.bin
 assert RELEASE_README.is_file()
 
 # Keep the previous production release intact while packaging the new one.
-previous_version = "0.4.2"
+# 0.4.2 was deleted from the repository upstream, so this gate could not pass
+# for any version; it now protects the release that actually exists.
+previous_version = "0.4.3"
 previous_names = (
     f"h2-gauge-v{previous_version}-{TARGET}.bin",
     f"h2-gauge-v{previous_version}-{TARGET}-factory.bin",
