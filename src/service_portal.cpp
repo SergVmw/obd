@@ -1231,6 +1231,16 @@ void ServicePortal::sendStatus() {
   }
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
   doc["responses"] = telemetry_.obdResponseCount;
+  // Empty rather than a placeholder string while the one-shot request has not
+  // answered, so the portal can show a dash and the client can tell "not read
+  // yet" apart from anything the vehicle actually reported.
+  if (telemetry_.vin[0] != '\0') {
+    doc["vin"] = telemetry_.vin;
+    doc["vinEcuId"] = static_cast<int>(obdClient_.vinEcu());
+  } else {
+    doc["vin"] = nullptr;
+    doc["vinEcuId"] = nullptr;
+  }
   doc["timeouts"] = telemetry_.obdTimeoutCount;
   doc["freeHeap"] = ESP.getFreeHeap();
   JsonObject dtc = doc["dtc"].to<JsonObject>();

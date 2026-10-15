@@ -1043,9 +1043,19 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
            static_cast<unsigned long>(data.canErrorCount));
   drawText(line, 31, 183, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
-  drawText(translated(config, "КОДЫ 03/07/0A · СТИРАНИЕ В WEB",
-                        "DTC 03/07/0A · CLEAR IN WEB"),
-           31, 210, ML_DATUM, kMuted, FontRole::Small, labelFont(config));
+  // VIN, asked once at boot. This line replaces the old "DTC 03/07/0A · CLEAR
+  // IN WEB" hint, which measured 216 px into the 209 px available and was
+  // being clipped at the right edge; the VIN fits with room to spare and the
+  // hint about clearing codes lives in the web portal anyway.
+  if (data.vin[0] != '\0') {
+    snprintf(line, sizeof(line), "VIN: %s", data.vin);
+  } else {
+    strlcpy(line, translated(config, "VIN: НЕТ ДАННЫХ", "VIN: NO DATA"),
+            sizeof(line));
+  }
+  drawText(line, 31, 210, ML_DATUM,
+           data.vin[0] != '\0' ? config.colorText : kMuted, FontRole::Small,
+           labelFont(config));
 }
 
 void DashboardUi::showService(const String& ssid, const String& ip,

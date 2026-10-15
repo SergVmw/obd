@@ -55,6 +55,11 @@ struct TelemetryData {
   bool canDriverReady = false;
   uint32_t lastObdResponseAt = 0;
   uint32_t obdResponseCount = 0;
+  // VIN as read from the vehicle, empty until it is known. The client owns the
+  // one-shot request and copies the result here so the dashboard and the
+  // portal do not need a dependency on the transport.
+  char vin[18] = {0};
+  uint32_t vinValidAt = 0;
   uint32_t obdTimeoutCount = 0;
   uint32_t canErrorCount = 0;
   uint16_t ecuResponseId = 0;

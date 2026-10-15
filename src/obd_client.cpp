@@ -96,6 +96,15 @@ void ObdClient::loop(uint32_t now) {
   if (sendDiagnostics(now)) return;
   if (paused_ && !servicePollingEnabled_) return;
 
+  // VIN is asked once, right after discovery, and never again: it cannot
+  // change while the engine runs, and polling a constant would spend bus
+  // bandwidth for nothing. It waits for a free slot so its three-frame answer
+  // never shares ISO-TP state with a diagnostic request.
+  if (!vinValid_ && !vinAttempted_ && discoveryDone_ &&
+      pendingRequest_ == PendingRequest::None && !mode22_.waiting()) {
+    sendVinRequest(now);
+  }
+
   if (!discoveryDone_) {
     runDiscovery(now);
   } else {
@@ -253,6 +262,131 @@ bool ObdClient::sendMode22(uint32_t now) {
   return true;
 }
 
+void ObdClient::sendVinRequest(uint32_t now) {
+  const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
+                                  ? 1
+                                  : config_.maxRequestsPerSecond;
+  uint32_t minGap = 1000UL / maxRequests;
+  if (minGap < 20) minGap = 20;
+  if (now - lastAnyRequestAt_ < minGap) return;
+
+  twai_message_t message{};
+  message.identifier = 0x7DF;
+  message.extd = 0;
+  message.rtr = 0;
+  message.data_length_code = 8;
+  message.data[0] = 0x02;
+  message.data[1] = 0x01;  // Mode 01 current data
+  message.data[2] = 0x09;  // VIN
+  message.data[3] = 0x00;
+  if (twai_transmit(&message, pdMS_TO_TICKS(20)) != ESP_OK) {
+    ++telemetry_.canErrorCount;
+    return;  // Stay unattempted so the next loop retries.
+  }
+  monitor_.record(message, true, now);
+  vinAttempted_ = true;
+  waiting_ = true;
+  pendingRequest_ = PendingRequest::Vin;
+  pendingPid_ = 0x09;
+  // Three frames plus a flow control have to arrive, so this needs a wider
+  // budget than a single-byte PID answer.
+  pendingTimeoutMs_ = vinTimeoutMs_;
+  requestSentAt_ = now;
+  lastAnyRequestAt_ = now;
+}
+
+bool ObdClient::handleVinFrame(const twai_message_t& message, uint32_t now,
+                               twai_message_t& flowControl,
+                               bool& needsFlowControl) {
+  needsFlowControl = false;
+  if (pendingRequest_ != PendingRequest::Vin || message.extd || message.rtr ||
+      message.data_length_code < 2) {
+    return false;
+  }
+  // Any powertrain ECU that answers carries the vehicle identifier, so no
+  // engine-ECU binding applies here.
+  if (message.identifier < 0x7E8 || message.identifier > 0x7EF) return false;
+
+  const uint8_t pciType = message.data[0] >> 4;
+  if (pciType == 0x1) {
+    // First Frame: it also carries the flow control the rest depends on.
+    if (message.data_length_code < 3) return false;
+    const size_t total =
+        (static_cast<size_t>(message.data[0] & 0x0FU) << 8) | message.data[1];
+    // Only a well-formed 19-byte answer is accepted; anything else is a
+    // truncated tail from some other multi-frame service.
+    if (total != kVinPayload) {
+      finishPending(true);
+      return true;
+    }
+    // The reply to Mode 01 carries service 0x01 + 0x40, as every other Mode 01
+    // response in this client does; checking for 0x01 would reject a perfectly
+    // good answer.
+    if (message.data[2] != 0x41 || message.data[3] != 0x49) {
+      finishPending(true);
+      return true;
+    }
+    // The declared length counts the service and PID bytes as well, so the
+    // copy starts at index 2 and is bounded by the total rather than by the
+    // DLC: when the answer is shorter than the frame, the trailing bytes are
+    // padding and must not be mistaken for VIN characters.
+    vinStored_ = 0;
+    vinConsumed_ = 0;
+    for (uint8_t i = 2; i < message.data_length_code && vinConsumed_ < total;
+         ++i) {
+      if (vinStored_ < kVinPayload) vinBytes_[vinStored_++] = message.data[i];
+      ++vinConsumed_;
+    }
+    vinExpected_ = total;
+    vinNextSequence_ = 1;
+    if (vinConsumed_ < vinExpected_) {
+      flowControl = {};
+      flowControl.identifier = 0x7DF;
+      flowControl.extd = 0;
+      flowControl.rtr = 0;
+      flowControl.data_length_code = 8;
+      flowControl.data[0] = 0x30;  // Continue To Send.
+      needsFlowControl = true;
+    }
+    return true;
+  }
+
+  if (pciType == 0x2 && vinExpected_ > 0) {
+    if ((message.data[0] & 0x0FU) != vinNextSequence_) {
+      finishPending(true);
+      return true;
+    }
+    ++vinNextSequence_;
+    for (uint8_t i = 1; i < message.data_length_code &&
+                        vinConsumed_ < vinExpected_;
+         ++i) {
+      if (vinStored_ < kVinPayload) vinBytes_[vinStored_++] = message.data[i];
+      ++vinConsumed_;
+    }
+    if (vinConsumed_ < vinExpected_) return true;
+    // A VIN is always printable ASCII and never a low control character, so a
+    // string that fails that is a mis-assembled answer rather than a VIN.
+    bool usable = vinStored_ == kVinPayload;
+    for (size_t i = 0; usable && i < kVinChars; ++i) {
+      const uint8_t ch = vinBytes_[2 + i];
+      if (ch < 0x20 || ch > 0x7E) usable = false;
+    }
+    if (usable) {
+      memcpy(vin_, vinBytes_ + 2, kVinChars);
+      vin_[kVinChars] = '\0';
+      vinValid_ = true;
+      vinEcu_ = message.identifier;
+      vinReadAt_ = now;
+      // Mirrored for the dashboard and the portal, which do not see the client.
+      memcpy(telemetry_.vin, vin_, kVinChars + 1);
+      telemetry_.vinValidAt = now;
+    }
+    finishPending(false);
+    return true;
+  }
+  return true;  // Consume so stray flow-control frames do not reach Mode 01.
+}
+
 bool ObdClient::sendDiagnostics(uint32_t now) {
   if (!diagnostics_.hasPendingRequest()) return false;
   const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
@@ -335,6 +469,23 @@ void ObdClient::receiveFrames(uint32_t now) {
       if (pendingRequest_ == PendingRequest::Mode22 && !mode22_.waiting()) {
         finishPending(false);
       }
+      continue;
+    }
+
+    // Placed after the diagnostic and Mode 22 handlers on purpose: both return
+    // false immediately when they are not the one waiting, so a VIN frame is
+    // only seen here when the VIN request actually owns the bus.
+    if (handleVinFrame(message, now, flowControl, needsFlowControl)) {
+      if (needsFlowControl) {
+        if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
+          ++telemetry_.canErrorCount;
+          finishPending(true);
+        } else {
+          monitor_.record(flowControl, true, now);
+        }
+      }
+      // handleVinFrame owns every terminal transition; when more frames are
+      // still expected the request stays pending and waiting.
       continue;
     }
 

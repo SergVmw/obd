@@ -89,6 +89,14 @@ class ObdClient {
   }
   void resetDtcHistory() { diagnostics_.resetHistory(); }
 
+  // VIN as read from the vehicle, or an empty string while it is unknown. It
+  // is fetched once after discovery and never polled again, so it costs no
+  // bus bandwidth once the answer is in.
+  const char* vin() const { return vin_; }
+  bool vinValid() const { return vinValid_; }
+  uint16_t vinEcu() const { return vinEcu_; }
+  uint32_t vinReadAt() const { return vinReadAt_; }
+
  private:
   struct PollItem {
     uint8_t pid;
@@ -101,8 +109,26 @@ class ObdClient {
     Mode01,
     Mode22,
     Diagnostics,
+    // VIN is a Mode 01 request whose answer spans three CAN frames, so it
+    // needs its own assembly context. It is a one-shot at boot and never runs
+    // while a diagnostic request is in flight, which is what keeps it from
+    // sharing ISO-TP state with the DTC path.
+    Vin,
   };
 
+  // VIN is 17 bytes behind a two-byte service/PID header, so the payload is
+  // 19 bytes and arrives as a First Frame plus two Consecutive Frames.
+  static constexpr size_t kVinChars = 17;
+  static constexpr size_t kVinPayload = 2 + kVinChars;
+
+  // Returns true when the frame belonged to a VIN request and was consumed.
+  bool handleVinFrame(const twai_message_t& message, uint32_t now,
+                      twai_message_t& flowControl, bool& needsFlowControl);
+  void sendVinRequest(uint32_t now);
+  void serviceVin(uint32_t now);
+
+  // VIN as read from the vehicle, or an empty string while it is unknown. It
+  // is fetched once after discovery and never polled again.
   bool sendPid(uint8_t pid, uint32_t now);
   bool sendMode22(uint32_t now);
   bool sendDiagnostics(uint32_t now);
@@ -139,6 +165,20 @@ class ObdClient {
   uint32_t requestSentAt_ = 0;
   ObdRequestTiming diagnosticTiming_;
   uint32_t lastAnyRequestAt_ = 0;
+
+  // VIN, requested once after discovery. The assembly state below is private
+  // to this request so it can never interleave with the DTC transport.
+  static constexpr uint32_t vinTimeoutMs_ = 2000;
+  char vin_[kVinChars + 1] = {0};
+  uint8_t vinBytes_[kVinPayload] = {0};
+  uint16_t vinEcu_ = 0;
+  uint32_t vinReadAt_ = 0;
+  size_t vinStored_ = 0;
+  size_t vinConsumed_ = 0;
+  size_t vinExpected_ = 0;
+  uint8_t vinNextSequence_ = 0;
+  bool vinValid_ = false;
+  bool vinAttempted_ = false;
 
   bool discoveryDone_ = false;
   uint8_t discoveryIndex_ = 0;

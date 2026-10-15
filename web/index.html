@@ -191,6 +191,10 @@
 </div>
 
 <div class="pane" id="obd"><h2>OBD / CAN</h2><p class="desc">ISO 15765-4, 11-bit, 500 кбит/с, стандартный опрос Mode 01 и безопасная диагностика шины.</p>
+  <div class="section"><h3>Идентификация автомобиля</h3>
+   <div class="calstate" aria-live="polite"><div><small>VIN</small><b id="obdVin">—</b></div><div><small>VIN прочитан с ЭБУ</small><b id="obdVinEcu">—</b></div><div><small>ЭБУ двигателя</small><b id="obdEcuId">—</b></div><div><small>Ответов OBD</small><b id="obdResponses">—</b></div></div>
+   <p class="note" id="obdVinNote" style="margin-top:12px">VIN запрашивается один раз после загрузки и больше не опрашивается: он не меняется при работе двигателя. Не все блоки отвечают на PID 09, поэтому рядом показано, какой именно ЭБУ прислал ответ.</p>
+  </div>
  <div class="section" id="mapDiagnostics"><h3>MAP · PID 0B · штатный опрос</h3>
   <p class="desc">Счётчики показывают запросы и совпавшие ответы существующего Mode 01 poller. В сервисном режиме этот же штатный опрос остаётся активен; отдельный self-test не запускается.</p>
   <div class="calstate" aria-live="polite">
@@ -432,6 +436,14 @@ function lpgTrimStatus(s){
  $('lpgTrimVerdict').style.color=mag>10?'var(--r)':mag>5?'var(--a)':'var(--g)';
  $('lpgTrimNote').textContent=t.warning?'ЭБУ больше 5 секунд компенсирует смесь сильнее чем на 10%. Это признак неверной настройки ГБО, а не неисправность прибора: проверьте давление газа, форсунки-дублёры и AFR в настройках «Расчёт LPG». Первая минута после холодного пуска может давать ложное срабатывание.':'Сумма в пределах ±5%. Краткосрочная коррекция гуляет вместе с нагрузкой — это нормально; судить надо по долгосрочной, и она тоже должна стоять около нуля.';
 }
+function vinStatus(s){
+ const ids=['obdVin','obdVinEcu','obdEcuId','obdResponses'];
+ if(!s){for(const id of ids)$(id).textContent='—';$('obdVinNote').textContent='Нет актуального статуса OBD.';return}
+ $('obdEcuId').textContent=s.ecuId?'0x'+Number(s.ecuId).toString(16).toUpperCase().padStart(3,'0'):'—';
+ $('obdResponses').textContent=s.responses==null?'—':s.responses;
+ if(s.vin){$('obdVin').textContent=s.vin;$('obdVinEcu').textContent=s.vinEcuId==null?'—':'0x'+Number(s.vinEcuId).toString(16).toUpperCase().padStart(3,'0');$('obdVinNote').textContent='VIN прочитан один раз при загрузке и больше не опрашивается.'}
+ else{$('obdVin').textContent='—';$('obdVinEcu').textContent='—';$('obdVinNote').textContent='VIN пока не прочитан. Запрос уходит один раз после загрузки; если не пришёл — блок не поддерживает PID 09 или не отвечает на него.'}
+}
 function mapStatus(s){
  const fields=['mapPidSupport','mapPidRequests','mapPidResponses','mapPidTimeouts','iatPidSupport','iatPidCounts','iatPidTimeouts','mapRaw','intakeAirRaw','speedDensityAirflow','baroRaw','effectiveBaro','mapBoostRaw','mapBoostFiltered'];
  if(!s){for(const id of fields)$(id).textContent='—';$('mapLive').textContent='Нет актуальных данных OBD. Прочерки не означают нулевые значения.';return}
@@ -458,7 +470,7 @@ function mapStatus(s){
  else text+=`BARO обновлён ${(Number(s.baroAgeMs||0)/1000).toFixed(1)} с назад.`;
  $('mapLive').textContent=text;
 }
-async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);lpgTrimStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);lpgTrimStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
+async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);lpgTrimStatus(s);vinStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);lpgTrimStatus(null);vinStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
 let dtcData=null,dtcLoading=false;
 const dtcTypeName={stored:'Сохранённый · Mode 03',pending:'Ожидающий · Mode 07',permanent:'Постоянный · Mode 0A'};
 const dtcScanName={not_scanned:'не читалось',reading:'чтение',complete:'OK',unsupported:'не поддерживается',timeout:'тайм-аут',malformed:'повреждённый ответ',transport_error:'ошибка CAN',negative_response:'отрицательный ответ ECU'};
