@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -126,6 +127,57 @@ void testCanonicalChecksumsAndDirtyComparison() {
                                               calibration));
 }
 
+// Leave something recognisable on the stack where the encoder will work, so the
+// next encode has something else to find below its own frame.
+__attribute__((noinline)) void dirtyTheStack() {
+  volatile uint8_t scratch[4096];
+  for (size_t i = 0; i < sizeof(scratch); ++i) {
+    scratch[i] = static_cast<uint8_t>(i * 7U + 3U);
+  }
+}
+
+// Two encodes of the same data have to produce the same bytes. They did not:
+// sizeof() covers the padding that follows `checksum`, that padding was copied
+// into the record uninitialised, and the bytes depended on whatever the stack
+// happened to hold between the two calls. That is what stopped payloadEquals
+// from recognising an unchanged trip, and the journal then appended a record
+// every twenty seconds to a state that had not moved. The host suite only sees
+// it on a compiler whose aggregate initialisation leaves that padding dirty, so
+// the property is asserted directly rather than through the round trip.
+void testEncodingDoesNotDependOnStackGarbage() {
+  const TripState trip = sampleTrip();
+  const PetrolCalibrationState calibration = sampleCalibration();
+  uint8_t first[PersistenceSnapshot::kRecordBytes];
+  uint8_t second[PersistenceSnapshot::kRecordBytes];
+
+  assert(PersistenceSnapshot::encode(11, trip, calibration, first,
+                                     sizeof(first)));
+  dirtyTheStack();
+  assert(PersistenceSnapshot::encode(11, trip, calibration, second,
+                                     sizeof(second)));
+
+  assert(std::memcmp(first, second, sizeof(first)) == 0);
+  assert(PersistenceSnapshot::payloadEquals(first, sizeof(first), trip,
+                                            calibration));
+
+  // Spelled out so the intent survives even if the comparison above is
+  // weakened: the record must not contain stack bytes at all.
+  const size_t tripTail = PersistenceSnapshot::kTripOffset +
+                          offsetof(TripState, checksum) + sizeof(uint32_t);
+  for (size_t i = tripTail;
+       i < PersistenceSnapshot::kTripOffset + sizeof(TripState); ++i) {
+    assert(first[i] == 0);
+  }
+  const size_t calibrationTail = PersistenceSnapshot::kCalibrationOffset +
+                                 offsetof(PetrolCalibrationState, checksum) +
+                                 sizeof(uint32_t);
+  for (size_t i = calibrationTail;
+       i < PersistenceSnapshot::kCalibrationOffset +
+               sizeof(PetrolCalibrationState); ++i) {
+    assert(first[i] == 0);
+  }
+}
+
 void testTornAndCorruptRecordsRejected() {
   uint8_t record[PersistenceSnapshot::kRecordBytes]{};
   assert(PersistenceSnapshot::encode(9, sampleTrip(), sampleCalibration(),
@@ -160,6 +212,7 @@ int main() {
   testSnapshotRoundTrip();
   testEveryTripFieldSurvivesEncoding();
   testCanonicalChecksumsAndDirtyComparison();
+  testEncodingDoesNotDependOnStackGarbage();
   testTornAndCorruptRecordsRejected();
   testSequenceOrderingAndWrap();
   std::cout << "persistence tests passed\n";

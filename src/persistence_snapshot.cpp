@@ -1,5 +1,6 @@
 #include "persistence_snapshot.h"
 
+#include <cstddef>
 #include <cstring>
 #include <type_traits>
 
@@ -106,9 +107,20 @@ bool encode(uint32_t sequenceValue, const TripState& trip,
   const TripState storedTrip = canonicalTrip(trip);
   const PetrolCalibrationState storedCalibration =
       canonicalCalibration(calibration);
-  memcpy(destination + kTripOffset, &storedTrip, sizeof(storedTrip));
+  // Copy only the defined prefix of each struct. sizeof() also covers the
+  // padding that follows `checksum`, and that padding is never initialised: a
+  // record then carried whatever the stack happened to hold, so two encodes of
+  // identical data produced different bytes and different record CRCs. That is
+  // what stopped payloadEquals from recognising an unchanged trip, and the
+  // journal then appended a record every twenty seconds to a state that had not
+  // moved. The destination is zeroed above, so leaving the tail alone is both
+  // deterministic and unchanged in size.
+  const size_t tripBytes = offsetof(TripState, checksum) + sizeof(uint32_t);
+  const size_t calibrationBytes =
+      offsetof(PetrolCalibrationState, checksum) + sizeof(uint32_t);
+  memcpy(destination + kTripOffset, &storedTrip, tripBytes);
   memcpy(destination + kCalibrationOffset, &storedCalibration,
-         sizeof(storedCalibration));
+         calibrationBytes);
   putU32(destination + kCrcOffset, storageCrc32(destination, kCrcOffset));
   return true;
 }
