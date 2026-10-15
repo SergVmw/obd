@@ -55,4 +55,16 @@ for element in ('mapPidSupport', 'mapPidRequests', 'mapPidResponses', 'mapPidTim
     assert f'id="{element}"' in html, f"service UI missing {element}"
 assert 'не подменён нулём' in html
 assert 'могут быть физически нормальны' in html
-print("OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode and non-fabricated MAP status OK")
+
+# The diagnostics tab lists download sources by hand. A mistyped path only
+# shows up as a failed download, and the user has no way to tell a wrong URL
+# from a device that is simply not answering, so every listed path is checked
+# against the routes the portal actually registers.
+listed = re.findall(r"path:'([^']+)'", html)
+assert listed, "diagnostics tab must list its download sources"
+for path in listed:
+    assert f'server_.on("{path}", HTTP_GET' in portal, (
+        f"diagnostics tab offers a source the portal does not serve: {path}"
+    )
+assert 'data-tab="diag"' in html and 'id="diagRows"' in html
+print(f"OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode, non-fabricated MAP status and {len(listed)} diagnostics download sources OK")

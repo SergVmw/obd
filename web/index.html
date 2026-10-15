@@ -29,7 +29,7 @@
  <div class="card"><small>Выбор топлива / режим</small><b id="sFuel">—</b><span class="meta" id="sFuelDetail">—</span></div>
 </div>
 <section class="box" id="app">
-<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button></nav>
+<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button><button class="tab" data-tab="diag">Диагностика</button></nav>
 
 <div class="pane active" id="display"><h2>Экран</h2><p class="desc">Яркость, оформление и интерактивный предпросмотр главного экрана.</p>
  <div class="preview">
@@ -239,6 +239,16 @@
  <div class="section"><h3>Обновление прошивки</h3><div class="note">Откройте <b>192.168.4.1</b> в обычном Chrome, Safari или Firefox. Выберите только app-образ <b>.bin</b>, не factory/bootloader/partitions. Перед передачей прибор проверит имя, размер, заголовок ESP32-S3, питание, движение и свободный OTA-раздел. После нажатия «Установить» дождитесь сообщения о проверенном boot-разделе: общий лимит OTA — 3 минуты, затем прибор сам перезагрузится; RESET нажимать не нужно.</div><div class="buttons"><input id="firmware" class="firmwarePicker" type="file" aria-label="Выбрать app-образ .bin"><button class="btn primary" id="install" disabled>Установить</button></div><div class="progress"><div class="bar" id="bar"></div></div><div class="otaState"><span id="otaText">Файл не выбран</span><span id="pct">0%</span></div></div>
  <div class="section"><div class="buttons"><button class="btn" id="defaults">Загрузить заводские значения</button><button class="btn" id="reboot">Перезагрузить</button><button class="btn danger" id="factory">Полный заводской сброс</button></div></div>
 </div>
+<div class="pane" id="diag"><h2>Диагностика</h2><p class="desc">Выгрузка состояния прибора в JSON. Каждый файл открывается текстовым редактором и годится для разбора в поле — присылайте их вместе с описанием, что смотрели на экране.</p>
+ <div class="section"><h3>Скачать всё одним нажатием</h3>
+  <div class="buttons"><button class="btn primary" id="diagAll">Скачать все доступные JSON</button></div>
+  <p class="note" id="diagAllNote" style="margin-top:12px">Файлы сохраняются в загрузки браузера по одному, с меткой времени в имени.</p>
+ </div>
+ <div class="section"><h3>Что доступно</h3>
+  <div class="canwrap"><table class="cantable"><thead><tr><th>ФАЙЛ</th><th>ЧТО ВНУТРИ</th><th></th></tr></thead><tbody id="diagRows"></tbody></table></div>
+  <p class="note" style="margin-top:12px">Трейс накапливается только в оперативной памяти и живёт в диагностических сборках. В обычной прошивке его нет, и строка помечена как недоступная. Перед выгрузкой встаньте на парковку с включённым зажиганием: при входе в сервисный режим сбор замораживается, чтобы не мешать расчёту поездки.</p>
+ </div>
+</div>
 </section>
 <div class="save"><span id="msg">Конфигурация загружена</span><button class="btn primary" id="save">Сохранить настройки</button></div>
 </main>
@@ -283,6 +293,7 @@ function brightnessStatus(s){
  $('lightLive').textContent=text;
 }
 $('brightnessMode').addEventListener('change',syncBrightnessUi);$('lightAutoCalibrate').addEventListener('change',syncBrightnessUi);
+$('diagAll').onclick=diagDownloadAll;
 $('resetLightCalibration').onclick=async()=>{
  if(!confirm('Забыть измеренный диапазон света и начать обучение заново? Настройки порогов, яркости и поездка сохранятся.'))return;
  const button=$('resetLightCalibration');button.disabled=true;
@@ -413,6 +424,81 @@ function lpgTrimStatus(s){
  $('lpgTrimVerdict').style.color=mag>10?'var(--r)':mag>5?'var(--a)':'var(--g)';
  $('lpgTrimNote').textContent=t.warning?'ЭБУ больше 5 секунд компенсирует смесь сильнее чем на 10%. Это признак неверной настройки ГБО, а не неисправность прибора: проверьте давление газа, форсунки-дублёры и AFR в настройках «Расчёт LPG». Первая минута после холодного пуска может давать ложное срабатывание.':'Сумма в пределах ±5%. Краткосрочная коррекция гуляет вместе с нагрузкой — это нормально; судить надо по долгосрочной, и она тоже должна стоять около нуля.';
 }
+// Выгрузка JSON. Каждый источник назван так, чтобы в загрузках было видно,
+// что это и когда снято, без заглядывания внутрь.
+const DIAG_SOURCES=[
+ {id:'status',file:'status',path:'/api/status',need:false,what:'Полное текущее состояние: расход, поездка, простои, коррекции, OBD, яркость, разделы OTA'},
+ {id:'dtc',file:'dtc',path:'/api/diagnostics/dtc',need:false,what:'Неисправности: сохранённые, ожидающие, постоянные, состояние лампы'},
+ {id:'can',file:'can',path:'/api/can/snapshot',need:false,what:'Снимок CAN: какие ID и с какой частотой шли за окно наблюдения'},
+ {id:'config',file:'config',path:'/api/config',need:false,what:'Сохранённая конфигурация целиком, включая коэффициенты бензина и ГБО'},
+ {id:'trace',file:'trace',path:'/api/diagnostics/trace',need:true,what:'Трейс за 8 минут: сырые PID с метками времени. Только в диагностической прошивке'},
+ {id:'petrol',file:'petrol-calibration',path:'/api/fuel/petrol-calibration',need:false,what:'Интервал калибровки бака и применённый коэффициент'},
+ {id:'ota',file:'ota-slots',path:'/api/ota/status',need:false,what:'Разделы A/B, текущая и загрузочная прошивки, состояние образа'},
+ {id:'assets',file:'assets',path:'/api/assets/status',need:false,what:'Пользовательские картинки: размеры, контрольные суммы, активный фон'},
+];
+let diagBusy=false;
+function diagStamp(){
+ const d=new Date(),p=n=>String(n).padStart(2,'0');
+ return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+async function diagFetch(src){
+ const res=await fetch(src.path,{cache:'no-store'});
+ if(!res.ok)throw Error(`HTTP ${res.status}`);
+ const text=await res.text();
+ try{JSON.parse(text)}catch(e){throw Error('ответ не является JSON')}
+ return text;
+}
+async function diagDownload(src,quiet){
+ try{
+  const text=await diagFetch(src);
+  const blob=new Blob([text],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=`h2g-${src.file}-${diagStamp()}.json`;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+  if(!quiet)showDiagResult(src,'скачан',true);
+  return true;
+ }catch(e){
+  if(!quiet)showDiagResult(src,'недоступно: '+e.message,false);
+  return false;
+ }
+}
+function showDiagResult(src,text,ok){
+ const el=$('diagState-'+src.id); if(!el)return;
+ el.textContent=text;el.style.color=ok?'var(--g)':'var(--a)';
+}
+let diagRenderedFor=null;
+function diagRender(s){
+ // The status poll runs every 1200 ms. Rebuilding the table each time would
+ // wipe a download result within a second, so it is rendered once and only
+ // again when the set of available sources actually changes.
+ const diag=!!(s&&s.diagnosticBuild);
+ if(diagRenderedFor===diag)return;
+ diagRenderedFor=diag;
+ $('diagRows').innerHTML=DIAG_SOURCES.map(src=>{
+  const blocked=src.need&&!diag;
+  return `<tr><td>${src.file}.json</td><td>${src.what}</td><td><button class="btn" id="diagBtn-${src.id}"${blocked?' disabled':''} data-id="${src.id}">${blocked?'нет в этой прошивке':'Скачать'}</button> <b id="diagState-${src.id}"></b></td></tr>`;
+ }).join('');
+ for(const src of DIAG_SOURCES){
+  const btn=$('diagBtn-'+src.id);
+  if(btn)btn.onclick=()=>{if(!diagBusy)diagDownload(src,false)};
+ }
+}
+function diagDownloadAll(){
+ if(diagBusy)return;
+ const avail=DIAG_SOURCES.filter(x=>!x.need);
+ if(!avail.length)return;
+ diagBusy=true;
+ const btn=$('diagAll');btn.disabled=true;btn.textContent='Идёт выгрузка…';
+ $('diagAllNote').textContent=`Будет сохранено файлов: ${avail.length}. Браузер может спросить разрешение на несколько загрузок.`;
+ (async()=>{
+  let ok=0;
+  for(const src of avail){if(await diagDownload(src,true))ok++}
+  $('diagAllNote').textContent=`Сохранено ${ok} из ${avail.length}. Ошибки, если есть, — в колонке справа.`;
+  diagBusy=false;btn.disabled=false;btn.textContent='Скачать все доступные JSON';
+ })();
+}
 function vinStatus(s){
  const ids=['obdVin','obdVinEcu','obdEcuId','obdResponses'];
  if(!s){for(const id of ids)$(id).textContent='—';$('obdVinNote').textContent='Нет актуального статуса OBD.';return}
@@ -447,7 +533,7 @@ function mapStatus(s){
  else text+=`BARO обновлён ${(Number(s.baroAgeMs||0)/1000).toFixed(1)} с назад.`;
  $('mapLive').textContent=text;
 }
-async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);lpgTrimStatus(s);vinStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);lpgTrimStatus(null);vinStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
+async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);lpgTrimStatus(s);vinStatus(s);diagRender(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);lpgTrimStatus(null);vinStatus(null);diagRender(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
 let dtcData=null,dtcLoading=false;
 const dtcTypeName={stored:'Сохранённый · Mode 03',pending:'Ожидающий · Mode 07',permanent:'Постоянный · Mode 0A'};
 const dtcScanName={not_scanned:'не читалось',reading:'чтение',complete:'OK',unsupported:'не поддерживается',timeout:'тайм-аут',malformed:'повреждённый ответ',transport_error:'ошибка CAN',negative_response:'отрицательный ответ ECU'};

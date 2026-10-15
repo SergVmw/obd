@@ -1395,6 +1395,15 @@ void ServicePortal::sendStatus() {
                        (light.rawAdc() <= 8 || light.rawAdc() >= 4087);
   bl["storageHealthy"] = brightness_.storageHealthy();
 
+  // The portal's diagnostics tab offers a trace download. Saying up front
+  // which build is running means the button can explain itself instead of
+  // reporting a failed request the user has no way to interpret.
+#ifdef H2G_DIAGNOSTIC_BUILD
+  doc["diagnosticBuild"] = true;
+#else
+  doc["diagnosticBuild"] = false;
+#endif
+
   String output;
 #ifdef H2G_DIAGNOSTIC_BUILD
   output.reserve(8192);
