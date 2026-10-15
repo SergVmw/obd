@@ -54,6 +54,11 @@ void nativeOtaJobTask(void* parameter) {
                         ? esp_ota_end(context->handle)
                         : esp_ota_set_boot_partition(context->partition);
   xSemaphoreGive(context->done);
+  // Nothing below may touch context again. It lives on the caller's stack, and
+  // that caller resumes as soon as the semaphore is given and then returns,
+  // destroying it. A log line or a phase counter added between here and the
+  // delete would be a read of a dead stack frame, on the one path where the
+  // device is about to reboot anyway.
   vTaskDelete(nullptr);
 }
 
