@@ -44,7 +44,12 @@ const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8
   await page.goto('http://h2g.test/');
   await page.click('.tab[data-tab="diag"]');
   await page.waitForFunction(() => document.getElementById('pidSupportBox').textContent.includes('0x7E8'), null, { timeout: 5000 });
-  const text = await page.locator('#pidSupportBox').textContent();
+  // The panel writes each PID name with non-breaking spaces so a name cannot
+  // wrap in the middle. textContent returns what the browser rendered, which
+  // means those come back as U+00A0 and a plain-space comparison would never
+  // match a multi-word name. Normalise before comparing.
+  const text = (await page.locator('#pidSupportBox').textContent())
+    .replace(/ /g, ' ');
   for (const needle of ['0x7E8', '0x7E9', '41 9D F1 80', 'Calculated engine load', 'Vehicle speed', 'не ответил', '2 из 8']) {
     if (!text.includes(needle)) throw new Error('missing from panel: ' + needle);
   }
