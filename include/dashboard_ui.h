@@ -18,7 +18,12 @@ class DashboardUi {
   void render(uint32_t now, const TelemetryData& data,
               const TelemetryEngine& engine, const ConfigData& config);
   void nextPage(const ConfigData& config);
-  void setPage(uint8_t page) { page_ = page % 4; }
+  // Page order: 0 main, 1 fuel, 2 temperatures, 3 OBD diagnostics,
+  // 4 LPG trims. The count lives here so the page switch, the wrap in
+  // nextPage and the start-page setting cannot drift apart.
+  static constexpr uint8_t kPageCount = 5;
+
+  void setPage(uint8_t page) { page_ = page % kPageCount; }
   uint8_t page() const { return page_; }
   void resetPeak() { peakBoost_ = -10.0f; }
   void showService(const String& ssid, const String& ip,
@@ -37,6 +42,8 @@ class DashboardUi {
                 const ConfigData& config, uint32_t now);
   void drawFuel(const TelemetryData& data, const TelemetryEngine& engine,
                 const ConfigData& config, uint32_t now);
+  void drawLpg(const TelemetryData& data, const TelemetryEngine& engine,
+               const ConfigData& config, uint32_t now);
   void drawTemperatures(const TelemetryData& data, const ConfigData& config,
                         uint32_t now);
   void drawDiagnostics(const TelemetryData& data, const ConfigData& config,

@@ -574,7 +574,7 @@ void ServicePortal::receiveConfig() {
         {"brightnessMode", 0, 3}, {"lightNightAdc", 0, 4095},
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
         {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
-        {"startPage", 0, 3}, {"mainCenterValue", 0, 3},
+        {"startPage", 0, 4}, {"mainCenterValue", 0, 3},
         {"uiLanguage", 0, 1}, {"autoReturnSec", 0, 120}};
     const char* invalid = invalidIntegerField(
         d, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
@@ -604,7 +604,7 @@ void ServicePortal::receiveConfig() {
     c.brightnessNight = clampValue<int>(d["brightnessNight"] | c.brightnessNight, 5, 80);
     c.rotation = clampValue<int>(d["rotation"] | c.rotation, 0, 3);
     c.setDisplayStartPage(clampValue<int>(
-        d["startPage"] | c.displayStartPage(), 0, 3));
+        d["startPage"] | c.displayStartPage(), 0, 4));
     c.setMainCenterValue(static_cast<MainCenterValue>(clampValue<int>(
         d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
     c.setUiLanguage(static_cast<UiLanguage>(clampValue<int>(
@@ -757,7 +757,7 @@ void ServicePortal::receiveConfig() {
   JsonObjectConst obd = doc["obd"];
   if (!obd.isNull()) {
     const IntegerField integerFields[] = {
-        {"obdTimeoutMs", 50, 1000}, {"maxRequestsPerSecond", 5, 40}};
+        {"obdTimeoutMs", 50, 1000}, {"maxRequestsPerSecond", 5, 60}};
     const char* invalid = invalidIntegerField(
         obd, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
     if (invalid) {
@@ -774,7 +774,7 @@ void ServicePortal::receiveConfig() {
       return;
     }
     c.obdTimeoutMs = clampValue<int>(obd["obdTimeoutMs"] | c.obdTimeoutMs, 50, 1000);
-    c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 40);
+    c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 60);
     c.speedCorrectionKph = clampValue<float>(
         obd["speedCorrectionKph"] | c.speedCorrectionKph, -20.0f, 20.0f);
   }
@@ -1196,6 +1196,39 @@ void ServicePortal::sendStatus() {
   doc["dfcoActive"] = telemetry_.dfcoActive;
   doc["fuelTrimPercent"] = lpgEnabled ? telemetry_.fuelTrimSumPercent : 0.0f;
   doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
+  // The two halves are reported apart from their sum. A large sum alone says
+  // only that the engine is compensating; a large long-term part with a small
+  // short-term part says the calibration itself is off, which is a different
+  // fault from injectors hunting around a correct target.
+  if (lpgEnabled) {
+    JsonObject trims = doc["fuelTrims"].to<JsonObject>();
+    const bool fresh = telemetry_.shortFuelTrimPercent.valid(now) &&
+                       telemetry_.longFuelTrimPercent.valid(now);
+    if (fresh) {
+      trims["shortTermPercent"] = telemetry_.shortFuelTrimPercent.value;
+      trims["longTermPercent"] = telemetry_.longFuelTrimPercent.value;
+      trims["sumPercent"] = telemetry_.fuelTrimSumPercent;
+      // A persistent offset is a tuning fault; a fast-changing short term with
+      // a calm long term is normal fuel metering at part load.
+      if (telemetry_.fuelTrimWarning) {
+        trims["assessment"] =
+            telemetry_.fuelTrimSumPercent > 0.0f
+                ? "смесь бедная: ЭБУ добавляет топливо"
+                : "смесь богатая: ЭБУ урезает топливо";
+      } else {
+        trims["assessment"] = "в пределах нормы";
+      }
+    } else {
+      // Absent rather than zero: a trim nobody has read yet is not a trim of
+      // zero, and rendering it as such would read as a perfectly tuned engine.
+      trims["shortTermPercent"] = nullptr;
+      trims["longTermPercent"] = nullptr;
+      trims["sumPercent"] = nullptr;
+      trims["assessment"] = "нет свежих коррекций";
+    }
+    trims["valid"] = fresh;
+    trims["warning"] = telemetry_.fuelTrimWarning;
+  }
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
   doc["responses"] = telemetry_.obdResponseCount;
   doc["timeouts"] = telemetry_.obdTimeoutCount;

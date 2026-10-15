@@ -110,7 +110,7 @@
  <div class="section"><h3>Оформление и страницы</h3><div class="grid">
   <div><label>Ориентация</label><select id="rotation"><option value="0">0°</option><option value="1">90°</option><option value="2">180°</option><option value="3">270°</option></select></div>
   <div><label>Язык надписей прибора</label><select id="uiLanguage"><option value="0">Русский</option><option value="1">English</option></select></div>
-  <div><label>Стартовый экран</label><select id="startPage"><option value="0">Главный</option><option value="1">Расход / поездка</option><option value="2">Температуры</option><option value="3">Диагностика OBD</option></select></div>
+  <div><label>Стартовый экран</label><select id="startPage"><option value="0">Главный</option><option value="1">Расход / поездка</option><option value="2">Температуры</option><option value="3">Диагностика OBD</option><option value="4">ГБО: коррекции</option></select></div>
   <div><label>Значение в центре главного экрана</label><select id="mainCenterValue"><option value="0">Наддув</option><option value="1">Скорость</option><option value="2">Текущий расход</option><option value="3">Средний расход текущего топлива</option></select></div>
   <div><label>Автовозврат на главный экран, секунд</label><input id="autoReturnSec" type="number" min="0" max="120" value="5"></div>
   <div class="check"><input id="pageFuel" type="checkbox" checked><label for="pageFuel">Экран расхода</label></div>
@@ -201,9 +201,13 @@
   <p class="note" id="mapLive" style="margin-top:12px">Ожидание данных штатного опроса PID 0B.</p>
   <p class="desc" style="margin:10px 0 0">Отсутствующий или устаревший MAP обозначается прочерком, а не нулём. Неподвижные MAP/наддув на холостом ходу без нагрузки могут быть физически нормальны и сами по себе не доказывают неисправность запроса.</p>
  </div>
+  <div class="section"><h3>ГБО · экран коррекций</h3>
+   <div class="calstate" aria-live="polite"><div><small>Краткосрочная</small><b id="lpgTrimShort">—</b></div><div><small>Долгосрочная</small><b id="lpgTrimLong">—</b></div><div><small>Сумма</small><b id="lpgTrimSum">—</b></div><div><small>Оценка</small><b id="lpgTrimVerdict">—</b></div></div>
+   <p class="note" id="lpgTrimNote" style="margin-top:12px">Ожидание коррекций ЭБУ. Они запрашиваются только при работе на газе.</p>
+  </div>
  <div class="section"><div class="grid">
   <div><label>Тайм-аут OBD, мс</label><input id="obdTimeoutMs" type="number" min="50" max="1000" value="120"></div>
-  <div><label>Макс. запросов в секунду</label><input id="maxRequestsPerSecond" type="number" min="5" max="40" value="30"></div>
+  <div><label>Макс. запросов в секунду</label><input id="maxRequestsPerSecond" type="number" min="5" max="60" value="50"></div>
   <div><label>Коррекция скорости, км/ч</label><input id="speedCorrectionKph" type="number" min="-20" max="20" step="0.5" value="0"></div>
  </div><div class="note" style="margin-top:13px">Коррекция применяется как «скорость PID 0D + значение». Например, −5 уменьшает показание на 5 км/ч. Она используется на экране, в пути и при расчёте л/100 км. Заводское значение 0. Mode 22 отключён до подтверждения DID Haval.</div></div>
  <div class="section" id="dtcDiagnostics"><h3>Check Engine и коды неисправностей</h3>
@@ -414,6 +418,20 @@ function tripStatus(s){
   return `<tr${mark}><td>${label}</td><td>${fmt(f.liters)} л</td><td>${fmt(f.idleLiters)} л</td><td>${fmt(f.distanceKm,1)} км</td><td>${fmt(f.averageL100,1)}</td><td>${fmt(f.movingAverageL100,1)}</td><td>${fmt(f.idleSharePercent,0,'%')}</td><td>${fmt((Number(f.engineSeconds||0)/60),1)} мин</td></tr>`;
  }).join('')||'<tr><td colspan="8">Нет данных о поездке</td></tr>';
 }
+function lpgTrimStatus(s){
+ const ids=['lpgTrimShort','lpgTrimLong','lpgTrimSum','lpgTrimVerdict'];
+ if(!s||!s.lpgEnabled){for(const id of ids)$(id).textContent='—';$('lpgTrimNote').textContent='ГБО выключено в настройках — коррекции не запрашиваются.';$('lpgTrimVerdict').style.color='';return}
+ const t=s.fuelTrims;
+ if(!t||!t.valid){for(const id of ids.slice(0,3))$(id).textContent='—';$('lpgTrimVerdict').textContent=t&&t.assessment?t.assessment:'—';$('lpgTrimVerdict').style.color='var(--m)';$('lpgTrimNote').textContent='Нет свежих коррекций: двигатель выключен, идёт прогрев или прибор едет не на газе. Эти PID опрашиваются только на газе.';return}
+ const f=v=>(v>=0?'+':'')+Number(v).toFixed(1)+'%';
+ $('lpgTrimShort').textContent=f(t.shortTermPercent);
+ $('lpgTrimLong').textContent=f(t.longTermPercent);
+ $('lpgTrimSum').textContent=f(t.sumPercent);
+ $('lpgTrimVerdict').textContent=t.assessment;
+ const mag=Math.abs(Number(t.sumPercent));
+ $('lpgTrimVerdict').style.color=mag>10?'var(--r)':mag>5?'var(--a)':'var(--g)';
+ $('lpgTrimNote').textContent=t.warning?'ЭБУ больше 5 секунд компенсирует смесь сильнее чем на 10%. Это признак неверной настройки ГБО, а не неисправность прибора: проверьте давление газа, форсунки-дублёры и AFR в настройках «Расчёт LPG». Первая минута после холодного пуска может давать ложное срабатывание.':'Сумма в пределах ±5%. Краткосрочная коррекция гуляет вместе с нагрузкой — это нормально; судить надо по долгосрочной, и она тоже должна стоять около нуля.';
+}
 function mapStatus(s){
  const fields=['mapPidSupport','mapPidRequests','mapPidResponses','mapPidTimeouts','iatPidSupport','iatPidCounts','iatPidTimeouts','mapRaw','intakeAirRaw','speedDensityAirflow','baroRaw','effectiveBaro','mapBoostRaw','mapBoostFiltered'];
  if(!s){for(const id of fields)$(id).textContent='—';$('mapLive').textContent='Нет актуальных данных OBD. Прочерки не означают нулевые значения.';return}
@@ -440,7 +458,7 @@ function mapStatus(s){
  else text+=`BARO обновлён ${(Number(s.baroAgeMs||0)/1000).toFixed(1)} с назад.`;
  $('mapLive').textContent=text;
 }
-async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
+async function status(){if(otaActive)return;try{const s=await api('/api/status');$('sCan').textContent=s.obdConnected?'Подключено':'Нет связи';$('sEcu').textContent=s.ecuId||'—';const d=s.dtc||{},total=Number(d.storedCount||0)+Number(d.pendingCount||0)+Number(d.permanentCount||0);$('sDtc').textContent=d.misfire?'ПРОПУСКИ '+(d.firstCode||''):d.milCommandedOn||d.milLatchedThisBoot?'CHECK ENGINE '+(d.firstCode||''):total?`${d.firstCode||'DTC'} · ${total}`:d.milKnown?'Нет':'—';$('sDtc').style.color=d.misfire||d.milCommandedOn||d.milLatchedThisBoot?'var(--r)':total?'var(--a)':'';$('sBoost').textContent=s.boostBar==null?'—':(s.boostBar>=0?'+':'')+s.boostBar.toFixed(2)+' bar';fuelStatus(s);tripStatus(s);lpgTrimStatus(s);mapStatus(s);$('connection').textContent=(s.target||'ESP32-S3')+' · '+s.version;brightnessStatus(s.brightness);otaStatus(s.version,s.ota);persistenceStatus(s.persistence)}catch(e){$('connection').textContent='Нет ответа';$('sDtc').textContent='—';$('sDtc').style.color='';fuelStatus(null);tripStatus(null);lpgTrimStatus(null);mapStatus(null);brightnessStatus(null);otaStatus(null,null);persistenceStatus(null)}}
 let dtcData=null,dtcLoading=false;
 const dtcTypeName={stored:'Сохранённый · Mode 03',pending:'Ожидающий · Mode 07',permanent:'Постоянный · Mode 0A'};
 const dtcScanName={not_scanned:'не читалось',reading:'чтение',complete:'OK',unsupported:'не поддерживается',timeout:'тайм-аут',malformed:'повреждённый ответ',transport_error:'ошибка CAN',negative_response:'отрицательный ответ ECU'};

@@ -459,6 +459,9 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
     case 3:
       drawDiagnostics(data, config, now);
       break;
+    case 4:
+      drawLpg(data, engine, config, now);
+      break;
     default:
       drawMain(data, engine, config, now);
       break;
@@ -492,12 +495,16 @@ bool DashboardUi::pageEnabled(uint8_t page, const ConfigData& config) const {
   if (page == 1) return config.pageFuel;
   if (page == 2) return config.pageTemperature;
   if (page == 3) return config.pageDiagnostics;
+  // The trims page only exists on a gassed car: without LPG the engine never
+  // runs on it, both trim PIDs are not requested, and the page would show
+  // nothing but an idle zero.
+  if (page == 4) return config.lpgEnabled;
   return false;
 }
 
 void DashboardUi::nextPage(const ConfigData& config) {
-  for (uint8_t i = 0; i < 4; ++i) {
-    page_ = (page_ + 1) % 4;
+  for (uint8_t i = 0; i < kPageCount; ++i) {
+    page_ = (page_ + 1) % kPageCount;
     if (pageEnabled(page_, config)) break;
   }
   lastInteractionAt_ = millis();
@@ -825,6 +832,109 @@ void DashboardUi::drawFuel(const TelemetryData& data,
                       : translated(config, "ГАЗ", "LPG"),
                   config, lpg ? config.colorWarning : config.colorBoost);
   }
+
+  drawStatusRow(data, config, now);
+}
+
+void DashboardUi::drawLpg(const TelemetryData& data,
+                          const TelemetryEngine& engine,
+                          const ConfigData& config, uint32_t now) {
+  // Same vertical budget as the fuel page, so the two do not feel like
+  // different products: header 25 -> 12..28, large 62 -> 34..63,
+  // unit 92 -> 79..95, cells 128 -> 111..132 with labels 147 -> 134..150,
+  // verdict 176 -> 159..180 with label 195 -> 182..198, status pill at 201.
+  // The three cells sit on an 80 px pitch, so every label stays under 78 px.
+  char value[40];
+  const bool lpg = data.fuelMode == FuelMode::Lpg;
+
+  snprintf(value, sizeof(value),
+           isRussian(config) ? "ПУТЬ %.1f КМ | %.2f Л" : "TRIP %.1f KM | %.2f L",
+           engine.trip().totalDistanceKm,
+           lpg ? engine.lpgLiters(config) : engine.petrolLiters(config));
+  drawText(value, 120, 25, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config, true));
+
+  // A trim is a fuel addition the engine commands for itself. Both halves are
+  // what the owner actually needs: the short term moves with load and says
+  // nothing on its own, while a long term parked away from zero means the gas
+  // calibration itself is wrong rather than the injectors hunting.
+  const bool trimsFresh = data.shortFuelTrimPercent.valid(now) &&
+                          data.longFuelTrimPercent.valid(now);
+  const float sum = trimsFresh ? data.fuelTrimSumPercent : 0.0f;
+  // A calm long term with a wandering short term is normal metering; a large
+  // magnitude in either direction is the engine fighting the mixture, and the
+  // sign says which way: positive adds fuel (lean), negative removes (rich).
+  uint16_t trimColor = config.colorText;
+  if (fabsf(sum) > 10.0f) {
+    trimColor = config.colorDanger;
+  } else if (fabsf(sum) > 5.0f) {
+    trimColor = config.colorWarning;
+  }
+
+  if (trimsFresh) {
+    snprintf(value, sizeof(value), "%+.1f", sum);
+  } else {
+    strlcpy(value, "--.-", sizeof(value));
+  }
+  drawText(value, 120, 62, MC_DATUM, trimColor, FontRole::Large, FSSB24);
+  drawText(translated(config, "СУММА КОРРЕКЦИЙ", "TRIM SUM"),
+           120, 92, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
+
+  if (trimsFresh) {
+    snprintf(value, sizeof(value), "%+.1f%%", data.shortFuelTrimPercent.value);
+  } else {
+    strlcpy(value, "--", sizeof(value));
+  }
+  drawValueCell(40, 128, value, translated(config, "КРАТКО", "STFT"), config,
+                config.colorText);
+
+  if (trimsFresh) {
+    snprintf(value, sizeof(value), "%+.1f%%", data.longFuelTrimPercent.value);
+  } else {
+    strlcpy(value, "--", sizeof(value));
+  }
+  drawValueCell(120, 128, value, translated(config, "ДОЛГО", "LTFT"), config,
+                config.colorText);
+
+  // Standing is carried over unchanged from the fuel page: it is a property
+  // of the trip, not of the fuel, and the owner reads both pages together.
+  const float idleShare = engine.idleShareOfTrip();
+  if (idleShare > 0.05f) {
+    snprintf(value, sizeof(value), "%.0f%%", idleShare);
+  } else {
+    strlcpy(value, "--", sizeof(value));
+  }
+  drawValueCell(200, 128, value, translated(config, "ПРОСТОИ", "IDLE %"),
+                config, kMuted);
+
+  // The verdict in words, because a bare percentage does not tell an owner
+  // which side of stoichiometric the mixture is on or what to do about it.
+  const char* verdict;
+  uint16_t verdictColor;
+  if (!config.fuelTrimEnabled()) {
+    verdict = translated(config, "КОНТРОЛЬ ВЫКЛ", "MONITOR OFF");
+    verdictColor = kMuted;
+  } else if (!trimsFresh) {
+    verdict = lpg ? translated(config, "НЕТ ДАННЫХ", "NO DATA")
+                  : translated(config, "НЕ НА ГАЗЕ", "NOT ON LPG");
+    verdictColor = kMuted;
+  } else if (fabsf(sum) <= 5.0f) {
+    verdict = translated(config, "СМЕСЬ В НОРМЕ", "MIXTURE OK");
+    verdictColor = config.colorBoost;
+  } else if (sum > 0.0f) {
+    verdict = translated(config, "СМЕСЬ БЕДНАЯ", "MIXTURE LEAN");
+    verdictColor = config.colorWarning;
+  } else {
+    verdict = translated(config, "СМЕСЬ БОГАТАЯ", "MIXTURE RICH");
+    verdictColor = config.colorWarning;
+  }
+  // Caption and verdict are separate lines rather than a value cell: the
+  // words are the value here, and drawing them at the cell's own baseline
+  // would collide with the cell label above.
+  drawText(translated(config, "ОЦЕНКА", "VERDICT"), 120, 165, MC_DATUM, kMuted,
+           FontRole::Small, labelFont(config));
+  drawText(verdict, 120, 190, MC_DATUM, verdictColor, FontRole::Small,
+           labelFont(config, true));
 
   drawStatusRow(data, config, now);
 }

@@ -33,14 +33,14 @@ integer_ranges = {
     "brightnessMode": (0, 3), "lightNightAdc": (0, 4095),
     "lightDayAdc": (0, 4095), "lightDimDelayMs": (0, 30000),
     "lightBrightenDelayMs": (0, 30000), "rotation": (0, 3),
-    "startPage": (0, 3), "mainCenterValue": (0, 3),
+    "startPage": (0, 4), "mainCenterValue": (0, 3),
     "uiLanguage": (0, 1), "autoReturnSec": (0, 120),
     "baroSource": (0, 4), "boostArcStyle": (0, 1),
     "smoothingMs": (0, 2000), "fuelSource": (0, 5),
     "switchSpeedKph": (1, 30), "lpgDebounceMs": (100, 3000),
     "lpgOffDelayMs": (0, 5000), "longPressMs": (800, 4000),
     "serviceHoldMs": (3000, 10000), "serviceTimeoutMin": (3, 60),
-    "obdTimeoutMs": (50, 1000), "maxRequestsPerSecond": (5, 40),
+    "obdTimeoutMs": (50, 1000), "maxRequestsPerSecond": (5, 60),
 }
 float_ranges = {
     "fixedBaroKpa": (70.0, 110.0), "boostOffsetBar": (-0.5, 0.5),
