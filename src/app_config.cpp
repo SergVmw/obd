@@ -88,7 +88,11 @@ ConfigData ConfigStore::defaults() {
   c.lockLongWhenMoving = true;
 
   c.obdTimeoutMs = 120;
-  c.maxRequestsPerSecond = 30;
+  // 50, not 30: the polling profile asks for roughly 50 requests a second, so
+  // the factory default used to sit below what the instrument actually needs.
+  // The old value also contradicted the field instructions, which tell the
+  // owner to set 50 by hand.
+  c.maxRequestsPerSecond = 50;
 
   strlcpy(c.deviceName, "H2 Gauge", sizeof(c.deviceName));
   strlcpy(c.apName, "H2-Gauge", sizeof(c.apName));
@@ -173,7 +177,7 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.serviceTimeoutMin >= 3 && config.serviceTimeoutMin <= 60 &&
          config.obdTimeoutMs >= 50 && config.obdTimeoutMs <= 1000 &&
          config.maxRequestsPerSecond >= 5 &&
-         config.maxRequestsPerSecond <= 40 &&
+         config.maxRequestsPerSecond <= 60 &&
          config.speedCorrectionKph >= -20.0f &&
          config.speedCorrectionKph <= 20.0f &&
          deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
