@@ -286,7 +286,7 @@ image для чистой записи с offset `0x0`. Полный отчёт:
 четыре релиза подряд; их файлы и отчёты остались в истории по меткам
 [`v0.4.5`](https://github.com/SergVmw/obd/blob/v0.4.5/releases/),
 [`v0.4.4`](https://github.com/SergVmw/obd/blob/v0.4.4/releases/) и
-[`v0.4.3`](https://github.com/SergVmw/obd/blob/v0.4.3/releases/).
+[`v0.4.3`](https://github.com/SergVmw/obd/tree/4b837f716ab44c62efd0f8ef998cda0d1b96ece1/releases/).
 
 ## Flash и PSRAM
 

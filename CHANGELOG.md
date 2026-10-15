@@ -138,7 +138,7 @@ Production-релиз поверх 0.4.2; Config schema остаётся 6. Вы
 - Пройдены host, static, font и browser gates, а также PlatformIO build/manifest/package checks. Manifest: `0.4.3 / esp32s3-n16r8`, app offset `0x1c314`. App: 1 198 752 байта, SHA-256 `52b36d55420d6aa1866777efbf90021638e92a4a1655dd291ced914aca9d43f6`; factory: 1 264 288 байт, SHA-256 `5cd473554172237454be5e5a89854e1463d2106d34361d328922d3c17c30141d`.
 - 0.4.3 локально собран и проверен, но не устанавливался на автомобиль. TWAI self-test не выполнялся и в release отсутствует.
 
-Подробности и полные контрольные суммы: [Метка `v0.4.3`](https://github.com/SergVmw/obd/blob/v0.4.3/releases/) — отчёт и контрольные суммы в истории; из рабочего дерева удалены.
+Подробности и полные контрольные суммы: [коммит `4b837f7`](https://github.com/SergVmw/obd/tree/4b837f716ab44c62efd0f8ef998cda0d1b96ece1/releases/) — отчёт и контрольные суммы в истории; из рабочего дерева удалены.
 
 ## 0.4.2 — 2026-09-30
 
