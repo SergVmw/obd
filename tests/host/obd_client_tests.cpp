@@ -98,6 +98,18 @@ struct Rig {
     }
   }
 
+  // A speed sample goes stale two seconds after it was taken unless PID 0D
+  // answers, and the VIN gate reads an unknown speed as standing. A test that
+  // needs the vehicle to stay in one state has to keep the sample fresh itself,
+  // which is what this does.
+  void pumpHoldingSpeed(uint32_t steps, uint32_t stepMs, float kph) {
+    for (uint32_t i = 0; i < steps; ++i) {
+      hostMillis += stepMs;
+      telemetry.rawSpeedKph.set(kph, hostMillis);
+      client.loop(hostMillis);
+    }
+  }
+
   // Pump until the VIN request has gone out.
   void pumpUntilVinRequested() {
     for (int i = 0; i < 40; ++i) {
@@ -337,23 +349,65 @@ void testVinIsAcceptedFromAnyPowertrainBlock() {
   CHECK(rig.client.vinEcu() == 0x7EF);
 }
 
-// A request that goes unanswered is asked once more. The first attempt is made
-// the instant discovery ends, so a busy bus or a block still waking up used to
-// cost the VIN for the whole ignition cycle.
+// A request that goes unanswered is asked again. The first attempt is made the
+// instant discovery ends, so a busy bus or a block still waking up used to cost
+// the VIN for the whole ignition cycle.
 void testAnUnansweredVinRequestIsRetriedOnce() {
   Rig rig;
   rig.pumpUntilVinRequested();
   CHECK(rig.vinRequestCount() == 1);
 
-  // Long enough to outlast the request timeout and the retry delay.
+  // Long enough to outlast the request timeout and the startup retry delay.
   rig.pump(600, 25);
   CHECK(rig.vinRequestCount() == 2);
 
-  // The identifier is constant, so the request stops there: a second failure
-  // must not turn into a poll.
-  rig.pump(600, 25);
+  // Both startup attempts are spent. In motion nothing else is sent, so a block
+  // that will not answer on the move cannot turn this into a poll.
+  rig.pumpHoldingSpeed(4000, 25, 50.0f);
   CHECK(rig.vinRequestCount() == 2);
   CHECK(!rig.client.vinValid());
+}
+
+// The device booted into a drive and both startup attempts went out while the
+// vehicle was moving. Nothing else is tried until it stops, which is the state
+// the block can actually answer from.
+void testVinWaitsForTheVehicleToStop() {
+  Rig rig;
+  rig.pumpHoldingSpeed(40, 50, 60.0f);
+  rig.pumpUntilVinRequested();
+  CHECK(rig.vinRequestCount() == 1);
+  rig.pumpHoldingSpeed(600, 25, 60.0f);
+  CHECK(rig.vinRequestCount() == 2);
+
+  // Far past the thirty-second standing delay, still driving.
+  rig.pumpHoldingSpeed(4000, 25, 60.0f);
+  CHECK(rig.vinRequestCount() == 2);
+
+  // The vehicle stops. The next attempt must now arrive on its own.
+  rig.pumpHoldingSpeed(40, 25, 0.0f);
+  rig.pumpUntilVinRequestCount(3);
+  CHECK(rig.vinRequestCount() == 3);
+
+  // And that answer ends both phases.
+  queueVinAnswer();
+  rig.pump(40, 25);
+  CHECK(rig.client.vinValid());
+
+  rig.pumpHoldingSpeed(4000, 25, 0.0f);
+  CHECK(rig.vinRequestCount() == 3);
+}
+
+// An unknown speed is not a refusal to guess. The request has no accounting to
+// corrupt, and the standing case is the only one that can succeed, so a boot
+// with no PID 0D at all still retries instead of losing the field.
+void testUnknownSpeedStillRetries() {
+  Rig rig;
+  rig.pumpUntilVinRequested();
+  CHECK(rig.vinRequestCount() == 1);
+  CHECK(!rig.telemetry.rawSpeedKph.valid(hostMillis));
+
+  rig.pumpUntilVinRequestCount(3, 4000);
+  CHECK(rig.vinRequestCount() == 3);
 }
 
 // A retry that gets an answer still reads, so losing the first request does not
@@ -396,8 +450,11 @@ int main() {
   test("a broken sequence is discarded", testBrokenSequenceIsDiscarded);
   test("a VIN is accepted from any powertrain block",
        testVinIsAcceptedFromAnyPowertrainBlock);
-  test("an unanswered VIN request is retried once, then stops",
+  test("an unanswered VIN request is retried once, then waits for a stop",
        testAnUnansweredVinRequestIsRetriedOnce);
+  test("the VIN retries only once the vehicle has stopped",
+       testVinWaitsForTheVehicleToStop);
+  test("an unknown speed still retries the VIN", testUnknownSpeedStillRetries);
   test("the retry can still succeed", testTheRetryCanStillSucceed);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;

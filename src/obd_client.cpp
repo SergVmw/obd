@@ -96,17 +96,24 @@ void ObdClient::loop(uint32_t now) {
   if (sendDiagnostics(now)) return;
   if (paused_ && !servicePollingEnabled_) return;
 
-  // VIN is asked once, right after discovery, and not polled again: it cannot
-  // change while the engine runs, and polling a constant would spend bus
-  // bandwidth for nothing. One retry is allowed because the first attempt is
-  // made the instant discovery ends, when the bus may still be busy and the
-  // engine block may not have finished waking up. Losing that one request used
-  // to leave the field empty until the next power cycle. It waits for a free
-  // slot so its three-frame answer never shares ISO-TP state with a
-  // diagnostic request.
-  if (!vinValid_ && vinAttempts_ < kMaxVinAttempts && discoveryDone_ &&
-      pendingRequest_ == PendingRequest::None && !mode22_.waiting() &&
-      now >= vinRetryDueAt_) {
+  // VIN is asked right after discovery and is not polled afterwards, because the
+  // identifier cannot change while the engine runs. The first two attempts are
+  // four seconds apart. Past those the request is only made with the vehicle
+  // stopped, which is where a block that stayed silent during a whole drive can
+  // still answer it.
+  //
+  // Speed is read raw and undecoded, the same band the poll profile uses, so the
+  // display correction cannot influence this decision either. An unknown speed
+  // counts as standing: telemetry.cpp refuses to call such an interval either
+  // moving or standing, but this request has no accounting to corrupt and only
+  // the standing case can succeed.
+  const bool vehicleStanding =
+      !telemetry_.rawSpeedKph.valid(now) ||
+      telemetry_.rawSpeedKph.value < kParkedRawSpeedKph;
+  if (!vinValid_ && discoveryDone_ && pendingRequest_ == PendingRequest::None &&
+      !mode22_.waiting() && now >= vinRetryDueAt_ &&
+      (vinAttempts_ < kMaxVinStartupAttempts ||
+       (vehicleStanding && vinAttempts_ < kMaxVinAttempts))) {
     sendVinRequest(now);
   }
 
@@ -302,8 +309,11 @@ void ObdClient::sendVinRequest(uint32_t now) {
   vinAttempted_ = true;
   ++vinAttempts_;
   // Hold off before any retry, so a block that is merely slow is not asked
-  // again inside its own answer window.
-  vinRetryDueAt_ = now + kVinRetryDelayMs;
+  // again inside its own answer window. The startup pair stays four seconds
+  // apart; once those are spent the standing phase waits half a minute.
+  vinRetryDueAt_ = now + (vinAttempts_ < kMaxVinStartupAttempts
+                              ? kVinStartupRetryDelayMs
+                              : kVinRetryDelayMs);
   waiting_ = true;
   pendingRequest_ = PendingRequest::Vin;
   pendingPid_ = 0x02;

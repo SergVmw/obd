@@ -179,10 +179,16 @@ class ObdClient {
   // to this request so it can never interleave with the DTC transport.
   static constexpr uint32_t vinTimeoutMs_ = 2000;
   // The identifier cannot change while the engine runs, so it is not polled.
-  // One retry covers the first request being lost to a busy bus or a block
-  // that has not finished waking up when discovery ends.
-  static constexpr uint8_t kMaxVinAttempts = 2;
-  static constexpr uint32_t kVinRetryDelayMs = 4000;
+  // The first two attempts stay four seconds apart, which is what 0.4.7 added
+  // for a busy bus and a block that has not finished waking when discovery ends.
+  // Past those the request is only made with the vehicle stopped: a block that
+  // refuses service 09 in motion is not going to answer between lights either,
+  // and one three-frame exchange every thirty seconds is a rounding error next
+  // to the ~50 requests/s the polling profile already spends.
+  static constexpr uint8_t kMaxVinStartupAttempts = 2;
+  static constexpr uint32_t kVinStartupRetryDelayMs = 4000;
+  static constexpr uint8_t kMaxVinAttempts = 40;
+  static constexpr uint32_t kVinRetryDelayMs = 30000;
   char vin_[kVinChars + 1] = {0};
   uint8_t vinBytes_[kVinPayload] = {0};
   uint16_t vinEcu_ = 0;
