@@ -437,7 +437,7 @@ manifest: 0.4.1 / esp32s3-n16r8 at app offset 0x1c280
 
 Дополнительный аудит обнаружил неавторитетное снятие DTC presence при truncated response, ложный `currentStateKnown`, избыточное требование NVS rewrite в runtime factory reset и zero-sentinel rollover post-clear schedule. Production fixes выпущены отдельно как 0.4.2.
 
-Текущий упакованный release 0.4.2:
+Исторически упакованный release 0.4.2 — артефакты и отчёт по нему удалены из репозитория, сверить их SHA-256 нечем. За актуальным состоянием обращайтесь к разделу о 0.4.4 в начале документа и к `releases/README-v0.4.4.md`:
 
 ```text
 RAM: 53 340 / 327 680 bytes (16.3%)

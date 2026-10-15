@@ -41,6 +41,13 @@ TripState canonicalTrip(const TripState& source) {
   TripState output{};
   output.rawPetrolLiters = source.rawPetrolLiters;
   output.rawLpgLiters = source.rawLpgLiters;
+  // A field missing here is not a compile error and not a bad checksum: seal()
+  // would happily checksum a record where it reads zero. It survives as a
+  // silently lost counter across every ignition cycle, so keep this list
+  // exhaustive — the host test compares the whole struct byte for byte to
+  // catch anything added later without being added here.
+  output.idlePetrolLiters = source.idlePetrolLiters;
+  output.idleLpgLiters = source.idleLpgLiters;
   output.petrolDistanceKm = source.petrolDistanceKm;
   output.lpgDistanceKm = source.lpgDistanceKm;
   output.totalDistanceKm = source.totalDistanceKm;

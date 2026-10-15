@@ -21,9 +21,15 @@ size_t Preferences::writes = 0;
 
 namespace {
 TripState sampleTrip() {
+  // Every data field gets a distinct non-zero value. A field left at zero
+  // cannot be distinguished from a field the encoder forgot to copy, which is
+  // exactly how the standing-fuel counters were lost on every save: the
+  // stored record read back clean, because zero was also what the source held.
   TripState trip{};
   trip.rawPetrolLiters = 12.345;
   trip.rawLpgLiters = 6.789;
+  trip.idlePetrolLiters = 1.25;
+  trip.idleLpgLiters = 0.5;
   trip.petrolDistanceKm = 123.5;
   trip.lpgDistanceKm = 54.25;
   trip.totalDistanceKm = 177.75;
@@ -72,6 +78,31 @@ void testSnapshotRoundTrip() {
   assert(PetrolCalibrationStore::valid(decoded.calibration));
   assert(std::fabs(decoded.trip.rawPetrolLiters - 12.345) < 1e-12);
   assert(std::fabs(decoded.calibration.distanceKm - 456.75) < 1e-12);
+}
+
+// The contract that was missing: whatever canonicalTrip() drops must fail
+// here. Sealing the source produces the canonical form of the same data, so a
+// complete encoder writes a record identical to it, byte for byte. A field the
+// encoder leaves out is zero in the record and non-zero in the sealed source,
+// and the difference shows up without this test naming the field. That is what
+// makes a counter added later unable to vanish silently the way the standing
+// litres did.
+void testEveryTripFieldSurvivesEncoding() {
+  const TripState trip = sampleTrip();
+  TripState expected = trip;
+  TripStore::seal(expected);
+
+  uint8_t record[PersistenceSnapshot::kRecordBytes]{};
+  assert(PersistenceSnapshot::encode(5, trip, sampleCalibration(), record,
+                                     sizeof(record)));
+  PersistenceSnapshot::Decoded decoded;
+  assert(PersistenceSnapshot::decode(record, sizeof(record), decoded));
+
+  assert(std::memcmp(&expected, &decoded.trip, sizeof(TripState)) == 0);
+  // Spelled out for the two counters that were lost, so the intent survives
+  // even if someone later weakens the byte comparison above.
+  assert(std::fabs(decoded.trip.idlePetrolLiters - 1.25) < 1e-12);
+  assert(std::fabs(decoded.trip.idleLpgLiters - 0.5) < 1e-12);
 }
 
 void testCanonicalChecksumsAndDirtyComparison() {
@@ -125,6 +156,7 @@ int main() {
                 "record format regression");
   testCrc32();
   testSnapshotRoundTrip();
+  testEveryTripFieldSurvivesEncoding();
   testCanonicalChecksumsAndDirtyComparison();
   testTornAndCorruptRecordsRejected();
   testSequenceOrderingAndWrap();
