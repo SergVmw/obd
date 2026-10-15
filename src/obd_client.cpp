@@ -283,8 +283,11 @@ void ObdClient::sendVinRequest(uint32_t now) {
   message.rtr = 0;
   message.data_length_code = 8;
   message.data[0] = 0x02;
-  message.data[1] = 0x01;  // Mode 01 current data
-  message.data[2] = 0x09;  // VIN
+  // Service 09, PID 02. The VIN lives in the vehicle-information service;
+  // Mode 01 PID 09 is the long-term fuel trim for bank 2 and is a single byte,
+  // so a request for it can never produce a multi-frame answer at all.
+  message.data[1] = 0x09;  // Mode 09 vehicle information
+  message.data[2] = 0x02;  // PID 02, VIN
   message.data[3] = 0x00;
   if (twai_transmit(&message, pdMS_TO_TICKS(20)) != ESP_OK) {
     ++telemetry_.canErrorCount;
@@ -294,7 +297,7 @@ void ObdClient::sendVinRequest(uint32_t now) {
   vinAttempted_ = true;
   waiting_ = true;
   pendingRequest_ = PendingRequest::Vin;
-  pendingPid_ = 0x09;
+  pendingPid_ = 0x02;
   // Three frames plus a flow control have to arrive, so this needs a wider
   // budget than a single-byte PID answer.
   pendingTimeoutMs_ = vinTimeoutMs_;
@@ -326,17 +329,18 @@ bool ObdClient::handleVinFrame(const twai_message_t& message, uint32_t now,
       finishPending(true);
       return true;
     }
-    // The reply to Mode 01 carries service 0x01 + 0x40, as every other Mode 01
-    // response in this client does; checking for 0x01 would reject a perfectly
-    // good answer.
-    if (message.data[2] != 0x41 || message.data[3] != 0x49) {
+    // Only the service byte carries the +0x40 of a reply. The PID comes back
+    // exactly as it was sent, so the answer to "09 02" reads 49 02. Accepting
+    // 49 42 here means accepting a frame no ECU produces.
+    if (message.data[2] != 0x49 || message.data[3] != 0x02) {
       finishPending(true);
       return true;
     }
-    // The declared length counts the service and PID bytes as well, so the
-    // copy starts at index 2 and is bounded by the total rather than by the
-    // DLC: when the answer is shorter than the frame, the trailing bytes are
-    // padding and must not be mistaken for VIN characters.
+    // The declared length counts the service, PID and message-count bytes as
+    // well, so the copy starts at index 2 and is bounded by the total rather
+    // than by the DLC: when the answer is shorter than the frame, the trailing
+    // bytes are padding and must not be mistaken for VIN characters. The VIN
+    // itself starts three bytes in, past the message count.
     vinStored_ = 0;
     vinConsumed_ = 0;
     for (uint8_t i = 2; i < message.data_length_code && vinConsumed_ < total;
@@ -348,7 +352,12 @@ bool ObdClient::handleVinFrame(const twai_message_t& message, uint32_t now,
     vinNextSequence_ = 1;
     if (vinConsumed_ < vinExpected_) {
       flowControl = {};
-      flowControl.identifier = 0x7DF;
+      // ISO 15765-2 addresses flow control to the physical sender, not to the
+      // functional request address the VIN was asked on. A block answering from
+      // 0x7E8 is told to continue from 0x7E0; Mode 22 in this same client
+      // already does this. Some ECUs tolerate the functional form, and those
+      // are exactly the ones that would have hidden the mistake.
+      flowControl.identifier = message.identifier - 8;
       flowControl.extd = 0;
       flowControl.rtr = 0;
       flowControl.data_length_code = 8;
@@ -375,11 +384,11 @@ bool ObdClient::handleVinFrame(const twai_message_t& message, uint32_t now,
     // string that fails that is a mis-assembled answer rather than a VIN.
     bool usable = vinStored_ == kVinPayload;
     for (size_t i = 0; usable && i < kVinChars; ++i) {
-      const uint8_t ch = vinBytes_[2 + i];
+      const uint8_t ch = vinBytes_[kVinPayload - kVinChars + i];
       if (ch < 0x20 || ch > 0x7E) usable = false;
     }
     if (usable) {
-      memcpy(vin_, vinBytes_ + 2, kVinChars);
+      memcpy(vin_, vinBytes_ + (kVinPayload - kVinChars), kVinChars);
       vin_[kVinChars] = '\0';
       vinValid_ = true;
       vinEcu_ = message.identifier;

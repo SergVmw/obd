@@ -116,16 +116,18 @@ class ObdClient {
     Vin,
   };
 
-  // VIN is 17 bytes behind a two-byte service/PID header, so the payload is
-  // 19 bytes and arrives as a First Frame plus two Consecutive Frames.
+  // A VIN is 17 characters behind three header bytes: the service, the PID and
+  // the message count that Service 09 carries in front of the data. The First
+  // Frame therefore declares 20 bytes and the VIN starts at offset 3 of the
+  // assembled payload, not at 2. Off by one here and the count byte becomes the
+  // first character of the VIN on the dashboard.
   static constexpr size_t kVinChars = 17;
-  static constexpr size_t kVinPayload = 2 + kVinChars;
+  static constexpr size_t kVinPayload = 3 + kVinChars;
 
   // Returns true when the frame belonged to a VIN request and was consumed.
   bool handleVinFrame(const twai_message_t& message, uint32_t now,
                       twai_message_t& flowControl, bool& needsFlowControl);
   void sendVinRequest(uint32_t now);
-  void serviceVin(uint32_t now);
 
   // VIN as read from the vehicle, or an empty string while it is unknown. It
   // is fetched once after discovery and never polled again.

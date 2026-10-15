@@ -21,6 +21,17 @@ inline int digitalRead(uint8_t) { return hostButton; }
 inline uint16_t analogRead(uint8_t) { return hostAdc; }
 inline void analogReadResolution(uint8_t) {}
 inline void analogSetPinAttenuation(uint8_t, int) {}
+inline uint32_t micros() { return hostMillis * 1000u; }
+
+// FreeRTOS critical sections. The host tests are single-threaded, so these are
+// no-ops that exist to keep the production sources compiling unmodified. That is
+// the point: a test that had to edit the code under test to run would not be
+// testing the code that ships. It also means these tests can say nothing about
+// concurrency, and are not meant to.
+struct portMUX_TYPE { unsigned long owner = 0; unsigned long count = 0; };
+#define portMUX_INITIALIZER_UNLOCKED {0ul, 0ul}
+inline portMUX_TYPE* portENTER_CRITICAL(portMUX_TYPE* mux) { return mux; }
+inline void portEXIT_CRITICAL(portMUX_TYPE*) {}
 
 // glibc 2.38 added strlcpy(), including a fortified inline definition.
 // Provide the Arduino-compatible fallback only when the host libc does not.

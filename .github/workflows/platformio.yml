@@ -24,6 +24,7 @@ jobs:
         run: |
           python tools/test_brightness.py
           python tools/test_obd_diagnostics.py
+          python tools/test_obd_client.py
           python tools/test_ota_diagnostics.py
           python tools/test_persistence.py
           python tools/test_storage_recovery.py

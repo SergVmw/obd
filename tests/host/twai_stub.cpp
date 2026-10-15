@@ -1,0 +1,90 @@
+// A virtual CAN bus for the host tests.
+//
+// The driver lifecycle is a no-op that reports success. The interesting half is
+// the queue: frames the test queues here are what the client will read on its
+// next loop, and every frame the client writes, flow control included, is kept
+// so a test can assert on the bytes that went out. Requests that nobody asserts
+// on are how a request format goes wrong unnoticed for a whole release.
+#include "driver/twai.h"
+
+#include <deque>
+#include <vector>
+
+namespace h2g_twai_stub {
+
+namespace {
+std::deque<twai_message_t> g_rx;
+std::vector<twai_message_t> g_tx;
+twai_state_t g_state = TWAI_STATE_STOPPED;
+}  // namespace
+
+void reset() {
+  g_rx.clear();
+  g_tx.clear();
+  g_state = TWAI_STATE_STOPPED;
+}
+
+void setState(twai_state_t state) { g_state = state; }
+
+// Hand the next frames to twai_receive(), in order.
+void queueRx(const twai_message_t& message) { g_rx.push_back(message); }
+
+const std::vector<twai_message_t>& transmitted() { return g_tx; }
+void clearTransmitted() { g_tx.clear(); }
+void recordTx(const twai_message_t& message) { g_tx.push_back(message); }
+
+namespace {
+// Reached from the C entry points below, which cannot see the anonymous
+// namespace directly.
+bool takeNext(twai_message_t* out) {
+  if (g_rx.empty()) return false;
+  *out = g_rx.front();
+  g_rx.pop_front();
+  return true;
+}
+twai_state_t currentState() { return g_state; }
+}  // namespace
+
+}  // namespace h2g_twai_stub
+
+esp_err_t twai_driver_install(const twai_general_config_t*, const twai_timing_config_t*,
+                              const twai_filter_config_t*) {
+  return ESP_OK;
+}
+
+esp_err_t twai_driver_uninstall(void) { return ESP_OK; }
+
+esp_err_t twai_start(void) {
+  h2g_twai_stub::setState(TWAI_STATE_RUNNING);
+  return ESP_OK;
+}
+
+esp_err_t twai_stop(void) {
+  h2g_twai_stub::setState(TWAI_STATE_STOPPED);
+  return ESP_OK;
+}
+
+esp_err_t twai_transmit(const twai_message_t* message, TickType_t) {
+  if (message == nullptr) return ESP_ERR_INVALID_ARG;
+  h2g_twai_stub::recordTx(*message);
+  return ESP_OK;
+}
+
+esp_err_t twai_receive(twai_message_t* message, TickType_t) {
+  if (message == nullptr) return ESP_ERR_INVALID_ARG;
+  // An empty queue reports a timeout, which is what an empty RX queue looks
+  // like on real hardware and is what ends the client's drain loop.
+  if (!h2g_twai_stub::takeNext(message)) return ESP_ERR_TIMEOUT;
+  return ESP_OK;
+}
+
+esp_err_t twai_read_alerts(uint32_t*, uint32_t*) { return ESP_OK; }
+
+esp_err_t twai_get_status_info(twai_status_info_t* status_info) {
+  if (status_info == nullptr) return ESP_ERR_INVALID_ARG;
+  *status_info = twai_status_info_t{};
+  status_info->state = h2g_twai_stub::currentState();
+  return ESP_OK;
+}
+
+esp_err_t twai_initiate_recovery(void) { return ESP_OK; }
