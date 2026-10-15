@@ -60,6 +60,28 @@ for token in ("kResponsePendingTimeoutMs = 5000", "kDiagnosticAbsoluteTimeoutMs 
 assert "negativeResponseCode == 0x78" in diag
 assert "negativeResponseCode == 0x11" in diag and "negativeResponseCode == 0x12" in diag
 assert "diagnosticTiming_.noteResponsePending" in client
+
+# A malformed verdict reports only an odd length after the service echo, so the
+# bytes themselves are the only evidence of what the block sent. Nothing else
+# keeps them: every category overwrites one CAN monitor entry, which is why the
+# capture is mandatory rather than a convenience. It has to be taken before any
+# interpretation, and it has to be cleared with the scan that produced it.
+assert "rawResponse" in diag_h, "the raw per-category answer is not declared"
+assert "kRawCaptureBytes" in diag_h
+assert "captureRawResponse" in diag_h and "void ObdDiagnostics::captureRawResponse" in diag
+capture_call = re.search(
+    r"(size_t dtcBytes = length - 1U;)", diag)
+assert capture_call, "the DTC payload parity check is missing"
+assert diag.index("captureRawResponse(kindForRequest") < diag.index(capture_call.group(1)), \
+    "the raw answer must be captured before the length is judged"
+assert diag.count("memset(state_.rawResponse, 0") >= 2, \
+    "the capture belongs to one scan and must be cleared when a new scan starts"
+assert "rawResponses" in portal, "the raw answers are not exposed by the portal"
+raw_block = portal[portal.index('scan["rawResponses"]'):][:400]
+for kind in ("stored", "pending", "permanent"):
+    assert '"%s"' % kind in raw_block, "raw answer for %s is missing" % kind
+assert "rawResponses" in html and "rawLine" in html, \
+    "the diagnostics page must show what the block actually sent"
 assert "diagnosticTiming_.expired(now)" in client
 assert "diagnosticTiming_.start" in client
 

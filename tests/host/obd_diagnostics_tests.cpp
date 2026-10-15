@@ -388,6 +388,63 @@ void testOversizeResponseIsTruncatedWithoutOverflow() {
   CHECK(telemetry.dtcStoredCount == ObdDiagnosticsState::kMaxEntries);
   CHECK(diagnostics.history().entryCount == DtcHistoryData::kMaxEntries);
   CHECK(diagnostics.history().truncated);
+  // A 101-byte answer is kept only as far as the bound. The capture is
+  // evidence, not a second copy of the response buffer.
+  CHECK(diagnostics.state().rawResponseLength[0] ==
+        ObdDiagnosticsState::kRawCaptureBytes);
+}
+
+// A category verdict says only whether the parse succeeded. When it did not,
+// the only way to tell a broken answer from a non-standard one is the bytes the
+// block actually sent, and nothing else keeps them: every category overwrites
+// the same CAN monitor entry, so the bus capture cannot recover a Mode 03
+// answer once Mode 07 has arrived.
+void testRawCategoryResponseSurvivesTheVerdictThatRejectedIt() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+  CHECK(diagnostics.requestScan(2));
+  build(diagnostics, 2, 0x7E0, 1, 0x03);
+  // "43 00" is an explicit zero count rather than the bare echo SAE J1979
+  // specifies. It is non-standard, and the parity check rejects it.
+  accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x00}), 3);
+  const ObdDiagnosticsState& state = diagnostics.state();
+  CHECK(state.storedStatus == DtcCategoryStatus::Malformed);
+  CHECK(state.rawResponseLength[0] == 2);
+  CHECK(state.rawResponse[0][0] == 0x43);
+  CHECK(state.rawResponse[0][1] == 0x00);
+  // The bad answer is recorded, not accepted, and it does not stop the other
+  // two categories: Mode 07 is already requested, with pending marked Reading.
+  CHECK(state.operation == DtcOperation::Scanning);
+  CHECK(state.pendingStatus == DtcCategoryStatus::Reading);
+  CHECK(state.rawResponseLength[1] == 0);
+  CHECK(diagnostics.hasPendingRequest());
+}
+
+void testRawCategoryResponseBelongsToOneScan() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+  CHECK(diagnostics.requestScan(2));
+  finishEmptyScan(diagnostics, 2);
+  const ObdDiagnosticsState& first = diagnostics.state();
+  CHECK(first.rawResponseLength[0] == 1);
+  CHECK(first.rawResponse[0][0] == 0x43);
+  CHECK(first.rawResponseLength[1] == 1);
+  CHECK(first.rawResponse[1][0] == 0x47);
+  CHECK(first.rawResponseLength[2] == 1);
+  CHECK(first.rawResponse[2][0] == 0x4A);
+
+  // A second scan must not leave the previous scan's bytes under fresh verdicts.
+  CHECK(diagnostics.requestScan(100));
+  const ObdDiagnosticsState& second = diagnostics.state();
+  CHECK(second.rawResponseLength[0] == 0);
+  CHECK(second.rawResponseLength[1] == 0);
+  CHECK(second.rawResponseLength[2] == 0);
+  // Mode 03 is already in flight, so its verdict is fresh rather than NotScanned.
+  CHECK(second.storedStatus == DtcCategoryStatus::Reading);
 }
 
 void testTruncatedTailCannotClearHistoryPresence() {
@@ -685,11 +742,13 @@ int main() {
   testTransientHistorySurvivesARescanAndRestore();
   testOversizeResponseIsTruncatedWithoutOverflow();
   testTruncatedTailCannotClearHistoryPresence();
+  testRawCategoryResponseSurvivesTheVerdictThatRejectedIt();
+  testRawCategoryResponseBelongsToOneScan();
   testClearSafetyAndSuccessfulMode04();
   testPostClearScheduleSurvivesZeroRollover();
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::puts("OBD diagnostics tests: 15 groups passed");
+  std::puts("OBD diagnostics tests: 17 groups passed");
   return 0;
 }

@@ -59,6 +59,16 @@ struct DtcEntry {
 
 struct ObdDiagnosticsState {
   static constexpr size_t kMaxEntries = 32;
+  static constexpr uint8_t kCategoryCount =
+      static_cast<uint8_t>(DtcKind::Permanent) + 1U;
+  // The block's own bytes for each category, captured before this code reads
+  // anything into them. A Malformed verdict says only that the length after the
+  // service echo was odd, and whether that is a broken answer or a non-standard
+  // count byte is decided by the bytes themselves. Nothing else keeps them:
+  // every category overwrites the same CAN monitor entry, so the bus capture
+  // cannot recover a Mode 03 answer after Mode 07 has arrived. Bounded, because
+  // this is evidence for a fixed window and not a log.
+  static constexpr size_t kRawCaptureBytes = 16;
 
   bool milKnown = false;
   bool milCommanded = false;
@@ -73,6 +83,8 @@ struct ObdDiagnosticsState {
   DtcEntry entries[kMaxEntries]{};
   uint8_t entryCount = 0;
   bool truncated = false;
+  uint8_t rawResponse[kCategoryCount][kRawCaptureBytes]{};
+  uint8_t rawResponseLength[kCategoryCount]{};
   DtcCategoryStatus storedStatus = DtcCategoryStatus::NotScanned;
   DtcCategoryStatus pendingStatus = DtcCategoryStatus::NotScanned;
   DtcCategoryStatus permanentStatus = DtcCategoryStatus::NotScanned;
@@ -176,6 +188,8 @@ class ObdDiagnostics {
   void startScan(uint32_t now, bool manual);
   void beginRequest(Request request);
   void advanceScan(uint32_t now, DtcCategoryStatus status);
+  // Keep the bytes of one category's answer before any verdict is formed.
+  void captureRawResponse(DtcKind kind, const uint8_t* payload, size_t length);
   void completeScan(uint32_t now);
   void failClear(uint32_t now, DtcClearResult result, const char* error);
   void completeClear(uint32_t now);

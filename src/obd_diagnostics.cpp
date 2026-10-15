@@ -411,6 +411,19 @@ bool ObdDiagnostics::takeResponsePendingEvent() {
   return pending;
 }
 
+void ObdDiagnostics::captureRawResponse(DtcKind kind, const uint8_t* payload,
+                                        size_t length) {
+  const size_t slot = static_cast<uint8_t>(kind);
+  if (slot >= ObdDiagnosticsState::kCategoryCount) return;
+  const size_t keep =
+      length < ObdDiagnosticsState::kRawCaptureBytes
+          ? length
+          : ObdDiagnosticsState::kRawCaptureBytes;
+  state_.rawResponseLength[slot] = static_cast<uint8_t>(keep);
+  if (keep == 0) return;
+  memcpy(state_.rawResponse[slot], payload, keep);
+}
+
 void ObdDiagnostics::startScan(uint32_t now, bool manual) {
   state_.operation = DtcOperation::Scanning;
   state_.manualOperation = manual;
@@ -419,6 +432,10 @@ void ObdDiagnostics::startScan(uint32_t now, bool manual) {
   state_.pendingStatus = DtcCategoryStatus::NotScanned;
   state_.permanentStatus = DtcCategoryStatus::NotScanned;
   state_.truncated = false;
+  // The capture belongs to one scan. Carrying the previous scan's bytes forward
+  // would let the panel show an answer that contradicts the verdict beside it.
+  memset(state_.rawResponse, 0, sizeof(state_.rawResponse));
+  memset(state_.rawResponseLength, 0, sizeof(state_.rawResponseLength));
   state_.lastNegativeService = 0;
   state_.lastNegativeResponseCode = 0;
   state_.responsePending = false;
@@ -762,6 +779,13 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
     return;
   }
 
+  // Record the block's own bytes before forming any verdict about them. The
+  // Malformed check below can only report that the length after the service
+  // echo was odd; the bytes are what decide whether the answer is broken or
+  // merely non-standard, and they are gone from the CAN monitor as soon as the
+  // next category overwrites its entry.
+  captureRawResponse(kindForRequest(request_), payload, length);
+
   size_t dtcBytes = length - 1U;
   if ((dtcBytes & 1U) != 0U) {
     if (!assemblyTruncated) {
@@ -965,6 +989,10 @@ void ObdDiagnostics::completeClear(uint32_t now) {
   // explicit post-clear Mode 03/07/0A scan confirms each category.
   state_.storedStatus = DtcCategoryStatus::NotScanned;
   state_.pendingStatus = DtcCategoryStatus::NotScanned;
+  // Same reason: the verdicts below are about to be re-established by a fresh
+  // scan, so the answers they will replace must not stay on screen.
+  memset(state_.rawResponse, 0, sizeof(state_.rawResponse));
+  memset(state_.rawResponseLength, 0, sizeof(state_.rawResponseLength));
   // Permanent DTCs are intentionally retained: SAE service 04 cannot erase
   // them directly; the ECU removes them only after its own passing criteria.
   state_.milKnown = false;

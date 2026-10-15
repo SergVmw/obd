@@ -263,6 +263,28 @@ void appendMaskPid(JsonArray target, uint8_t first, uint32_t mask,
     ++count;
   }
 }
+
+// The bytes the block actually sent for one category, as hex pairs. Kept
+// because a Malformed verdict only reports an odd length, and the answer itself
+// is not recoverable anywhere else: every category overwrites the same CAN
+// monitor entry. A null value means nothing arrived, which is a different fact
+// from an empty answer.
+void appendRawResponseJson(JsonObject parent, const char* key,
+                           const uint8_t* bytes, uint8_t length) {
+  if (length == 0) {
+    parent[key] = nullptr;
+    return;
+  }
+  char hex[3 * ObdDiagnosticsState::kRawCaptureBytes + 1];
+  size_t out = 0;
+  for (uint8_t i = 0; i < length; ++i) {
+    out += static_cast<size_t>(
+        snprintf(hex + out, sizeof(hex) - out, "%02X", bytes[i]));
+    if (i + 1 < length) hex[out++] = ' ';
+  }
+  hex[out] = '\0';
+  parent[key] = hex;
+}
 }  // namespace
 
 bool ServicePortal::begin() {
@@ -2016,6 +2038,14 @@ void ServicePortal::sendDtcStatus() {
   scan["lastNegativeResponseCode"] = state.lastNegativeResponseCode;
   scan["responsePending"] = state.responsePending;
   scan["responsePendingCount"] = state.responsePendingCount;
+
+  JsonObject raw = scan["rawResponses"].to<JsonObject>();
+  appendRawResponseJson(raw, "stored", state.rawResponse[0],
+                        state.rawResponseLength[0]);
+  appendRawResponseJson(raw, "pending", state.rawResponse[1],
+                        state.rawResponseLength[1]);
+  appendRawResponseJson(raw, "permanent", state.rawResponse[2],
+                        state.rawResponseLength[2]);
 
   uint8_t storedCount = 0;
   uint8_t pendingCount = 0;
