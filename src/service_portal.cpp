@@ -228,6 +228,24 @@ const char* resetReasonName(esp_reset_reason_t reason) {
     default: return "unknown";
   }
 }
+
+// The current-code list and the history list describe the same entry the same
+// way. They carried two copies of this block and had already drifted once:
+// `kind` was written by only one of them, which is exactly the failure this
+// removes. Anything added here now reaches both.
+void appendCodeJson(JsonObject item, const DtcEntry& entry) {
+  char code[6];
+  char description[112];
+  char codeEcu[12];
+  ObdDiagnostics::formatCode(entry.raw, code);
+  ObdDiagnostics::describeCodeRu(entry.raw, description, sizeof(description));
+  snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
+  item["code"] = code;
+  item["raw"] = entry.raw;
+  item["ecuId"] = codeEcu;
+  item["description"] = description;
+  item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
+}
 }  // namespace
 
 bool ServicePortal::begin() {
@@ -1990,19 +2008,8 @@ void ServicePortal::sendDtcStatus() {
     else if (entry.kind == DtcKind::Pending) ++pendingCount;
     else ++permanentCount;
     JsonObject item = codes.add<JsonObject>();
-    char code[6];
-    char description[112];
-    ObdDiagnostics::formatCode(entry.raw, code);
-    ObdDiagnostics::describeCodeRu(entry.raw, description,
-                                   sizeof(description));
-    char codeEcu[12];
-    snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
-    item["code"] = code;
-    item["raw"] = entry.raw;
+    appendCodeJson(item, entry);
     item["kind"] = ObdDiagnostics::kindName(entry.kind);
-    item["ecuId"] = codeEcu;
-    item["description"] = description;
-    item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
   }
   JsonObject counts = doc["counts"].to<JsonObject>();
   counts["stored"] = storedCount;
@@ -2038,18 +2045,7 @@ void ServicePortal::sendDtcStatus() {
       }
     }
     JsonObject item = historyEntries.add<JsonObject>();
-    char code[6];
-    char codeEcu[12];
-    char description[112];
-    ObdDiagnostics::formatCode(entry.raw, code);
-    ObdDiagnostics::describeCodeRu(entry.raw, description,
-                                   sizeof(description));
-    snprintf(codeEcu, sizeof(codeEcu), "0x%03X", entry.ecuResponseId);
-    item["code"] = code;
-    item["raw"] = entry.raw;
-    item["ecuId"] = codeEcu;
-    item["description"] = description;
-    item["misfire"] = ObdDiagnostics::isMisfire(entry.raw);
+    appendCodeJson(item, entry);
     item["currentlyListed"] = currentlyListed;
     item["historicalOnly"] = currentStateKnown && !currentlyListed;
     item["occurrenceCount"] = entry.occurrenceCount;
