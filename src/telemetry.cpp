@@ -374,6 +374,35 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   // the engine burnt it either way.
   const double idleLiters = distance > 0.0 ? 0.0 : rawLiters;
 
+  // Trailing window for the large readout. Fed from the same gated block as
+  // the trip, so it sees exactly the same data and cannot disagree with the
+  // figures below it. Switching fuel restarts it: carrying litres of one fuel
+  // into a window measuring the other would show a rate that was never true.
+  if (!recentFuelModeKnown_ || data_.fuelMode != recentFuelMode_) {
+    recentFuelMode_ = data_.fuelMode;
+    recentFuelModeKnown_ = true;
+    recentLiters_ = 0.0;
+    recentDistanceKm_ = 0.0;
+    recentFedSec_ = 0.0;
+  }
+  const float correction = data_.fuelMode == FuelMode::Lpg
+                               ? config.lpgCorrection
+                               : config.petrolCorrection;
+  // Written as an explicit clamp rather than std::min: the host tests compile
+  // this file without the Arduino headers that happen to pull <algorithm> in.
+  float alphaF = dtSec / kRecentWindowSec;
+  if (alphaF > 1.0f) alphaF = 1.0f;
+  if (alphaF < 0.0f) alphaF = 0.0f;
+  const double alpha = alphaF;
+  recentLiters_ += alpha * (rawLiters * correction - recentLiters_);
+  recentDistanceKm_ += alpha * (distance - recentDistanceKm_);
+  // These carry a per-second rate, not a running total, so the 0.1 km floor
+  // the trip average uses cannot apply here and never would be reached. What
+  // gates the figure instead is having collected a full window: before that,
+  // the first sample would be shown unsmoothed, which is exactly the noise
+  // this exists to hide.
+  recentFedSec_ += dtSec;
+
   trip_->totalDistanceKm += distance;
   if (data_.fuelMode == FuelMode::Lpg) {
     trip_->rawLpgLiters += rawLiters;
@@ -497,6 +526,16 @@ float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
   if (moving <= 0.0) return 0.0f;
   return static_cast<float>(moving * config.petrolCorrection * 100.0 /
                             trip_->petrolDistanceKm);
+}
+
+float TelemetryEngine::recentAverage() const {
+  // Nothing is reported until a whole window has been collected, and while the
+  // vehicle stands both terms decay to zero together, which leaves no rate to
+  // state. "--" is honest in both cases.
+  if (recentFedSec_ < kRecentWindowSec) return 0.0f;
+  if (recentDistanceKm_ <= 0.0) return 0.0f;
+  if (recentLiters_ <= 0.0) return 0.0f;
+  return static_cast<float>(recentLiters_ * 100.0 / recentDistanceKm_);
 }
 
 float TelemetryEngine::idleLiters(const ConfigData& config) const {

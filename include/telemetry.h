@@ -191,6 +191,11 @@ class TelemetryEngine {
   // Average over the whole trip, idle fuel included: what the tank actually
   // paid for this journey.
   float averageForCurrentFuel(const ConfigData& config) const;
+  // Average over a short trailing window, for the large readout. Both terms
+  // are smoothed separately and divided afterwards: smoothing a rate directly
+  // would let a long idle drag the figure far below anything the vehicle
+  // actually did while moving.
+  float recentAverage() const;
   // Average over the propelled part only, idle fuel excluded. Comparable with
   // a manufacturer figure, which is measured while the engine is working.
   float averageWhileMoving(const ConfigData& config) const;
@@ -232,4 +237,16 @@ class TelemetryEngine {
   uint32_t calibrationTimeRemainderMs_ = 0;
   uint32_t droppedStallIntervals_ = 0;
   uint32_t droppedNoSpeedIntervals_ = 0;
+
+  // Trailing-window accumulators for recentAverage(). Expressed as an
+  // exponential average over kRecentWindowSec rather than a ring buffer: the
+  // two doubles carry the same information for a readout the driver glances
+  // at, and a stale sample cannot survive a signal dropout the way a fixed
+  // bucket can.
+  static constexpr float kRecentWindowSec = 60.0f;
+  double recentLiters_ = 0.0;
+  double recentDistanceKm_ = 0.0;
+  double recentFedSec_ = 0.0;
+  FuelMode recentFuelMode_ = FuelMode::Petrol;
+  bool recentFuelModeKnown_ = false;
 };

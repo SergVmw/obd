@@ -774,17 +774,39 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   drawText(value, 120, 25, MC_DATUM, kMuted, FontRole::Small,
            labelFont(config, true));
 
-  if (data.fuelValueValid) {
-    snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
+  // The large readout is the trailing average, not the instantaneous value.
+  // A single sample moves with every MAF fluctuation and every speed reading,
+  // so at a glance it is noise; the momentary figure is still on the unit
+  // line, where it is useful for a lift-off or a hard acceleration without
+  // competing with the number the driver actually reads.
+  const float recent = engine.recentAverage();
+  if (recent > 0.0f) {
+    snprintf(value, sizeof(value), "%.1f", recent);
   } else {
     strlcpy(value, "--.-", sizeof(value));
   }
   drawText(value, 120, 62, MC_DATUM, config.colorText, FontRole::Large,
            FSSB24);
-  drawText(data.consumptionIsPerHour
-               ? translated(config, "Л/Ч", "L/H")
-               : translated(config, "Л/100 КМ", "L/100 KM"),
-           120, 92, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
+
+  // The unit follows the window, not the sample: mixing l/h and l/100 km
+  // between two numbers on the same screen would make them incomparable. The
+  // instantaneous keeps its own unit, so a moment below switchSpeedKph is
+  // still labelled honestly.
+  const bool perHour = data.consumptionIsPerHour;
+  char unit[48];
+  if (data.fuelValueValid) {
+    snprintf(unit, sizeof(unit), "%s %s %.1f",
+             perHour ? translated(config, "Л/Ч", "L/H")
+                     : translated(config, "Л/100 КМ", "L/100 KM"),
+             translated(config, "·", "|"),
+             data.currentConsumption);
+  } else {
+    snprintf(unit, sizeof(unit), "%s %s --",
+             perHour ? translated(config, "Л/Ч", "L/H")
+                     : translated(config, "Л/100 КМ", "L/100 KM"),
+             translated(config, "·", "|"));
+  }
+  drawText(unit, 120, 92, MC_DATUM, kMuted, FontRole::Small, labelFont(config));
 
   // The trip average includes standing fuel, so it is what the tank paid for.
   // The moving average is the part attributable to propulsion, and the only

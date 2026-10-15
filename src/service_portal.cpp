@@ -1073,6 +1073,9 @@ void ServicePortal::sendStatus() {
     petrol["liters"] = engine_.petrolLiters(config);
     petrol["idleLiters"] =
         static_cast<float>(trip.idlePetrolLiters * config.petrolCorrection);
+    // The trailing-window figure the instrument screen shows large, so the two
+    // can be compared without guessing which one is on the display.
+    petrol["recentAverageL100"] = engine_.recentAverage();
     petrol["distanceKm"] = static_cast<float>(trip.petrolDistanceKm);
     petrol["engineSeconds"] = trip.petrolSeconds;
     if (trip.petrolDistanceKm >= 0.1) {

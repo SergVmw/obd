@@ -480,13 +480,14 @@ void testStandingBandSuppressesCorrectionAndDistance() {
 // Drive the engine for `steps` one-second intervals. The integrator refuses
 // gaps longer than two seconds, so a realistic segment has to be stepped.
 void runSegment(Rig& rig, const ConfigData& config, uint32_t from, int steps,
-                float rpm, float mafGps, float rawSpeedKph) {
+                float rpm, float mafGps, float rawSpeedKph,
+                bool lpgActive = false) {
   for (int i = 0; i < steps; ++i) {
     const uint32_t t = from + static_cast<uint32_t>(i) * 1000U;
     rig.data.rpm.set(rpm, t);
     rig.data.mafGps.set(mafGps, t);
     rig.data.rawSpeedKph.set(rawSpeedKph, t);
-    rig.engine.update(t, config, false);
+    rig.engine.update(t, config, lpgActive);
   }
 }
 
@@ -542,6 +543,59 @@ void testPureIdlingYieldsNoAverage() {
   CHECK(near(rig.trip.totalDistanceKm, 0.0));
   CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
   CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
+}
+
+void testRecentAverageSmoothsTheLargeReadout() {
+  // The large number must settle instead of chasing every sample, and it must
+  // be a ratio of smoothed litres to smoothed distance, not a smoothed rate.
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+  // Under one window the figure stays hidden rather than showing the first
+  // unsmoothed sample, which is the noise it exists to remove.
+  runSegment(rig, config, 1000, 30, 2000.0f, 10.0f, 50.0f);
+  CHECK(near(rig.engine.recentAverage(), 0.0));
+  runSegment(rig, config, 32000, 600, 2000.0f, 10.0f, 50.0f);
+  const float steady = rig.engine.recentAverage();
+  CHECK(steady > 0.0f);
+
+  // A sudden rich period must move the figure, but far less than the
+  // instantaneous jumps by, and it must come back.
+  runSegment(rig, config, 1220000, 30, 2000.0f, 40.0f, 50.0f);
+  const float disturbed = rig.engine.recentAverage();
+  CHECK(disturbed > steady);
+  runSegment(rig, config, 1250000, 600, 2000.0f, 10.0f, 50.0f);
+  const float recovered = rig.engine.recentAverage();
+  CHECK(recovered < disturbed);
+  CHECK(near(recovered, steady, steady * 0.15f));
+}
+
+void testRecentAverageRestartsOnFuelChange() {
+  // Litres of one fuel must never be divided by distance of the other.
+  Rig rig;
+  ConfigData config = testConfig();
+  config.lpgEnabled = true;
+  config.petrolCorrection = 1.0f;
+  config.lpgCorrection = 1.0f;
+  runSegment(rig, config, 1000, 600, 2000.0f, 10.0f, 50.0f);
+  const float petrolFigure = rig.engine.recentAverage();
+  CHECK(petrolFigure > 0.0f);
+
+  rig.data.lpgInputActive = true;
+  rig.data.rpm.set(2000.0f, 700000);
+  rig.data.mafGps.set(4.0f, 700000);
+  rig.data.rawSpeedKph.set(50.0f, 700000);
+  rig.engine.update(700000, config, true);
+  // The engine update recomputes the mode from the input, so the window must
+  // now be measuring gas, not petrol.
+  CHECK(rig.data.fuelMode == FuelMode::Lpg);
+
+  // The switch is seen on the next interval the integrator accepts, and the
+  // window then has to refill before it may state a rate again: carrying
+  // petrol litres into a window measuring gas would report a figure that was
+  // never true of either fuel.
+  runSegment(rig, config, 701000, 5, 2000.0f, 4.0f, 50.0f, true);
+  CHECK(near(rig.engine.recentAverage(), 0.0));
 }
 
 void testStaleSpeedDoesNotBankFuelAsStanding() {
@@ -684,6 +738,8 @@ int main() {
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
   test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
   test("pure idling yields no average", testPureIdlingYieldsNoAverage);
+  test("recent average smooths the large readout", testRecentAverageSmoothsTheLargeReadout);
+  test("recent average restarts on fuel change", testRecentAverageRestartsOnFuelChange);
   test("stale speed drops the interval instead of banking idle fuel",
        testStaleSpeedDoesNotBankFuelAsStanding);
   test("long loop stall is counted, not integrated", testLongLoopStallIsCountedNotIntegrated);
