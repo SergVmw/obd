@@ -230,6 +230,14 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
   } else {
     data_.fuelMode = data_.lpgInputActive ? FuelMode::Lpg : FuelMode::Petrol;
   }
+  // Remembered only while the engine names a fuel, so it is the last one it
+  // actually ran on and never a default. With the engine off the trip's figures
+  // belong to it; remembering is what lets them be reported at all instead of
+  // going blank the moment the RPM reading goes stale, which at this vehicle's
+  // timeout rate is as likely on the move as at a standstill.
+  if (data_.fuelMode == FuelMode::Lpg || data_.fuelMode == FuelMode::Petrol) {
+    data_.lastRunningFuel = data_.fuelMode;
+  }
 
   // Keep the derived airflow live in service mode too. refreshLiveTelemetry()
   // deliberately does not integrate fuel/distance into trip counters.
@@ -504,27 +512,24 @@ float TelemetryEngine::petrolCalibrationLiters(
 
 float TelemetryEngine::averageForCurrentFuel(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  if (data_.fuelMode == FuelMode::Lpg) {
-    if (trip_->lpgDistanceKm < 0.1) return 0.0f;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel == FuelMode::Lpg) {
+    if (trip_->lpgDistanceKm < kMinAverageDistanceKm) return 0.0f;
     return static_cast<float>(trip_->rawLpgLiters * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
-  // Named explicitly rather than left as the fall-through. fuelMode has five
-  // values and only three of them ever occur: Unknown once the RPM reading
-  // went stale, Off below 200 rpm, and Lpg or Petrol while the engine runs.
-  // Every other value used to read the petrol leg here, so shutting the engine
-  // down replaced the live average with a figure from whatever short petrol
-  // distance the trip had collected — on this vehicle 50 L/100km over 204 m.
-  if (data_.fuelMode != FuelMode::Petrol) return 0.0f;
-  if (trip_->petrolDistanceKm < 0.1) return 0.0f;
+  if (fuel != FuelMode::Petrol) return 0.0f;
+  if (trip_->petrolDistanceKm < kMinAverageDistanceKm) return 0.0f;
   return static_cast<float>(trip_->rawPetrolLiters * config.petrolCorrection *
                             100.0 / trip_->petrolDistanceKm);
 }
 
 bool TelemetryEngine::averageAvailable() const {
   if (!trip_) return false;
-  if (data_.fuelMode == FuelMode::Lpg) return trip_->lpgDistanceKm >= 0.1;
-  if (data_.fuelMode == FuelMode::Petrol) return trip_->petrolDistanceKm >= 0.1;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel == FuelMode::Lpg) return trip_->lpgDistanceKm >= kMinAverageDistanceKm;
+  if (fuel == FuelMode::Petrol)
+    return trip_->petrolDistanceKm >= kMinAverageDistanceKm;
   return false;
 }
 
@@ -533,16 +538,17 @@ float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
   // Idle fuel covers no distance, so it stays in the numerator of the trip
   // average and leaves this one. Dividing by the same distance keeps the two
   // figures directly comparable.
-  if (data_.fuelMode == FuelMode::Lpg) {
-    if (trip_->lpgDistanceKm < 0.1) return 0.0f;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel == FuelMode::Lpg) {
+    if (trip_->lpgDistanceKm < kMinAverageDistanceKm) return 0.0f;
     const double moving =
         trip_->rawLpgLiters - trip_->idleLpgLiters;
     if (moving <= 0.0) return 0.0f;
     return static_cast<float>(moving * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
-  if (data_.fuelMode != FuelMode::Petrol) return 0.0f;
-  if (trip_->petrolDistanceKm < 0.1) return 0.0f;
+  if (fuel != FuelMode::Petrol) return 0.0f;
+  if (trip_->petrolDistanceKm < kMinAverageDistanceKm) return 0.0f;
   const double moving = trip_->rawPetrolLiters - trip_->idlePetrolLiters;
   if (moving <= 0.0) return 0.0f;
   return static_cast<float>(moving * config.petrolCorrection * 100.0 /
@@ -561,21 +567,24 @@ float TelemetryEngine::recentAverage() const {
 
 float TelemetryEngine::idleLiters(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  const bool lpg = data_.fuelMode == FuelMode::Lpg;
-  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
-  const double idle = lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
+  const double idle =
+      fuel == FuelMode::Lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
   const float correction =
-      lpg ? config.lpgCorrection : config.petrolCorrection;
+      fuel == FuelMode::Lpg ? config.lpgCorrection : config.petrolCorrection;
   return static_cast<float>(idle * correction);
 }
 
 float TelemetryEngine::idleShareOfTrip() const {
   if (!trip_) return 0.0f;
-  const bool lpg = data_.fuelMode == FuelMode::Lpg;
-  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
-  const double total = lpg ? trip_->rawLpgLiters : trip_->rawPetrolLiters;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
+  const double total =
+      fuel == FuelMode::Lpg ? trip_->rawLpgLiters : trip_->rawPetrolLiters;
   if (total <= 1e-9) return 0.0f;
-  const double idle = lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
+  const double idle =
+      fuel == FuelMode::Lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
   return static_cast<float>(idle / total * 100.0);
 }
 
@@ -586,9 +595,10 @@ float TelemetryEngine::idleLitersPerHour(const ConfigData& config) const {
   // vehicle never sat at: two hours of driving with a ten-minute queue would
   // come out as a twelfth of the true standing rate. This is now the cost of
   // standing, which is what a queue actually costs.
-  const bool lpg = data_.fuelMode == FuelMode::Lpg;
-  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
-  const uint32_t standing = lpg ? trip_->lpgIdleSeconds : trip_->petrolIdleSeconds;
+  const FuelMode fuel = reportedFuelMode();
+  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
+  const uint32_t standing =
+      fuel == FuelMode::Lpg ? trip_->lpgIdleSeconds : trip_->petrolIdleSeconds;
   if (standing == 0) return 0.0f;
   return idleLiters(config) / (static_cast<float>(standing) / 3600.0f);
 }

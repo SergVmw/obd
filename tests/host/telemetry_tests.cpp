@@ -520,12 +520,14 @@ void testIdleFuelIsSplitFromMovingFuel() {
   CHECK(rig.engine.idleLitersPerHour(config) > 0.0f);
 }
 
-// With the engine shut down the trip still holds whatever petrol distance it
-// collected, and the average used to be read from that leg. On this vehicle
-// that is 0.102 L over 204 m — 50 L/100km — shown at the moment the driver
-// turned the key, replacing a normal gas figure with an absurd petrol one.
-// Unknown and Off name no fuel, so they must state no average at all.
-void testNoFuelModeNamesNoAverage() {
+// A cold start that covers a short petrol leg before the engine is shut down
+// must not read out as an average. On this vehicle that leg was 204 m and
+// 0.102 L, which is 50.11 L/100km, and it arrived exactly when the driver turned
+// the key. The old 0.1 km floor admitted it: 204 m is twice that.
+//
+// The remembered-fuel path is what makes this reachable rather than fixed by
+// showing a dash, so this asserts the floor, not just the absence of a figure.
+void testShortPetrolLegIsNotAnAverageAfterStalling() {
   Rig rig;
   ConfigData config = testConfig();
   config.petrolCorrection = 1.0f;
@@ -538,11 +540,61 @@ void testNoFuelModeNamesNoAverage() {
     rig.data.fuelRateLph.set(18.0f, now);
     rig.engine.update(now, config, false);
   }
-  CHECK(rig.data.fuelMode == FuelMode::Petrol);
+  // The shape of the trip the vehicle reported: well under a kilometre.
   CHECK(rig.trip.petrolDistanceKm > 0.1);
-  // The absurd figure is reachable, or the assertions below prove nothing.
-  CHECK(rig.engine.averageForCurrentFuel(config) > 20.0f);
+  CHECK(rig.trip.petrolDistanceKm < kMinAverageDistanceKm);
+  // The number it would have shown is large, which is the whole point.
+  CHECK(rig.trip.rawPetrolLiters / rig.trip.petrolDistanceKm * 100.0f > 20.0f);
+
+  // Engine off: the RPM reading goes stale and fuelMode stops naming a fuel.
+  now += 3000;
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Unknown);
+  // The remembered fuel is petrol, so without a floor this reads out that number.
+  CHECK(rig.data.lastRunningFuel == FuelMode::Petrol);
+  CHECK(rig.engine.reportedFuelMode() == FuelMode::Petrol);
+  CHECK(!rig.engine.averageAvailable());
+  CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
+  CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
+  // Trip accounting untouched by all of this.
+  CHECK(rig.trip.petrolDistanceKm > 0.1);
+}
+
+// A leg long enough to be an average is reported even with the engine stopped,
+// which is the point of remembering the fuel rather than blanking the cell.
+void testStalledEngineStillReportsARememberedFuelAverage() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+  runSegment(rig, config, 400000, 600, 2000.0f, 10.0f, 60.0f);
+  CHECK(rig.data.fuelMode == FuelMode::Petrol);
+  CHECK(rig.trip.petrolDistanceKm >= kMinAverageDistanceKm);
+  const float running = rig.engine.averageForCurrentFuel(config);
+  CHECK(running > 0.0f);
+
+  uint32_t now = hostMillis;
+  now += 3000;
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Unknown);
   CHECK(rig.engine.averageAvailable());
+  CHECK(near(rig.engine.averageForCurrentFuel(config), running));
+}
+
+// With the RPM reading gone and no fuel ever having run, there is nothing to
+// remember and nothing to report. Off names no fuel either, and must not fall
+// through to the petrol leg the way it used to.
+void testNoFuelModeNamesNoAverage() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+
+  uint32_t now = 2000;
+  now += 1000;
+  rig.data.rpm.set(2000.0f, now);
+  rig.data.rawSpeedKph.set(36.0f, now);
+  rig.data.fuelRateLph.set(18.0f, now);
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Petrol);
 
   // Engine shut down: the RPM reading goes stale. The trip keeps its distance.
   now += 3000;
@@ -554,29 +606,7 @@ void testNoFuelModeNamesNoAverage() {
   CHECK(near(rig.engine.idleLiters(config), 0.0));
   CHECK(near(rig.engine.idleShareOfTrip(), 0.0));
   CHECK(near(rig.engine.idleLitersPerHour(config), 0.0));
-  // Reporting only: the trip itself must be exactly what it was.
-  CHECK(rig.trip.petrolDistanceKm > 0.1);
   CHECK(rig.trip.rawPetrolLiters > 0.0);
-
-  // RPM present but below 200: Off, which names no fuel either.
-  rig.data.rpm.set(0.0f, now);
-  now += 1000;
-  rig.engine.update(now, config, false);
-  CHECK(rig.data.fuelMode == FuelMode::Off);
-  CHECK(!rig.engine.averageAvailable());
-  CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
-  CHECK(near(rig.engine.idleShareOfTrip(), 0.0));
-
-  // And the average comes back unchanged once the engine runs on petrol again,
-  // so the fix did not reset anything on the way through.
-  rig.data.rpm.set(2000.0f, now);
-  rig.data.rawSpeedKph.set(36.0f, now);
-  rig.data.fuelRateLph.set(18.0f, now);
-  now += 1000;
-  rig.engine.update(now, config, false);
-  CHECK(rig.data.fuelMode == FuelMode::Petrol);
-  CHECK(rig.engine.averageAvailable());
-  CHECK(rig.engine.averageForCurrentFuel(config) > 20.0f);
 }
 
 void testIdleShareIsZeroWithoutStanding() {
@@ -837,6 +867,10 @@ int main() {
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
   test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
   test("no fuel mode means no average", testNoFuelModeNamesNoAverage);
+  test("a short petrol leg is not an average after stalling",
+       testShortPetrolLegIsNotAnAverageAfterStalling);
+  test("a stalled engine still reports a remembered fuel average",
+       testStalledEngineStillReportsARememberedFuelAverage);
   test("pure idling yields no average", testPureIdlingYieldsNoAverage);
   test("standing cost is per hour of standing, not of the trip",
        testStandingCostIsPerHourOfStandingNotOfTheTrip);

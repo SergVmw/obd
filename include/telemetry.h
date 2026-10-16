@@ -36,6 +36,16 @@ struct TimedFloat {
 // whenever speedCorrectionKph was non-zero.
 constexpr float kParkedRawSpeedKph = 4.0f;
 
+// Shortest run of distance on a fuel before its litres-over-distance is treated
+// as an average at all. It used to be 0.1 km, written out at six sites, and that
+// was low enough to let the defect through: a cold start that covered 204 m of
+// petrol before the engine was shut down passed the gate and read out as
+// 50 L/100km. One kilometre is not a high bar for a mean either — it is the
+// point below which the figure is mostly warm-up standing time. Named here
+// because the number is the decision, and six copies of a decision is how the
+// six copies came to disagree.
+constexpr double kMinAverageDistanceKm = 1.0;
+
 struct TelemetryData {
   TimedFloat rpm;
   TimedFloat rawSpeedKph;       // OBD PID 0D, unchanged
@@ -108,6 +118,12 @@ struct TelemetryData {
   bool fuelTrimWarning = false;
   bool lpgInputActive = false;
   FuelMode fuelMode = FuelMode::Unknown;
+  // The fuel the engine was actually last running on. With the engine off or the
+  // RPM reading gone, fuelMode names nothing, and the trip's figures belong to
+  // this one — not to a default. It lives here rather than in TripState because
+  // TripState is persisted at a fixed 88 bytes behind a static_assert, and a
+  // field there would either break the build or, once "fixed", clear the trip.
+  FuelMode lastRunningFuel = FuelMode::Off;
 
   bool obdConnected(uint32_t now) const {
     return lastObdResponseAt != 0 && (now - lastObdResponseAt) < 2000;
@@ -214,6 +230,15 @@ class TelemetryEngine {
   // screen asks this instead of deciding for itself, because deciding for
   // itself is what made it show a petrol figure with the engine shut down.
   bool averageAvailable() const;
+  // The fuel the reported figures belong to: the live one when the engine names
+  // it, otherwise the last one it ran on. One predicate for all five readers,
+  // because five readers each deciding for themselves is the shape the defect
+  // grew from.
+  FuelMode reportedFuelMode() const {
+    return data_.fuelMode == FuelMode::Lpg || data_.fuelMode == FuelMode::Petrol
+               ? data_.fuelMode
+               : data_.lastRunningFuel;
+  }
   // Average over a short trailing window, for the large readout. Both terms
   // are smoothed separately and divided afterwards: smoothing a rate directly
   // would let a long idle drag the figure far below anything the vehicle
