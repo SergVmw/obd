@@ -225,15 +225,17 @@ void testPolledPidMaskFollowsThePollProfile() {
   CHECK(pollsPid(group00, 0x01, 0x07));   // long-term fuel trim
   // Speed-Density never asks for the two fuel-flow inputs.
   CHECK(!pollsPid(group00, 0x01, 0x10));  // MAF
-  // Supported by most engines and never requested at all.
-  CHECK(!pollsPid(group00, 0x01, 0x03));  // calculated engine load
+  // Supported by most engines and never requested at all. 0x03 is the fuel
+  // system status bitfield, not an engine load reading.
+  CHECK(!pollsPid(group00, 0x01, 0x03));  // fuel system status
   CHECK(!pollsPid(group00, 0x01, 0x08));  // intake manifold pressure
+  CHECK(pollsPid(group00, 0x01, 0x04));   // calculated engine load
 
   CHECK(pollsPid(ObdClient::polledPidMask(1, config), 0x21, 0x33));  // BARO
 
   const uint32_t group40 = ObdClient::polledPidMask(2, config);
   CHECK(pollsPid(group40, 0x41, 0x42));   // control module voltage
-  CHECK(pollsPid(group40, 0x41, 0x44));   // commanded equivalence ratio
+  CHECK(!pollsPid(group40, 0x41, 0x44));  // commanded equivalence ratio
   CHECK(!pollsPid(group40, 0x41, 0x5E));  // fuel rate, SD only
 
   // MAF-based mode puts the two fuel-flow inputs back and takes IAT away.

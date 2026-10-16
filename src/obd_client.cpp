@@ -667,6 +667,13 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       telemetry_.longFuelTrimPercent.set(
           (static_cast<float>(a) - 128.0f) * (100.0f / 128.0f), now);
       break;
+    case 0x04:
+      // J1979: one byte, percent, A / 2.55. The block's own estimate of how
+      // hard it is working, derived from MAP and speed on a vehicle with no
+      // mass air flow sensor, which makes it the reference our Speed-Density
+      // airflow is checked against rather than a fill-to-fill guess.
+      telemetry_.engineLoadPct.set(static_cast<float>(a) * (100.0f / 255.0f), now);
+      break;
     case 0x0B:
       telemetry_.mapKpa.set(static_cast<float>(a), now);
       if (mapPidRequestPending()) {

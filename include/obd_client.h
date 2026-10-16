@@ -270,7 +270,14 @@ class ObdClient {
       {0x10, 200},   // MAF, skipped in Speed-Density mode
       {0x11, 200},   // absolute throttle position, DFCO only
       {0x5E, 200},   // fuel rate, skipped in Speed-Density mode
-      {0x44, 250},   // commanded equivalence ratio
+      // 0x44 commanded equivalence ratio used to sit here. It is absent from
+      // this vehicle's support mask, so it never reached the bus anyway, and
+      // the only thing it fed was phi in the fuel model. For a VE calibration
+      // the theoretical air mass is the honest input: phi carries whatever
+      // enrichment the block decided to add, which is not the quantity being
+      // calibrated. 0x33 barometric pressure stays for now, pending an answer
+      // from outside the firmware.
+      {0x04, 1000},  // calculated engine load, the ECU's own air estimate
       {0x06, 500},   // short-term fuel trim bank 1, LPG + trims only
       {0x07, 500},   // long-term fuel trim bank 1, LPG + trims only
       {0x42, 1000},  // ECU voltage

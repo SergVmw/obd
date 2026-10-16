@@ -946,6 +946,16 @@ void ServicePortal::sendStatus() {
     doc["boostBar"] = nullptr;
     doc["filteredBoostBar"] = nullptr;
   }
+  // The block's own load estimate, next to our airflow. Comparing the two
+  // against each other across speeds and loads is what a VE constant can be
+  // checked against without a fill-to-fill measurement.
+  if (telemetry_.engineLoadPct.valid(now)) {
+    doc["engineLoadPct"] = telemetry_.engineLoadPct.value;
+    doc["engineLoadAgeMs"] = now - telemetry_.engineLoadPct.updatedAt;
+  } else {
+    doc["engineLoadPct"] = nullptr;
+    doc["engineLoadAgeMs"] = nullptr;
+  }
   if (telemetry_.baroKpa.valid(now, 15000)) {
     doc["baroKpa"] = telemetry_.baroKpa.value;
     doc["baroAgeMs"] = now - telemetry_.baroKpa.updatedAt;

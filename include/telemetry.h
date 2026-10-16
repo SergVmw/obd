@@ -41,6 +41,7 @@ struct TelemetryData {
   TimedFloat rawSpeedKph;       // OBD PID 0D, unchanged
   TimedFloat speedKph;          // raw + ConfigData::speedCorrectionKph
   TimedFloat mapKpa;
+  TimedFloat engineLoadPct;     // OBD PID 04, the block's own air estimate
   TimedFloat baroKpa;
   TimedFloat intakeAirC;
   TimedFloat mafGps;
