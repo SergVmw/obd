@@ -64,6 +64,8 @@ jobs:
           npx playwright install --with-deps chromium
           NODE_PATH="$PWD/node_modules" node tests/web/brightness_ui.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/pidsupport_ui.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/config_roundtrip.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/config_first_load.cjs
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8

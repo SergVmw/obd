@@ -21,20 +21,36 @@ WORKFLOW = ROOT / ".github" / "workflows" / "platformio.yml"
 EXEMPT = {}
 
 workflow = WORKFLOW.read_text(encoding="utf-8")
-wired = set(re.findall(r"tools/(test_[A-Za-z0-9_]+\.py|check_[A-Za-z0-9_]+\.py)",
-                       workflow))
 
-on_disk = {p.name for p in (ROOT / "tools").iterdir()
-           if p.is_file() and re.fullmatch(r"(test|check)_[A-Za-z0-9_]+\.py", p.name)}
+# Python gates and browser contract tests are both listed by name in the
+# workflow, and both lists are maintained by hand. The browser ones were
+# missing twice: the settings round-trip was never checked automatically even
+# though a page that posts the wrong body is invisible until somebody loses a
+# setting.
+wired_tools = set(re.findall(
+    r"tools/(test_[A-Za-z0-9_]+\.py|check_[A-Za-z0-9_]+\.py)", workflow))
+wired_web = set(re.findall(r"tests/web/([A-Za-z0-9_]+\.cjs)", workflow))
 
-missing = sorted(on_disk - wired - set(EXEMPT))
-stale = sorted(wired - on_disk)
+on_disk_tools = {p.name for p in (ROOT / "tools").iterdir()
+                 if p.is_file()
+                 and re.fullmatch(r"(test|check)_[A-Za-z0-9_]+\.py", p.name)}
+on_disk_web = {p.name for p in (ROOT / "tests" / "web").iterdir()
+               if p.is_file() and p.name.endswith(".cjs")}
 
-if missing or stale:
-    for name in missing:
-        print("  not wired into CI: tools/%s" % name)
-    for name in stale:
-        print("  wired into CI but absent from tools/: tools/%s" % name)
-    sys.exit("%d tool(s) out of sync with the workflow" % (len(missing) + len(stale)))
+problems = []
+for name in sorted(on_disk_tools - wired_tools - set(EXEMPT)):
+    problems.append("  not wired into CI: tools/%s" % name)
+for name in sorted(on_disk_web - wired_web - set(EXEMPT)):
+    problems.append("  not wired into CI: tests/web/%s" % name)
+for name in sorted(wired_tools - on_disk_tools):
+    problems.append("  wired into CI but absent from tools/: tools/%s" % name)
+for name in sorted(wired_web - on_disk_web):
+    problems.append("  wired into CI but absent from tests/web/: %s" % name)
 
-print("CI coverage: all %d gates in tools/ are wired into platformio.yml" % len(on_disk))
+if problems:
+    for line in problems:
+        print(line)
+    sys.exit("%d item(s) out of sync with the workflow" % len(problems))
+
+print("CI coverage: all %d gates in tools/ and %d browser tests are wired into "
+      "platformio.yml" % (len(on_disk_tools), len(on_disk_web)))

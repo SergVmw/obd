@@ -256,7 +256,7 @@
  </div>
 </div>
 </section>
-<div class="save"><span id="msg">Конфигурация загружена</span><button class="btn primary" id="save">Сохранить настройки</button></div>
+<div class="save"><span id="msg">Конфигурация загружена</span><button class="btn primary" id="save" disabled>Сохранить настройки</button></div>
 </main>
 <script>
 const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).value, c=id=>$(id).checked;
@@ -392,7 +392,7 @@ function drawGaugePreview(){
  x.textAlign='center';x.fillStyle='#7f938c';x.font='12px "H2 Golos",system-ui';x.fillText('13.9 V',120,40);x.fillStyle=text;x.font='700 39px "H2 Golos",system-ui';x.fillText(centerText,120,116);x.fillStyle='#7f938c';x.font='700 11px "H2 Golos",system-ui';x.fillText(centerUnit,120,135);x.fillStyle=text;x.font='700 18px "H2 Golos",system-ui';x.fillText('9.6',68,174);x.fillText(gas?'8.4':'8.1',172,174);x.fillStyle='#7f938c';x.font='9px "H2 Golos",system-ui';x.fillText(ru?'ТЕКУЩИЙ':'CURRENT',68,191);x.fillText(ru?'СРЕДНИЙ':'AVERAGE',172,191);
  const fc=gas?boost:amber;x.fillStyle='#101c1a';x.strokeStyle=fc;x.lineWidth=1;x.beginPath();if(x.roundRect)x.roundRect(73,202,39,18,8);else x.rect(73,202,39,18);x.fill();x.stroke();x.fillStyle=fc;x.font='700 9px "H2 Golos",system-ui';x.fillText(gas?'LPG':'95',92,215);x.fillStyle=boost;x.beginPath();x.arc(131,211,3,0,Math.PI*2);x.fill();x.textAlign='left';x.fillStyle='#7f938c';x.font='10px "H2 Golos",system-ui';x.fillText('OBD',139,215);x.restore();$('previewBoostOut').textContent=(value>=0?'+':'')+value.toFixed(2)+' bar'
 }
-async function load(){try{const saved=await api('/api/config');apply(saved);$('msg').textContent='Сохранённая конфигурация ESP32 загружена'}catch(e){$('msg').textContent='Нет ответа ESP32 — показаны заводские настройки: '+e.message}}
+async function load(){try{const saved=await api('/api/config');apply(saved);$('save').disabled=false;$('msg').textContent='Сохранённая конфигурация ESP32 загружена'}catch(e){$('msg').textContent='Нет ответа ESP32 — показаны заводские настройки: '+e.message}}
 $('save').onclick=async()=>{const lightError=brightnessFormError();if(lightError){$('msg').textContent=lightError;return}const q=config(),b=q.boost;if(!Number.isFinite(b.boostMinBar)||!Number.isFinite(b.boostMaxBar)||!Number.isFinite(b.boostWarningBar)||!Number.isFinite(b.boostDangerBar)||!(b.boostMinBar<0&&b.boostWarningBar>0&&b.boostWarningBar<b.boostDangerBar&&b.boostDangerBar<=b.boostMaxBar)){$('msg').textContent='Ошибка: требуется min < 0 < предупреждение < опасность ≤ max';return}try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(q)});$('msg').textContent='Сохранено. День / Ночь применяются по режиму; временная яркость остаётся отдельной до перезагрузки. Оформление — после выхода из сервиса.';await status()}catch(e){$('msg').textContent='Ошибка: '+e.message}};
 $('captureBaro').onclick=()=>api('/api/baro/capture',{method:'POST'}).then(()=>$('msg').textContent='Текущее MAP принято').catch(e=>$('msg').textContent=e.message);
 $('resetTrip').onclick=()=>confirm('Сбросить обычную поездку? Отдельный бензиновый интервал калибровки сохранится.')&&api('/api/trip/reset',{method:'POST'}).then(()=>$('msg').textContent='Поездка сброшена; калибровочный интервал не изменён');
