@@ -509,9 +509,23 @@ float TelemetryEngine::averageForCurrentFuel(const ConfigData& config) const {
     return static_cast<float>(trip_->rawLpgLiters * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
+  // Named explicitly rather than left as the fall-through. fuelMode has five
+  // values and only three of them ever occur: Unknown once the RPM reading
+  // went stale, Off below 200 rpm, and Lpg or Petrol while the engine runs.
+  // Every other value used to read the petrol leg here, so shutting the engine
+  // down replaced the live average with a figure from whatever short petrol
+  // distance the trip had collected — on this vehicle 50 L/100km over 204 m.
+  if (data_.fuelMode != FuelMode::Petrol) return 0.0f;
   if (trip_->petrolDistanceKm < 0.1) return 0.0f;
   return static_cast<float>(trip_->rawPetrolLiters * config.petrolCorrection *
                             100.0 / trip_->petrolDistanceKm);
+}
+
+bool TelemetryEngine::averageAvailable() const {
+  if (!trip_) return false;
+  if (data_.fuelMode == FuelMode::Lpg) return trip_->lpgDistanceKm >= 0.1;
+  if (data_.fuelMode == FuelMode::Petrol) return trip_->petrolDistanceKm >= 0.1;
+  return false;
 }
 
 float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
@@ -527,6 +541,7 @@ float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
     return static_cast<float>(moving * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
+  if (data_.fuelMode != FuelMode::Petrol) return 0.0f;
   if (trip_->petrolDistanceKm < 0.1) return 0.0f;
   const double moving = trip_->rawPetrolLiters - trip_->idlePetrolLiters;
   if (moving <= 0.0) return 0.0f;
@@ -546,22 +561,21 @@ float TelemetryEngine::recentAverage() const {
 
 float TelemetryEngine::idleLiters(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  const double idle = data_.fuelMode == FuelMode::Lpg
-                          ? trip_->idleLpgLiters
-                          : trip_->idlePetrolLiters;
-  const float correction = data_.fuelMode == FuelMode::Lpg
-                               ? config.lpgCorrection
-                               : config.petrolCorrection;
+  const bool lpg = data_.fuelMode == FuelMode::Lpg;
+  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
+  const double idle = lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
+  const float correction =
+      lpg ? config.lpgCorrection : config.petrolCorrection;
   return static_cast<float>(idle * correction);
 }
 
 float TelemetryEngine::idleShareOfTrip() const {
   if (!trip_) return 0.0f;
-  const double total = data_.fuelMode == FuelMode::Lpg ? trip_->rawLpgLiters
-                                                       : trip_->rawPetrolLiters;
+  const bool lpg = data_.fuelMode == FuelMode::Lpg;
+  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
+  const double total = lpg ? trip_->rawLpgLiters : trip_->rawPetrolLiters;
   if (total <= 1e-9) return 0.0f;
-  const double idle = data_.fuelMode == FuelMode::Lpg ? trip_->idleLpgLiters
-                                                       : trip_->idlePetrolLiters;
+  const double idle = lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
   return static_cast<float>(idle / total * 100.0);
 }
 
@@ -572,9 +586,9 @@ float TelemetryEngine::idleLitersPerHour(const ConfigData& config) const {
   // vehicle never sat at: two hours of driving with a ten-minute queue would
   // come out as a twelfth of the true standing rate. This is now the cost of
   // standing, which is what a queue actually costs.
-  const uint32_t standing = data_.fuelMode == FuelMode::Lpg
-                                ? trip_->lpgIdleSeconds
-                                : trip_->petrolIdleSeconds;
+  const bool lpg = data_.fuelMode == FuelMode::Lpg;
+  if (!lpg && data_.fuelMode != FuelMode::Petrol) return 0.0f;
+  const uint32_t standing = lpg ? trip_->lpgIdleSeconds : trip_->petrolIdleSeconds;
   if (standing == 0) return 0.0f;
   return idleLiters(config) / (static_cast<float>(standing) / 3600.0f);
 }

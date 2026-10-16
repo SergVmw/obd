@@ -520,6 +520,65 @@ void testIdleFuelIsSplitFromMovingFuel() {
   CHECK(rig.engine.idleLitersPerHour(config) > 0.0f);
 }
 
+// With the engine shut down the trip still holds whatever petrol distance it
+// collected, and the average used to be read from that leg. On this vehicle
+// that is 0.102 L over 204 m — 50 L/100km — shown at the moment the driver
+// turned the key, replacing a normal gas figure with an absurd petrol one.
+// Unknown and Off name no fuel, so they must state no average at all.
+void testNoFuelModeNamesNoAverage() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.petrolCorrection = 1.0f;
+
+  uint32_t now = 2000;
+  for (int i = 0; i < 20; ++i) {
+    now += 1000;
+    rig.data.rpm.set(2000.0f, now);
+    rig.data.rawSpeedKph.set(36.0f, now);
+    rig.data.fuelRateLph.set(18.0f, now);
+    rig.engine.update(now, config, false);
+  }
+  CHECK(rig.data.fuelMode == FuelMode::Petrol);
+  CHECK(rig.trip.petrolDistanceKm > 0.1);
+  // The absurd figure is reachable, or the assertions below prove nothing.
+  CHECK(rig.engine.averageForCurrentFuel(config) > 20.0f);
+  CHECK(rig.engine.averageAvailable());
+
+  // Engine shut down: the RPM reading goes stale. The trip keeps its distance.
+  now += 3000;
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Unknown);
+  CHECK(!rig.engine.averageAvailable());
+  CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
+  CHECK(near(rig.engine.averageWhileMoving(config), 0.0));
+  CHECK(near(rig.engine.idleLiters(config), 0.0));
+  CHECK(near(rig.engine.idleShareOfTrip(), 0.0));
+  CHECK(near(rig.engine.idleLitersPerHour(config), 0.0));
+  // Reporting only: the trip itself must be exactly what it was.
+  CHECK(rig.trip.petrolDistanceKm > 0.1);
+  CHECK(rig.trip.rawPetrolLiters > 0.0);
+
+  // RPM present but below 200: Off, which names no fuel either.
+  rig.data.rpm.set(0.0f, now);
+  now += 1000;
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Off);
+  CHECK(!rig.engine.averageAvailable());
+  CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
+  CHECK(near(rig.engine.idleShareOfTrip(), 0.0));
+
+  // And the average comes back unchanged once the engine runs on petrol again,
+  // so the fix did not reset anything on the way through.
+  rig.data.rpm.set(2000.0f, now);
+  rig.data.rawSpeedKph.set(36.0f, now);
+  rig.data.fuelRateLph.set(18.0f, now);
+  now += 1000;
+  rig.engine.update(now, config, false);
+  CHECK(rig.data.fuelMode == FuelMode::Petrol);
+  CHECK(rig.engine.averageAvailable());
+  CHECK(rig.engine.averageForCurrentFuel(config) > 20.0f);
+}
+
 void testIdleShareIsZeroWithoutStanding() {
   Rig rig;
   ConfigData config = testConfig();
@@ -777,6 +836,7 @@ int main() {
        testStandingBandSuppressesCorrectionAndDistance);
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);
   test("idle share is zero without standing", testIdleShareIsZeroWithoutStanding);
+  test("no fuel mode means no average", testNoFuelModeNamesNoAverage);
   test("pure idling yields no average", testPureIdlingYieldsNoAverage);
   test("standing cost is per hour of standing, not of the trip",
        testStandingCostIsPerHourOfStandingNotOfTheTrip);

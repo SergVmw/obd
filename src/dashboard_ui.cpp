@@ -624,9 +624,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
                        : translated(config, "Л/100", "L/100");
       break;
     case MainCenterValue::AverageConsumption: {
-      const bool lpg = data.fuelMode == FuelMode::Lpg;
-      centerValid = lpg ? engine.trip().lpgDistanceKm >= 0.1
-                        : engine.trip().petrolDistanceKm >= 0.1;
+      centerValid = engine.averageAvailable();
       if (centerValid) {
         snprintf(buffer, sizeof(buffer), "%.1f",
                  engine.averageForCurrentFuel(config));
@@ -656,8 +654,15 @@ void DashboardUi::drawMain(const TelemetryData& data,
   } else {
     strlcpy(current, "--.-", sizeof(current));
   }
-  snprintf(average, sizeof(average), "%.1f",
-           engine.averageForCurrentFuel(config));
+  // The average cell had no guard at all: with the engine shut down it printed
+  // whatever the petrol leg held, formatted as a normal figure. Asked the
+  // engine instead, so it and the two cells below cannot disagree.
+  if (engine.averageAvailable()) {
+    snprintf(average, sizeof(average), "%.1f",
+             engine.averageForCurrentFuel(config));
+  } else {
+    strlcpy(average, "--.-", sizeof(average));
+  }
   drawValueCell(68, 169, current,
                 data.consumptionIsPerHour
                     ? translated(config, "Л/Ч", "L/H")
@@ -815,8 +820,7 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   // The three cells sit on an 80 px pitch, so every label has to stay under
   // 78 px in the 13 px face: "В ДВИЖЕНИИ" measures 81 and would have collided
   // with its neighbours, hence the shorter wording.
-  const bool haveAverage = lpg ? engine.trip().lpgDistanceKm >= 0.1
-                                : engine.trip().petrolDistanceKm >= 0.1;
+  const bool haveAverage = engine.averageAvailable();
   if (haveAverage) {
     snprintf(value, sizeof(value), "%.1f", engine.averageForCurrentFuel(config));
   } else {

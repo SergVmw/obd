@@ -209,6 +209,11 @@ class TelemetryEngine {
   // Average over the whole trip, idle fuel included: what the tank actually
   // paid for this journey.
   float averageForCurrentFuel(const ConfigData& config) const;
+  // Whether a current-fuel average can be stated at all: a named fuel, plus
+  // enough distance on it for litres-over-distance to mean something. The
+  // screen asks this instead of deciding for itself, because deciding for
+  // itself is what made it show a petrol figure with the engine shut down.
+  bool averageAvailable() const;
   // Average over a short trailing window, for the large readout. Both terms
   // are smoothed separately and divided afterwards: smoothing a rate directly
   // would let a long idle drag the figure far below anything the vehicle
