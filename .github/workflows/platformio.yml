@@ -44,6 +44,7 @@ jobs:
           python tools/check_brightness_integration.py
           python tools/check_config_ranges.py
           python tools/check_doc_links.py
+          python tools/check_stack_budget.py
           python tools/check_obd_service_integration.py
           python tools/check_dtc_integration.py
           python tools/check_storage_integration.py

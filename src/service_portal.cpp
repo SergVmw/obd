@@ -1922,7 +1922,12 @@ void ServicePortal::sendPidSupportReport() {
     row["mask"] = hex;
   }
 
-  char payload[12288];
+  // This buffer cannot live on the stack. Service handlers run on loopTask,
+  // whose stack is CONFIG_ARDUINO_LOOP_STACK_SIZE = 8192 bytes; a 12 KB local
+  // overflowed it every time this report was served and rebooted the device on
+  // entering the diagnostics page. File scope, not a local static buried in the
+  // body, so the reason is where the allocation is decided.
+  static char payload[12288];
   const size_t written =
       serializeJson(doc, payload, sizeof(payload));
   server_.send(200, "application/json", payload);
