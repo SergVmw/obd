@@ -1260,7 +1260,11 @@ void ServicePortal::sendStatus() {
   // the trims were never polled at all, and stale halves mean they were not read
   // this tick. Publishing 0 is the mistake the halves below already avoid — a
   // correction nobody has measured is not a correction of zero.
-  doc["fuelTrimPercent"] = (lpgEnabled && trimsFresh) ? trimSum : nullptr;
+  if (lpgEnabled && trimsFresh) {
+    doc["fuelTrimPercent"] = trimSum;
+  } else {
+    doc["fuelTrimPercent"] = nullptr;
+  }
   doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
   // The two halves are reported apart from their sum. A large sum alone says
   // only that the engine is compensating; a large long-term part with a small

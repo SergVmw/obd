@@ -25,6 +25,15 @@ for name in ("firmware.bin", "bootloader.bin", "partitions.bin"):
         raise SystemExit(f"missing clean build output: {path}")
 
 RELEASES.mkdir(parents=True, exist_ok=True)
+# Refuse to package anything but the build just asked for. A failed `pio run`
+# leaves the previous firmware.bin sitting in the build directory, and copying it
+# produces a release whose filename says one version and whose contents say
+# another. It happened: a compile error left 0.4.17's binary inside files named
+# 0.4.18, byte-identical to the previous release and invisible to the packaging
+# gate, because that gate compares the committed file against the same stale
+# directory it was just copied from.
+subprocess.run([sys.executable, str(ROOT / "tools/check_firmware_manifest.py")],
+               cwd=ROOT, check=True)
 shutil.copyfile(BUILD / "firmware.bin", APP)
 
 esptool = PIO / "packages/tool-esptoolpy/esptool.py"
