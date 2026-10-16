@@ -406,20 +406,72 @@ void testRawCategoryResponseSurvivesTheVerdictThatRejectedIt() {
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
-  // "43 00" is an explicit zero count rather than the bare echo SAE J1979
-  // specifies. It is non-standard, and the parity check rejects it.
-  accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x00}), 3);
+  // A count promising three codes with nothing behind it is broken under any
+  // reading of the layout, which is what this test is for.
+  accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x03}), 3);
   const ObdDiagnosticsState& state = diagnostics.state();
   CHECK(state.storedStatus == DtcCategoryStatus::Malformed);
   CHECK(state.rawResponseLength[0] == 2);
   CHECK(state.rawResponse[0][0] == 0x43);
-  CHECK(state.rawResponse[0][1] == 0x00);
+  CHECK(state.rawResponse[0][1] == 0x03);
   // The bad answer is recorded, not accepted, and it does not stop the other
   // two categories: Mode 07 is already requested, with pending marked Reading.
   CHECK(state.operation == DtcOperation::Scanning);
   CHECK(state.pendingStatus == DtcCategoryStatus::Reading);
   CHECK(state.rawResponseLength[1] == 0);
   CHECK(diagnostics.hasPendingRequest());
+}
+
+// "43 00" is what a conforming block sends when it holds no stored codes: a
+// count of zero and no pairs behind it. Treating that as broken is the bug
+// this file guards. It was not cosmetic — the pre-clear scan accepts only
+// Complete or Unsupported, so on a vehicle that reports zero faults every clear
+// was refused with preclear_scan_failed and no code could ever be read.
+void testConformingCategoryLayoutsParseWithAndWithoutACountByte() {
+  {
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+    CHECK(diagnostics.requestScan(2));
+    build(diagnostics, 2, 0x7E0, 1, 0x03);
+    accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x00}), 3);
+    CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Complete);
+    CHECK(diagnostics.state().entryCount == 0);
+    CHECK(diagnostics.state().rawResponseLength[0] == 2);
+    CHECK(diagnostics.state().rawResponse[0][0] == 0x43);
+  }
+  {
+    // One code behind the count: 0x0300 is a misfire and takes display
+    // priority. The count byte must not survive as the first half of a pair.
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+    CHECK(diagnostics.requestScan(2));
+    build(diagnostics, 2, 0x7E0, 1, 0x03);
+    accept(diagnostics, frame(0x7E8, {0x04, 0x43, 0x01, 0x03, 0x00}), 3);
+    const ObdDiagnosticsState& state = diagnostics.state();
+    CHECK(state.storedStatus == DtcCategoryStatus::Complete);
+    CHECK(state.entryCount == 1);
+    CHECK(state.entries[0].raw == 0x0300);
+  }
+  {
+    // Blocks that answer without a count still parse on the default path:
+    // 0x0103 here is not a count of one, because one pair would need two
+    // bytes behind it and only one is present.
+    TelemetryData telemetry;
+    ObdDiagnostics diagnostics(telemetry);
+    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
+    CHECK(diagnostics.requestScan(2));
+    build(diagnostics, 2, 0x7E0, 1, 0x03);
+    accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x01, 0x03}), 3);
+    const ObdDiagnosticsState& state = diagnostics.state();
+    CHECK(state.storedStatus == DtcCategoryStatus::Complete);
+    CHECK(state.entryCount == 1);
+    CHECK(state.entries[0].raw == 0x0103);
+  }
 }
 
 void testRawCategoryResponseBelongsToOneScan() {
@@ -743,6 +795,7 @@ int main() {
   testOversizeResponseIsTruncatedWithoutOverflow();
   testTruncatedTailCannotClearHistoryPresence();
   testRawCategoryResponseSurvivesTheVerdictThatRejectedIt();
+  testConformingCategoryLayoutsParseWithAndWithoutACountByte();
   testRawCategoryResponseBelongsToOneScan();
   testClearSafetyAndSuccessfulMode04();
   testPostClearScheduleSurvivesZeroRollover();

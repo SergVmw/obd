@@ -69,10 +69,15 @@ assert "diagnosticTiming_.noteResponsePending" in client
 assert "rawResponse" in diag_h, "the raw per-category answer is not declared"
 assert "kRawCaptureBytes" in diag_h
 assert "captureRawResponse" in diag_h and "void ObdDiagnostics::captureRawResponse" in diag
-capture_call = re.search(
-    r"(size_t dtcBytes = length - 1U;)", diag)
-assert capture_call, "the DTC payload parity check is missing"
-assert diag.index("captureRawResponse(kindForRequest") < diag.index(capture_call.group(1)), \
+# Pin the arithmetic, not one line of it: a conforming answer is always an even
+# length, so leaving the count byte in front of the codes made every one of them
+# malformed. A gate that greps for a single statement would have blocked the
+# very fix it was written to protect.
+assert "announced * 2U == codeBytes" in diag, \
+    "the DTC count byte between the service echo and the codes is not accounted for"
+parity_call = re.search(r"if \(\(dtcBytes & 1U\) != 0U\) \{", diag)
+assert parity_call, "the DTC payload parity check is missing"
+assert diag.index("captureRawResponse(kindForRequest") < diag.index(parity_call.group(0)), \
     "the raw answer must be captured before the length is judged"
 assert diag.count("memset(state_.rawResponse, 0") >= 2, \
     "the capture belongs to one scan and must be cleared when a new scan starts"

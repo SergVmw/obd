@@ -786,7 +786,22 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
   // next category overwrites its entry.
   captureRawResponse(kindForRequest(request_), payload, length);
 
-  size_t dtcBytes = length - 1U;
+  // J1979 lays a category answer out as [service echo][DTC count][pairs], and
+  // the count is what turns 43 00 into a clean "no codes" instead of half a
+  // code. Skipping only the echo left the count in place as the first code
+  // byte, and since a conforming answer always has an even length, length - 1
+  // is always odd: every correct response was reported as malformed. The
+  // count is believed only when the arithmetic accounts for every byte behind
+  // it, so a block that answers without one still parses on the default path.
+  const size_t afterEcho = length - 1U;
+  const size_t announced =
+      afterEcho >= 1U ? static_cast<size_t>(payload[1]) : 0U;
+  const size_t codeBytes = afterEcho >= 1U ? afterEcho - 1U : 0U;
+  const bool hasCount =
+      afterEcho >= 1U && (announced * 2U == codeBytes ||
+                          (assemblyTruncated && announced * 2U > codeBytes));
+  const uint8_t* codes = hasCount ? payload + 2 : payload + 1;
+  size_t dtcBytes = hasCount ? codeBytes : afterEcho;
   if ((dtcBytes & 1U) != 0U) {
     if (!assemblyTruncated) {
       advanceScan(now, DtcCategoryStatus::Malformed);
@@ -799,7 +814,7 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
   }
   if (assemblyTruncated) state_.truncated = true;
   const DtcKind kind = kindForRequest(request_);
-  if (!replaceCategory(kind, payload + 1, dtcBytes, responseId_,
+  if (!replaceCategory(kind, codes, dtcBytes, responseId_,
                        !assemblyTruncated)) {
     advanceScan(now, DtcCategoryStatus::Malformed);
     return;
