@@ -75,6 +75,8 @@ class ObdClient {
   }
   bool isSupported(uint8_t pid) const;
   bool pidSupportKnown(uint8_t pid) const;
+  // Whether this block's answer is allowed to decide which block is the engine.
+  bool engineIdentityDecides(uint16_t responseId, uint8_t pid) const;
   // The portal reports this to the user. Without it the masks are collected and
   // discarded, and which blocks a vehicle exposes can only be guessed.
   const PidSupportTable& pidSupport() const { return supportTable_; }
@@ -241,7 +243,13 @@ class ObdClient {
 
   // RPM is discovered first so the first valid PID 0C response binds the
   // engine ECU before support masks or normal telemetry are accepted.
-  static constexpr uint8_t kDiscoveryPids_[4] = {0x0C, 0x00, 0x20, 0x40};
+  // Masks first, then the manifold, then RPM. RPM used to lead, and since a
+  // transmission answers it too, whichever block replied first took the engine
+  // lock for the session; on this vehicle it went the other way between two
+  // boots and pointed the DTC scan and the clear at the gearbox. Asking the
+  // masks first means the choice is made from what each block claims, not from
+  // who spoke first.
+  static constexpr uint8_t kDiscoveryPids_[5] = {0x00, 0x20, 0x40, 0x0B, 0x0C};
 #ifdef H2G_SPEED_DENSITY_BUILD
   // The Speed-Density test image never requests unsupported PID 10 (MAF) or
   // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).

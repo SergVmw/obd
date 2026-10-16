@@ -116,3 +116,31 @@ bool PidSupportTable::isSupported(uint8_t pid) const {
   const size_t shift = static_cast<size_t>(pid) - group * kGroupSize;
   return (unionMask_[group] & (1UL << (32 - shift))) != 0;
 }
+
+int8_t PidSupportTable::findResponder(uint16_t responseId) const {
+  for (size_t i = 0; i < responderCount_; ++i) {
+    if (responderIds_[i] == responseId) return static_cast<int8_t>(i);
+  }
+  return -1;
+}
+
+bool PidSupportTable::responderSupports(size_t responder, uint8_t pid) const {
+  if (pid < kFirstPid || pid > kLastPid) return false;
+  const size_t group = (static_cast<size_t>(pid) - kFirstPid) / kGroupSize;
+  if (group >= kGroupCount) return true;
+  if (!responderGroupKnown(responder, group)) return true;
+  const size_t shift = static_cast<size_t>(pid) - group * kGroupSize;
+  return (responderMask_[responder][group] & (1UL << (32 - shift))) != 0;
+}
+
+bool PidSupportTable::anyResponderSupports(uint8_t pid) const {
+  if (pid < kFirstPid || pid > kLastPid) return false;
+  const size_t group = (static_cast<size_t>(pid) - kFirstPid) / kGroupSize;
+  if (group >= kGroupCount) return false;
+  for (size_t r = 0; r < responderCount_; ++r) {
+    if (!responderGroupKnown(r, group)) continue;
+    const size_t shift = static_cast<size_t>(pid) - group * kGroupSize;
+    if (responderMask_[r][group] & (1UL << (32 - shift))) return true;
+  }
+  return false;
+}

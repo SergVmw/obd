@@ -9,7 +9,7 @@ constexpr uint8_t kMaxRxFramesPerLoop = 16;
 constexpr uint32_t kRxTimeBudgetUs = 2000;
 }
 
-constexpr uint8_t ObdClient::kDiscoveryPids_[4];
+constexpr uint8_t ObdClient::kDiscoveryPids_[5];
 #ifdef H2G_DIAGNOSTIC_BUILD
 const uint8_t ObdClient::kDiagnosticPidIds_[ObdClient::kDiagnosticPidCount] = {
     0x0B, 0x0C, 0x10, 0x33, 0x5E};
@@ -568,15 +568,24 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 
   const uint8_t pid = message.data[2];
-  if (pid == 0x0C) {
-    if (payloadLength < 4) return;
+  if (pid == 0x0B || pid == 0x0C) {
+    if (payloadLength < (pid == 0x0B ? 3 : 4)) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
-      if (!diagnostics_.observeEngineResponse(message.identifier)) {
+      if (!engineIdentityDecides(message.identifier, pid)) {
 #ifdef H2G_DIAGNOSTIC_BUILD
         // Read here rather than before the call: observeEngineResponse leaves
         // engineEcuLocked untouched on both of its false paths, so this is the
         // same value, and hoisting it left a variable computed and discarded in
         // the production build.
+        if (diagnostics_.state().engineEcuLocked) {
+          recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
+                                 pid, now);
+        }
+#endif
+        return;
+      }
+      if (!diagnostics_.observeEngineResponse(message.identifier)) {
+#ifdef H2G_DIAGNOSTIC_BUILD
         if (diagnostics_.state().engineEcuLocked) {
           recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
                                  pid, now);
@@ -813,8 +822,26 @@ void ObdClient::recordOtherEcuResponse(uint16_t responseId, uint8_t pid,
 }
 #endif
 
-void ObdClient::runDiscovery(uint32_t now) {
-  if (discoveryIndex_ >= 4) {
+// Which block is allowed to take the engine lock. Both rules are guarded by a
+// mask the block itself reported, and both fall back to the previous behaviour
+// when no mask has been heard, so a vehicle that never answers the mask
+// requests is not left without diagnostics.
+bool ObdClient::engineIdentityDecides(uint16_t responseId, uint8_t pid) const {
+  if (pid == 0x0B) {
+    // A block with no manifold still answers a manifold query, usually with no
+    // data rather than silence, so the response alone does not identify it.
+    // Its own mask saying it has one does.
+    const int8_t slot = supportTable_.findResponder(responseId);
+    if (slot < 0 || !supportTable_.responderGroupKnown(slot, 0)) return false;
+    return supportTable_.responderSupports(slot, 0x0B);
+  }
+  // RPM is answered by the transmission as well. If any block on the bus claims
+  // a manifold then the engine is one of those blocks, and a block without one
+  // must not take the lock on speed alone.
+  return !supportTable_.anyResponderSupports(0x0B);
+}
+
+void ObdClient::runDiscovery(uint32_t now) {  if (discoveryIndex_ >= 5) {
     discoveryDone_ = true;
     ESP_LOGI(kTag, "Mode 01 PID discovery completed");
     return;

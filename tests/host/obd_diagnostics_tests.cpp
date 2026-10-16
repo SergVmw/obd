@@ -729,17 +729,21 @@ void testClearNegativeResponseAndBusyGate() {
 
 void testClearRefusesIncompleteScanAndFailedPreservation() {
   {
+    // Nothing answered at all: a dead bus, not a block declining a service.
+    // Selective silence is judged separately, because one service answering
+    // while another does not is the block not implementing the silent one.
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
     diagnostics.observeEngineResponse(0x7E8);
     CHECK(diagnostics.requestClear(1));
     build(diagnostics, 1, 0x7E0, 1, 0x03);
-    accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 2);
-    build(diagnostics, 3, 0x7E0, 1, 0x07);
     diagnostics.timeout(754);
-    build(diagnostics, 755, 0x7E0, 1, 0x0A);
-    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 756);
+    build(diagnostics, 755, 0x7E0, 1, 0x07);
+    diagnostics.timeout(1508);
+    build(diagnostics, 1509, 0x7E0, 1, 0x0A);
+    diagnostics.timeout(2262);
     CHECK(diagnostics.state().pendingStatus == DtcCategoryStatus::Timeout);
+    CHECK(diagnostics.state().permanentStatus == DtcCategoryStatus::Timeout);
     CHECK(diagnostics.state().operation == DtcOperation::Idle);
     CHECK(diagnostics.state().clearResult ==
           DtcClearResult::PreclearScanFailed);
@@ -783,6 +787,30 @@ void testClearRefusesIncompleteScanAndFailedPreservation() {
 
 }  // namespace
 
+// What the Haval actually does: it answers Mode 03 and Mode 07 and says
+// nothing at all to Mode 0A. That silence is the block not implementing the
+// service, the same condition as the refusal it sent on another boot, and the
+// two used to land on opposite verdicts. Since the clear gate accepts Complete
+// and Unsupported only, whether clearing was reachable came down to whether the
+// block bothered to refuse.
+void testSilenceAfterAnsweringServicesIsNotABrokenBus() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.requestClear(1));
+  build(diagnostics, 1, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x00}), 2);
+  build(diagnostics, 3, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x47, 0x00}), 4);
+  build(diagnostics, 5, 0x7E0, 1, 0x0A);
+  diagnostics.timeout(900);
+  const ObdDiagnosticsState& state = diagnostics.state();
+  CHECK(state.storedStatus == DtcCategoryStatus::Complete);
+  CHECK(state.pendingStatus == DtcCategoryStatus::Complete);
+  CHECK(state.permanentStatus == DtcCategoryStatus::Unsupported);
+  CHECK(state.clearResult != DtcClearResult::PreclearScanFailed);
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -796,12 +824,13 @@ int main() {
   testTruncatedTailCannotClearHistoryPresence();
   testRawCategoryResponseSurvivesTheVerdictThatRejectedIt();
   testConformingCategoryLayoutsParseWithAndWithoutACountByte();
+  testSilenceAfterAnsweringServicesIsNotABrokenBus();
   testRawCategoryResponseBelongsToOneScan();
   testClearSafetyAndSuccessfulMode04();
   testPostClearScheduleSurvivesZeroRollover();
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::puts("OBD diagnostics tests: 17 groups passed");
+  std::printf("OBD diagnostics tests: %d groups passed\n", 19);
   return 0;
 }

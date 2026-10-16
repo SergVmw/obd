@@ -68,6 +68,19 @@ class PidSupportTable {
   // groups, so an ECU that does not answer the mask requests is still polled.
   bool isSupported(uint8_t pid) const;
 
+  // Lookups for choosing which block is the engine. responderSlot() creates a
+  // slot for an id it has not seen, which is right when recording a mask and
+  // wrong when asking a question, so a read-only lookup is separate.
+  int8_t findResponder(uint16_t responseId) const;
+  // Does this one block's own mask claim the PID. Unknown mask reads as true,
+  // matching isSupported(): a block that has not been heard from cannot rule
+  // anything out.
+  bool responderSupports(size_t responder, uint8_t pid) const;
+  // Does any block whose mask for this group has actually been heard claim the
+  // PID. Silence from a block is not a claim, so this stays false until some
+  // block states the PID is present.
+  bool anyResponderSupports(uint8_t pid) const;
+
  private:
   int8_t responderSlot(uint16_t responseId);
   void recomputeGroup(size_t group);

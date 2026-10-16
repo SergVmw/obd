@@ -501,7 +501,67 @@ void testTheRetryCanStillSucceed() {
 
 }  // namespace
 
+// The two masks this vehicle actually reported: the engine claims a manifold,
+// the transmission does not but does report speed. A block without a manifold
+// still answers a manifold query, so the answer alone cannot pick the engine,
+// and RPM is answered by both, so whoever replies first used to take the lock.
+// Between two boots on the same car it went both ways, which pointed the DTC
+// scan and the clear at the gearbox.
+void testManifoldDecidesTheEngineAndSpeedAloneCannot() {
+  Rig rig;
+  const uint8_t engineMask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
+  const uint8_t gearboxMask[] = {0x06, 0x41, 0x00, 0x98, 0x18, 0x00, 0x01};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineMask, sizeof(engineMask)));
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMask, sizeof(gearboxMask)));
+  rig.pump();
+
+  // The gearbox answers first, exactly as it did on the boot that went wrong.
+  const uint8_t gearboxRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxRpm, sizeof(gearboxRpm)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId != 0x7E9);
+
+  // The engine's manifold is what settles it, and it takes the lock.
+  const uint8_t engineMap[] = {0x03, 0x41, 0x0B, 0x21};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineMap, sizeof(engineMap)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// With no mask heard from anybody there is nothing to decide on, and the
+// previous rule stands rather than leaving the vehicle without diagnostics.
+void testSpeedStillIdentifiesTheEngineWhenNoMaskIsKnown() {
+  Rig rig;
+  const uint8_t engineRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineRpm, sizeof(engineRpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// A block whose own mask says it has no manifold may not take the lock on a
+// manifold answer either, since it answers those with no data rather than
+// silence. Only the mask being positive makes the answer meaningful.
+void testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock() {
+  Rig rig;
+  const uint8_t gearboxMask[] = {0x06, 0x41, 0x00, 0x98, 0x18, 0x00, 0x01};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMask, sizeof(gearboxMask)));
+  rig.pump();
+  const uint8_t gearboxMap[] = {0x03, 0x41, 0x0B, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMap, sizeof(gearboxMap)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+}
+
 int main() {
+  test("a manifold picks the engine and speed alone cannot",
+       testManifoldDecidesTheEngineAndSpeedAloneCannot);
+  test("speed still identifies the engine when no mask is known",
+       testSpeedStillIdentifiesTheEngineWhenNoMaskIsKnown);
+  test("a manifold answer from a block that has none does not take the lock",
+       testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock);
   test("the polled PID set follows the poll profile",
        testPolledPidMaskFollowsThePollProfile);
   test("VIN is requested as Service 09 PID 02",

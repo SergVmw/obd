@@ -907,9 +907,29 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
     return;
   }
 
-  categoryStatus(kindForRequest(request_)) = status;
+  const DtcKind kind = kindForRequest(request_);
+  if (status == DtcCategoryStatus::Timeout) {
+    // One service answering while another stays silent is the block declining
+    // to implement the silent one, not a broken bus: a bus fault takes the whole
+    // scan and still arrives here as three timeouts. Judged the same, one
+    // refusal and one refusal of the same kind produced opposite answers to the
+    // same question, and the clear gate accepts Complete and Unsupported only,
+    // so whether the clear was reachable came down to whether the block happened
+    // to send a negative response or nothing at all.
+    for (size_t i = 0; i < state_.kCategoryCount; ++i) {
+      if (i == static_cast<size_t>(kind)) continue;
+      if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Complete) {
+        status = DtcCategoryStatus::Unsupported;
+        break;
+      }
+    }
+  }
+
+  categoryStatus(kind) = status;
   if (status == DtcCategoryStatus::Timeout) {
     setError("one or more DTC services timed out");
+  } else if (status == DtcCategoryStatus::Unsupported) {
+    setError("the engine answered other DTC services but not this one");
   } else if (status == DtcCategoryStatus::Malformed) {
     setError("one or more DTC responses were malformed");
   } else if (status == DtcCategoryStatus::TransportError) {
