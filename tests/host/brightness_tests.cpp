@@ -109,6 +109,52 @@ std::vector<uint8_t> v5Record(bool inverted = false) {
   return result;
 }
 
+// A schema-6 record is schema 7 without screenOffDelaySec: same prefix, checksum
+// four bytes earlier, 212 bytes in total. Values here are deliberately different
+// from the factory ones, because the point of the migration is that nothing the
+// owner tuned is thrown away.
+std::vector<uint8_t> v6Record() {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = 6;
+  c.brightnessDay = 92;
+  c.brightnessNight = 15;
+  c.lpgEnabled = true;
+  c.lpgCorrection = 1.2f;
+  c.speedCorrectionKph = 5.0f;
+  c.obdTimeoutMs = 200;
+  c.maxRequestsPerSecond = 50;
+  c.fuelSource = FuelSource::SpeedDensity;
+  c.centerValue = MainCenterValue::CurrentConsumption;
+  c.lockLongWhenMoving = false;
+  strlcpy(c.apPassword, "keep-this-password", sizeof(c.apPassword));
+  std::vector<uint8_t> result(212);
+  std::memcpy(result.data(), &c, 208);
+  const uint32_t hash = fnv(result.data(), 208);
+  std::memcpy(result.data() + 208, &hash, 4);
+  return result;
+}
+
+void testSchema6RecordKeepsEverySetting() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v6Record();
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == 7);
+  CHECK(c.brightnessDay == 92 && c.brightnessNight == 15);
+  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.2f));
+  CHECK(near(c.speedCorrectionKph, 5.0f));
+  CHECK(c.obdTimeoutMs == 200 && c.maxRequestsPerSecond == 50);
+  CHECK(c.fuelSource == FuelSource::SpeedDensity);
+  CHECK(c.centerValue == MainCenterValue::CurrentConsumption);
+  CHECK(!c.lockLongWhenMoving);
+  CHECK(std::strcmp(c.apPassword, "keep-this-password") == 0);
+  // The field the record predates takes its factory value, and the record is
+  // rewritten at the current size so the migration runs once.
+  CHECK(c.screenOffDelaySec == ConfigStore::defaults().screenOffDelaySec);
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
 void managerRun(BrightnessManager& m, const ConfigData& c, uint32_t ms, uint16_t adc) {
   hostAdc = adc;
   for (uint32_t t = 0; t < ms; t += 50) {
@@ -353,6 +399,9 @@ int main() {
     CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
     CHECK((Preferences::storage["h2trip/trip"] == std::vector<uint8_t>{1,2,3}));
     CHECK((Preferences::storage["h2petcal/state"] == std::vector<uint8_t>{4,5,6}));
+  });
+  test("a schema-6 record keeps every setting the owner tuned", [] {
+    testSchema6RecordKeepsEverySetting();
   });
   test("legacy inverted levels normalize only night; corrupt records fall back", [] {
     Preferences::storage["h2gauge/config"] = v5Record(true);

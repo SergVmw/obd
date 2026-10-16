@@ -152,6 +152,7 @@ class ConfigStore {
   static uint32_t checksum(const ConfigData& config);
   static bool valid(const ConfigData& config);
   static bool migrateV5(const uint8_t* record, ConfigData& destination);
+  static bool migrateV6(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

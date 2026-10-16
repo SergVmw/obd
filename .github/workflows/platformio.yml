@@ -38,6 +38,7 @@ jobs:
           python tools/test_pid_support.py
           python tools/test_telemetry.py
           python tools/test_obd_trace.py
+          python tools/test_screen_gate.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
@@ -53,6 +54,8 @@ jobs:
           python tools/check_ui_fonts.py
           python tools/check_diagnostic_integration.py
           python tools/check_pid_support_report.py
+          python tools/check_pid_names.py
+          python tools/check_ci_coverage.py
 
       - name: Run browser OTA/UI regression
         run: |

@@ -8,6 +8,11 @@
 namespace {
 constexpr size_t kV5ChecksumOffset = 196;
 constexpr size_t kV5RecordSize = 200;
+// Schema 6 is schema 7 without screenOffDelaySec, so its checksum sits four
+// bytes earlier. Everything the record holds is a byte-identical prefix of the
+// current layout, which is what makes the copy below a single move.
+constexpr size_t kV6ChecksumOffset = 208;
+constexpr size_t kV6RecordSize = 212;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -15,6 +20,10 @@ static_assert(offsetof(ConfigData, brightness) == kV5ChecksumOffset,
               "Schema-5 prefix changed; update migration explicitly");
 static_assert(offsetof(ConfigData, speedCorrectionKph) == 192,
               "Schema-5 speed correction offset");
+static_assert(offsetof(ConfigData, screenOffDelaySec) == kV6ChecksumOffset,
+              "Schema-6 prefix changed; update the migration explicitly");
+static_assert(offsetof(ConfigData, checksum) == kV6ChecksumOffset + 4,
+              "Schema-6 checksum offset");
 
 uint32_t fnv1a(const uint8_t* bytes, size_t length) {
   uint32_t hash = 2166136261UL;
@@ -212,6 +221,27 @@ bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
+bool ConfigStore::migrateV6(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV6ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 6 ||
+      storedChecksum != fnv1a(record, kV6ChecksumOffset)) return false;
+
+  destination = defaults();
+  // One move covers every setting the record holds; defaults() supplies the
+  // appended field and invents nothing else. Losing this migration means a
+  // 212-byte record fails both length checks in begin() and every setting the
+  // owner tuned falls back to the factory, including the fuel model, which on
+  // this vehicle stops entirely because it has neither a MAF nor PID 5E.
+  memcpy(static_cast<void*>(&destination), record, kV6ChecksumOffset);
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -225,6 +255,11 @@ bool ConfigStore::begin() {
   if (storedLength == sizeof(ConfigData)) {
     loaded = preferences_.getBytes("config", &config_, sizeof(config_)) ==
                  sizeof(config_) && valid(config_);
+  } else if (storedLength == kV6RecordSize) {
+    uint8_t record[kV6RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record) && migrateV6(record, config_);
+    needsSave = loaded;
   } else if (storedLength == kV5RecordSize) {
     uint8_t record[kV5RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
