@@ -76,10 +76,6 @@ class PidSupportTable {
   // matching isSupported(): a block that has not been heard from cannot rule
   // anything out.
   bool responderSupports(size_t responder, uint8_t pid) const;
-  // Does any block whose mask for this group has actually been heard claim the
-  // PID. Silence from a block is not a claim, so this stays false until some
-  // block states the PID is present.
-  bool anyResponderSupports(uint8_t pid) const;
 
  private:
   int8_t responderSlot(uint16_t responseId);

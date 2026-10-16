@@ -133,14 +133,3 @@ bool PidSupportTable::responderSupports(size_t responder, uint8_t pid) const {
   return (responderMask_[responder][group] & (1UL << (32 - shift))) != 0;
 }
 
-bool PidSupportTable::anyResponderSupports(uint8_t pid) const {
-  if (pid < kFirstPid || pid > kLastPid) return false;
-  const size_t group = (static_cast<size_t>(pid) - kFirstPid) / kGroupSize;
-  if (group >= kGroupCount) return false;
-  for (size_t r = 0; r < responderCount_; ++r) {
-    if (!responderGroupKnown(r, group)) continue;
-    const size_t shift = static_cast<size_t>(pid) - group * kGroupSize;
-    if (responderMask_[r][group] & (1UL << (32 - shift))) return true;
-  }
-  return false;
-}

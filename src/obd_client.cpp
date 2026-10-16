@@ -568,8 +568,8 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 
   const uint8_t pid = message.data[2];
-  if (pid == 0x0B || pid == 0x0C) {
-    if (payloadLength < (pid == 0x0B ? 3 : 4)) return;
+  if (engineIdentityDecides(message.identifier, pid)) {
+    if (payloadLength < (pid == 0x0C ? 4 : 3)) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
       if (!engineIdentityDecides(message.identifier, pid)) {
 #ifdef H2G_DIAGNOSTIC_BUILD
@@ -822,23 +822,58 @@ void ObdClient::recordOtherEcuResponse(uint16_t responseId, uint8_t pid,
 }
 #endif
 
-// Which block is allowed to take the engine lock. Both rules are guarded by a
-// mask the block itself reported, and both fall back to the previous behaviour
-// when no mask has been heard, so a vehicle that never answers the mask
-// requests is not left without diagnostics.
-bool ObdClient::engineIdentityDecides(uint16_t responseId, uint8_t pid) const {
-  if (pid == 0x0B) {
-    // A block with no manifold still answers a manifold query, usually with no
-    // data rather than silence, so the response alone does not identify it.
-    // Its own mask saying it has one does.
-    const int8_t slot = supportTable_.findResponder(responseId);
-    if (slot < 0 || !supportTable_.responderGroupKnown(slot, 0)) return false;
-    return supportTable_.responderSupports(slot, 0x0B);
+namespace {
+// The parameters only an engine can have: a transmission has no fuel system, no
+// intake manifold, no intake air path and no throttle. The vehicle states this
+// itself — the engine claimed all four, the gearbox none.
+constexpr uint8_t kEngineOnlyPids[] = {0x03, 0x0B, 0x0F, 0x11};
+// Two, not one. A single bit in a single mask is a thin thing to aim a safety
+// gate at, and one misread mask or one odd answer would put the DTC scan and the
+// clear back on the wrong block. A gearbox that reports throttle position for
+// torque management scores one and stays below the line.
+constexpr uint8_t kEngineIdentityMinClaims = 2;
+}  // namespace
+
+// How many of the engine-only parameters this block's own mask claims. Zero when
+// the mask has not been heard, so a vehicle that never answers the mask
+// requests scores nothing everywhere and keeps the previous rule.
+uint8_t ObdClient::engineClaimCount(uint16_t responseId) const {
+  const int8_t slot = supportTable_.findResponder(responseId);
+  if (slot < 0 || !supportTable_.responderGroupKnown(slot, 0)) return 0;
+  uint8_t claims = 0;
+  for (uint8_t pid : kEngineOnlyPids) {
+    if (supportTable_.responderSupports(slot, pid)) ++claims;
   }
-  // RPM is answered by the transmission as well. If any block on the bus claims
-  // a manifold then the engine is one of those blocks, and a block without one
-  // must not take the lock on speed alone.
-  return !supportTable_.anyResponderSupports(0x0B);
+  return claims;
+}
+
+// Which block is allowed to take the engine lock.
+//
+// A block takes it by answering one of the four parameters, and only if its own
+// mask claims at least two of them: the answer is then both the claim and the
+// confirmation, with no separate state to keep in step. RPM is answered by the
+// gearbox as readily as by the engine, so it may decide only while nothing on the
+// bus has claimed those parameters. With no mask heard at all, every score is
+// zero and speed decides, exactly as before.
+bool ObdClient::engineIdentityDecides(uint16_t responseId, uint8_t pid) const {
+  bool engineOnly = false;
+  for (uint8_t candidate : kEngineOnlyPids) {
+    if (candidate == pid) {
+      engineOnly = true;
+      break;
+    }
+  }
+  if (engineOnly) {
+    return engineClaimCount(responseId) >= kEngineIdentityMinClaims;
+  }
+  if (pid != 0x0C) return false;
+  for (size_t i = 0; i < supportTable_.responderCount(); ++i) {
+    if (engineClaimCount(supportTable_.responderIdAt(i)) >=
+        kEngineIdentityMinClaims) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void ObdClient::runDiscovery(uint32_t now) {  if (discoveryIndex_ >= 5) {

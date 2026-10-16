@@ -75,8 +75,10 @@ class ObdClient {
   }
   bool isSupported(uint8_t pid) const;
   bool pidSupportKnown(uint8_t pid) const;
-  // Whether this block's answer is allowed to decide which block is the engine.
+  // Whether this block's answer is allowed to decide which block is the engine,
+  // and how many of the engine-only parameters its own mask claims.
   bool engineIdentityDecides(uint16_t responseId, uint8_t pid) const;
+  uint8_t engineClaimCount(uint16_t responseId) const;
   // The portal reports this to the user. Without it the masks are collected and
   // discarded, and which blocks a vehicle exposes can only be guessed.
   const PidSupportTable& pidSupport() const { return supportTable_; }

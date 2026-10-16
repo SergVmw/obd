@@ -555,11 +555,61 @@ void testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock() {
   CHECK(!rig.telemetry.engineEcuLocked);
 }
 
+// One parameter is not enough. This mask claims only throttle position, and a
+// transmission does report throttle position for torque management, so a single
+// engine-only bit cannot be the thing a safety gate is aimed at.
+void testOneClaimIsNotEnoughToTakeTheEngineLock() {
+  Rig rig;
+  const uint8_t throttleOnly[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, throttleOnly, sizeof(throttleOnly)));
+  rig.pump();
+  const uint8_t throttle[] = {0x03, 0x41, 0x11, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, throttle, sizeof(throttle)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+}
+
+// Masks that are heard but never reach two claims leave the old rule standing,
+// so a vehicle whose engine reports little of itself is not left without
+// diagnostics.
+void testSpeedDecidesWhenNoBlockClaimsEnoughParameters() {
+  Rig rig;
+  const uint8_t throttleOnly[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, throttleOnly, sizeof(throttleOnly)));
+  rig.pump();
+  const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// Two of the four is enough even when the manifold is one of the missing two,
+// so identification does not depend on a vehicle having a manifold at all.
+void testTwoClaimsIdentifyWithoutAManifold() {
+  Rig rig;
+  // Claims 0x03 fuel system status and 0x11 throttle, but not 0x0B or 0x0F.
+  const uint8_t mask[] = {0x06, 0x41, 0x00, 0x20, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, mask, sizeof(mask)));
+  rig.pump();
+  const uint8_t fuelSystem[] = {0x03, 0x41, 0x03, 0x02};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fuelSystem, sizeof(fuelSystem)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
 int main() {
   test("a manifold picks the engine and speed alone cannot",
        testManifoldDecidesTheEngineAndSpeedAloneCannot);
   test("speed still identifies the engine when no mask is known",
        testSpeedStillIdentifiesTheEngineWhenNoMaskIsKnown);
+  test("one claim is not enough to take the engine lock",
+       testOneClaimIsNotEnoughToTakeTheEngineLock);
+  test("speed decides when no block claims enough parameters",
+       testSpeedDecidesWhenNoBlockClaimsEnoughParameters);
+  test("two claims identify without a manifold",
+       testTwoClaimsIdentifyWithoutAManifold);
   test("a manifold answer from a block that has none does not take the lock",
        testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock);
   test("the polled PID set follows the poll profile",
