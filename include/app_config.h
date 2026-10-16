@@ -127,6 +127,14 @@ struct ConfigData {
   // Schema 6: append only, preserving the complete schema-5 prefix.
   BrightnessSettings brightness;
 
+  // Schema 7. Appended after brightness and never inside it: the static
+  // assertions above pin the offsets the schema-5 migration reads, so a field
+  // inserted before them silently invalidates every stored record.
+  // Seconds of engine silence before the backlight goes dark. 0 keeps the
+  // screen lit for good. The car leaves the OBD battery line live overnight, so
+  // without this the gauge is lit all night.
+  uint16_t screenOffDelaySec;
+
   uint32_t checksum;
 };
 

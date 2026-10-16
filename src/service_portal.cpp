@@ -593,6 +593,7 @@ void ServicePortal::sendConfig() {
   controls["longPressMs"] = c.longPressMs;
   controls["serviceHoldMs"] = c.serviceHoldMs;
   controls["serviceTimeoutMin"] = c.serviceTimeoutMin;
+  controls["screenOffDelaySec"] = c.screenOffDelaySec;
   controls["lockLongWhenMoving"] = c.lockLongWhenMoving;
 
   JsonObject obd = doc["obd"].to<JsonObject>();
@@ -795,7 +796,8 @@ void ServicePortal::receiveConfig() {
   if (!controls.isNull()) {
     const IntegerField integerFields[] = {
         {"longPressMs", 800, 4000}, {"serviceHoldMs", 3000, 10000},
-        {"serviceTimeoutMin", 3, 60}};
+        {"serviceTimeoutMin", 3, 60},
+        {"screenOffDelaySec", 0, 600}};
     const char* invalid = invalidIntegerField(
         controls, integerFields,
         sizeof(integerFields) / sizeof(integerFields[0]));
@@ -815,6 +817,7 @@ void ServicePortal::receiveConfig() {
     c.longPressMs = clampValue<int>(controls["longPressMs"] | c.longPressMs, 800, 4000);
     c.serviceHoldMs = clampValue<int>(controls["serviceHoldMs"] | c.serviceHoldMs, 3000, 10000);
     c.serviceTimeoutMin = clampValue<int>(controls["serviceTimeoutMin"] | c.serviceTimeoutMin, 3, 60);
+    c.screenOffDelaySec = clampValue<int>(controls["screenOffDelaySec"] | c.screenOffDelaySec, 0, 600);
     c.lockLongWhenMoving = controls["lockLongWhenMoving"] | c.lockLongWhenMoving;
   }
 
@@ -956,6 +959,10 @@ void ServicePortal::sendStatus() {
     doc["engineLoadPct"] = nullptr;
     doc["engineLoadAgeMs"] = nullptr;
   }
+  // Which condition darkened the panel, so one night with the gauge left parked
+  // says whether the ECU sleeps on this vehicle instead of a night of guessing.
+  doc["screenOffReason"] = telemetry_.screenOffReason;
+  doc["screenOffDelaySec"] = configStore_.data().screenOffDelaySec;
   if (telemetry_.baroKpa.valid(now, 15000)) {
     doc["baroKpa"] = telemetry_.baroKpa.value;
     doc["baroAgeMs"] = now - telemetry_.baroKpa.updatedAt;

@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <esp_log.h>
 #include <esp_sleep.h>
+
+#include "screen_gate.h"
 #include "driver/gpio.h"
 
 #include "app_config.h"
@@ -48,6 +50,7 @@ OneButton button;
 LpgValveInput lpgInput;
 PowerManager powerManager;
 BrightnessManager brightnessManager;
+ScreenGate screenGate;
 OtaDiagnostics otaDiagnostics;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
@@ -358,7 +361,36 @@ void loop() {
   // Also runs in service mode so saved brightness changes and live ADC work
   // without a reboot. During a raw OTA body the hardware PWM holds its duty.
   brightnessManager.update(now, configStore.data());
-  dashboard.setBrightness(brightnessManager.state().currentPercent());
+
+  // The gauge hangs off the OBD battery line, which this car leaves live all
+  // night, so the only thing that ever turned anything off was the low-voltage
+  // guard at 11.5 V and it never fires overnight. Silence from the engine ECU
+  // is the only dependable sign that the vehicle is parked: requests go to the
+  // functional address and the gearbox answers them too, so "a block answered"
+  // would read true all night long.
+  //
+  // Only the backlight goes dark. TFT_DISPOFF has no counterpart outside deep
+  // sleep, where the part reboots and never needs waking, and the first
+  // answering frame has to bring the panel straight back.
+  // Silence is the first trigger and engine-off the second, because PID 0x42 is
+  // advertised by the transmission only: this vehicle keeps answering from a
+  // block that is not the engine, and a gearbox has already been seen replying
+  // to a PID it does not have with a zero. If either block stays awake all night
+  // then "something answered" never becomes false, and a silence-only trigger
+  // would simply never fire. Requiring speed as well as zero RPM keeps a car
+  // rolling downhill from counting as parked.
+  const bool engineOff = telemetry.rpm.valid(now) &&
+                         telemetry.rpm.value < 200.0f &&
+                         telemetry.rawSpeedKph.valid(now) &&
+                         telemetry.rawSpeedKph.value < 4.0f;
+  screenGate.update(now, telemetry.obdConnected(now), engineOff,
+                    static_cast<uint32_t>(configStore.data().screenOffDelaySec) *
+                        1000U,
+                    serviceMode || event != ButtonEvent::None);
+  telemetry.screenOffReason = screenGate.reasonName();
+  dashboard.setBrightness(screenGate.dark()
+                              ? 0.0f
+                              : brightnessManager.state().currentPercent());
 
   if (serviceMode) {
 #ifndef H2G_DEMO_MODE

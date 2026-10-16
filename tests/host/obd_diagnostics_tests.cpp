@@ -811,6 +811,29 @@ void testSilenceAfterAnsweringServicesIsNotABrokenBus() {
   CHECK(state.clearResult != DtcClearResult::PreclearScanFailed);
 }
 
+// Mode 03 is requested first, so a rescue applied at the moment of failure
+// could only look backwards and this case had nothing ahead of it: stored kept
+// Timeout while pending and permanent went on to prove the bus was fine, and the
+// clear gate refused. Re-read at the end of the scan, the first category is
+// covered like any other.
+void testTheFirstCategoryIsRescuedTooWhenOthersAnswer() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  CHECK(diagnostics.requestScan(2));
+  build(diagnostics, 2, 0x7E0, 1, 0x03);
+  diagnostics.timeout(760);
+  build(diagnostics, 761, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x47, 0x00}), 762);
+  build(diagnostics, 763, 0x7E0, 1, 0x0A);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x4A, 0x00}), 764);
+  const ObdDiagnosticsState& state = diagnostics.state();
+  CHECK(state.storedStatus == DtcCategoryStatus::Unsupported);
+  CHECK(state.pendingStatus == DtcCategoryStatus::Complete);
+  CHECK(state.permanentStatus == DtcCategoryStatus::Complete);
+  CHECK(state.entryCount == 0);
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -825,6 +848,7 @@ int main() {
   testRawCategoryResponseSurvivesTheVerdictThatRejectedIt();
   testConformingCategoryLayoutsParseWithAndWithoutACountByte();
   testSilenceAfterAnsweringServicesIsNotABrokenBus();
+  testTheFirstCategoryIsRescuedTooWhenOthersAnswer();
   testRawCategoryResponseBelongsToOneScan();
   testClearSafetyAndSuccessfulMode04();
   testPostClearScheduleSurvivesZeroRollover();

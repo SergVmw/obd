@@ -85,6 +85,7 @@ ConfigData ConfigStore::defaults() {
   c.longPressMs = 1800;
   c.serviceHoldMs = 5000;
   c.serviceTimeoutMin = 15;
+  c.screenOffDelaySec = 60;
   c.lockLongWhenMoving = true;
 
   c.obdTimeoutMs = 120;
@@ -175,6 +176,7 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.longPressMs >= 800 && config.longPressMs <= 4000 &&
          config.serviceHoldMs >= 3000 && config.serviceHoldMs <= 10000 &&
          config.serviceTimeoutMin >= 3 && config.serviceTimeoutMin <= 60 &&
+         config.screenOffDelaySec <= 600 &&
          config.obdTimeoutMs >= 50 && config.obdTimeoutMs <= 1000 &&
          config.maxRequestsPerSecond >= 5 &&
          config.maxRequestsPerSecond <= 60 &&

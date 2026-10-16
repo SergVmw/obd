@@ -55,6 +55,10 @@ struct TelemetryData {
 
   bool canDriverReady = false;
   uint32_t lastObdResponseAt = 0;
+  // Why the panel is dark, or "lit". Points at a static string owned by
+  // ScreenGate, so nothing is duplicated and nothing is copied. Not persisted:
+  // it is a statement about this moment, not a setting.
+  const char* screenOffReason = "lit";
   uint32_t obdResponseCount = 0;
   // VIN as read from the vehicle, empty until it is known. The client owns the
   // one-shot request and copies the result here so the dashboard and the

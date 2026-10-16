@@ -907,25 +907,7 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
     return;
   }
 
-  const DtcKind kind = kindForRequest(request_);
-  if (status == DtcCategoryStatus::Timeout) {
-    // One service answering while another stays silent is the block declining
-    // to implement the silent one, not a broken bus: a bus fault takes the whole
-    // scan and still arrives here as three timeouts. Judged the same, one
-    // refusal and one refusal of the same kind produced opposite answers to the
-    // same question, and the clear gate accepts Complete and Unsupported only,
-    // so whether the clear was reachable came down to whether the block happened
-    // to send a negative response or nothing at all.
-    for (size_t i = 0; i < state_.kCategoryCount; ++i) {
-      if (i == static_cast<size_t>(kind)) continue;
-      if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Complete) {
-        status = DtcCategoryStatus::Unsupported;
-        break;
-      }
-    }
-  }
-
-  categoryStatus(kind) = status;
+  categoryStatus(kindForRequest(request_)) = status;
   if (status == DtcCategoryStatus::Timeout) {
     setError("one or more DTC services timed out");
   } else if (status == DtcCategoryStatus::Unsupported) {
@@ -951,6 +933,40 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
 }
 
 void ObdDiagnostics::completeScan(uint32_t now) {
+  // Re-read the timeouts now that the whole scan is in, rather than at the
+  // moment each one failed. Done inline, the rescue could only look backwards:
+  // Mode 03 is requested first, so a block that went silent exactly there had
+  // nothing ahead of it and kept Timeout, blocking the clear while 07 and 0A
+  // went on to prove the bus was fine.
+  //
+  // One service answering while another stays silent is the block declining to
+  // implement the silent one, not a broken bus: a bus fault takes all three and
+  // still leaves three timeouts with nothing Complete to pair against. Judged
+  // the same, a refusal and a silence of the same kind produced opposite answers
+  // to the same question, and the clear gate accepts Complete and Unsupported
+  // only, so whether the clear was reachable came down to whether the block
+  // bothered to send a negative response or nothing at all. This block has been
+  // seen doing both.
+  bool anyComplete = false;
+  for (size_t i = 0; i < state_.kCategoryCount; ++i) {
+    if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Complete) {
+      anyComplete = true;
+      break;
+    }
+  }
+  if (anyComplete) {
+    bool reclassified = false;
+    for (size_t i = 0; i < state_.kCategoryCount; ++i) {
+      if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Timeout) {
+        categoryStatus(static_cast<DtcKind>(i)) = DtcCategoryStatus::Unsupported;
+        reclassified = true;
+      }
+    }
+    if (reclassified) {
+      setError("the engine answered other DTC services but not this one");
+    }
+  }
+
   waiting_ = false;
   requestPending_ = false;
   request_ = Request::None;

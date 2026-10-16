@@ -339,7 +339,10 @@ int main() {
     Preferences::storage["h2petcal/state"] = {4, 5, 6};
     ConfigStore store; CHECK(store.begin());
     const auto& c = store.data();
-    CHECK(c.schemaVersion == 6 && c.brightnessDay == 73 && c.brightnessNight == 19);
+    // Schema 7 carries screenOffDelaySec. The record it loaded was written under
+    // schema 6, so every field the schema-5 prefix covers must still read back
+    // exactly, and only the appended one falls back to its factory value.
+    CHECK(c.schemaVersion == 7 && c.brightnessDay == 73 && c.brightnessNight == 19);
     CHECK(near(c.petrolCorrection, 1.18f) && near(c.lpgCorrection, 1.31f));
     CHECK(near(c.speedCorrectionKph, -4.5f) && c.lpgEnabled);
     CHECK(c.colorText == 0x1234 && c.startPage == 2 && !c.dfcoCorrectionEnabled);
