@@ -1256,7 +1256,11 @@ void ServicePortal::sendStatus() {
   const float trimSum = trimsFresh ? telemetry_.shortFuelTrimPercent.value +
                                          telemetry_.longFuelTrimPercent.value
                                    : 0.0f;
-  doc["fuelTrimPercent"] = lpgEnabled ? trimSum : 0.0f;
+  // Absent rather than zero, for both reasons it can be absent: LPG off means
+  // the trims were never polled at all, and stale halves mean they were not read
+  // this tick. Publishing 0 is the mistake the halves below already avoid — a
+  // correction nobody has measured is not a correction of zero.
+  doc["fuelTrimPercent"] = (lpgEnabled && trimsFresh) ? trimSum : nullptr;
   doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
   // The two halves are reported apart from their sum. A large sum alone says
   // only that the engine is compensating; a large long-term part with a small
