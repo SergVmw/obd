@@ -1245,7 +1245,18 @@ void ServicePortal::sendStatus() {
                          : 0.0f;
   doc["speedCorrectionKph"] = configStore_.data().speedCorrectionKph;
   doc["dfcoActive"] = telemetry_.dfcoActive;
-  doc["fuelTrimPercent"] = lpgEnabled ? telemetry_.fuelTrimSumPercent : 0.0f;
+  // The sum is formed from the two values this response carries, not read back
+  // from the stored field. That field is zeroed whenever either half is older
+  // than its TTL, and with a fifth of the trim requests timing out that is a
+  // common tick: one vehicle snapshot reported short=8.59, long=-7.81 and
+  // sum=0 in the same object. The warning below keeps the stored value, since
+  // its five-second delay is the whole point of it.
+  const bool trimsFresh = telemetry_.shortFuelTrimPercent.valid(now) &&
+                           telemetry_.longFuelTrimPercent.valid(now);
+  const float trimSum = trimsFresh ? telemetry_.shortFuelTrimPercent.value +
+                                         telemetry_.longFuelTrimPercent.value
+                                   : 0.0f;
+  doc["fuelTrimPercent"] = lpgEnabled ? trimSum : 0.0f;
   doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
   // The two halves are reported apart from their sum. A large sum alone says
   // only that the engine is compensating; a large long-term part with a small
@@ -1253,17 +1264,15 @@ void ServicePortal::sendStatus() {
   // fault from injectors hunting around a correct target.
   if (lpgEnabled) {
     JsonObject trims = doc["fuelTrims"].to<JsonObject>();
-    const bool fresh = telemetry_.shortFuelTrimPercent.valid(now) &&
-                       telemetry_.longFuelTrimPercent.valid(now);
-    if (fresh) {
+    if (trimsFresh) {
       trims["shortTermPercent"] = telemetry_.shortFuelTrimPercent.value;
       trims["longTermPercent"] = telemetry_.longFuelTrimPercent.value;
-      trims["sumPercent"] = telemetry_.fuelTrimSumPercent;
+      trims["sumPercent"] = trimSum;
       // A persistent offset is a tuning fault; a fast-changing short term with
       // a calm long term is normal fuel metering at part load.
       if (telemetry_.fuelTrimWarning) {
         trims["assessment"] =
-            telemetry_.fuelTrimSumPercent > 0.0f
+            trimSum > 0.0f
                 ? "смесь бедная: ЭБУ добавляет топливо"
                 : "смесь богатая: ЭБУ урезает топливо";
       } else {
@@ -1277,7 +1286,7 @@ void ServicePortal::sendStatus() {
       trims["sumPercent"] = nullptr;
       trims["assessment"] = "нет свежих коррекций";
     }
-    trims["valid"] = fresh;
+    trims["valid"] = trimsFresh;
     trims["warning"] = telemetry_.fuelTrimWarning;
   }
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
