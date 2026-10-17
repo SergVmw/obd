@@ -118,9 +118,18 @@ struct ConfigData {
   char apName[32];
   char apPassword[32];
 
-  // Applied to OBD PID 0D before display, distance and L/100 km
-  // calculations. Range is validated to -20..+20 km/h.
-  float speedCorrectionKph;
+  // Display only. PID 0x0D has been checked against GPS at four points and
+  // tracks it; the block's own speed reading is true and the wheels are stock,
+  // so what this corrects is the dashboard needle, which reads about 5 km/h high.
+  // Nothing calculated reads this field - measuredSpeedKph() in telemetry.cpp
+  // works from rawSpeedKph.
+  //
+  // The comment this replaced claimed the offset was applied before the distance
+  // and L/100 km calculations, which was true until 0.4.19 closed that leak and
+  // false afterwards. It was left behind in a field whose whole purpose is to be
+  // understood by whoever changes it next.
+  // Range is validated to -20..+20 km/h.
+  float displaySpeedOffsetKph;
 
   uint8_t displayStartPage() const { return startPage; }
   void setDisplayStartPage(uint8_t page) { startPage = page; }

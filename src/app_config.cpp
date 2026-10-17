@@ -29,7 +29,7 @@ static_assert(std::is_trivially_copyable<ConfigData>::value &&
               "NVS config must remain trivially copyable and standard-layout");
 static_assert(offsetof(ConfigData, brightness) == kV5ChecksumOffset,
               "Schema-5 prefix changed; update migration explicitly");
-static_assert(offsetof(ConfigData, speedCorrectionKph) == 192,
+static_assert(offsetof(ConfigData, displaySpeedOffsetKph) == 192,
               "Schema-5 speed correction offset");
 static_assert(offsetof(ConfigData, screenOffDelaySec) == kV6ChecksumOffset,
               "Schema-6 prefix changed; update the migration explicitly");
@@ -129,7 +129,7 @@ ConfigData ConfigStore::defaults() {
 
   // User-selectable. A typical speedometer correction can be entered as -5,
   // but a firmware update must not silently change distance accounting.
-  c.speedCorrectionKph = 0.0f;
+  c.displaySpeedOffsetKph = 0.0f;
 
   c.checksum = checksum(c);
   return c;
@@ -160,7 +160,7 @@ bool ConfigStore::valid(const ConfigData& config) {
       std::isfinite(config.petrolDensity) &&
       std::isfinite(config.lpgAfr) &&
       std::isfinite(config.lpgDensity) &&
-      std::isfinite(config.speedCorrectionKph);
+      std::isfinite(config.displaySpeedOffsetKph);
   const size_t deviceNameLength =
       strnlen(config.deviceName, sizeof(config.deviceName));
   const size_t apNameLength = strnlen(config.apName, sizeof(config.apName));
@@ -208,8 +208,8 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.obdTimeoutMs >= 50 && config.obdTimeoutMs <= 1000 &&
          config.maxRequestsPerSecond >= 5 &&
          config.maxRequestsPerSecond <= 60 &&
-         config.speedCorrectionKph >= -20.0f &&
-         config.speedCorrectionKph <= 20.0f &&
+         config.displaySpeedOffsetKph >= -20.0f &&
+         config.displaySpeedOffsetKph <= 20.0f &&
          deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
          apNameLength > 0 && apNameLength < sizeof(config.apName) &&
          apPasswordLength >= 8 &&
@@ -292,7 +292,7 @@ bool ConfigStore::begin() {
   bool needsSave = false;
 
   if (storedLength == sizeof(ConfigData)) {
-    uint8_t record[sizeof(ConfigData)];
+    uint8_t record[sizeof(ConfigData)]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record);
     // Same length as a schema-7 record, so the size cannot tell them apart: read
@@ -326,10 +326,10 @@ bool ConfigStore::begin() {
     config_ = defaults();
     needsSave = true;
   }
-  if (!std::isfinite(config_.speedCorrectionKph) ||
-      config_.speedCorrectionKph < -20.0f ||
-      config_.speedCorrectionKph > 20.0f) {
-    config_.speedCorrectionKph = 0.0f;
+  if (!std::isfinite(config_.displaySpeedOffsetKph) ||
+      config_.displaySpeedOffsetKph < -20.0f ||
+      config_.displaySpeedOffsetKph > 20.0f) {
+    config_.displaySpeedOffsetKph = 0.0f;
     needsSave = true;
   }
   // A stored value outside the enumeration would make drawMain fall through to

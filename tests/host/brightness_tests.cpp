@@ -94,7 +94,7 @@ std::vector<uint8_t> v5Record(bool inverted = false) {
   c.brightnessNight = inverted ? 50 : 19;
   c.petrolCorrection = 1.18f;
   c.lpgCorrection = 1.31f;
-  c.speedCorrectionKph = -4.5f;
+  c.displaySpeedOffsetKph = -4.5f;
   c.lpgEnabled = true;
   c.colorText = 0x1234;
   c.centerValue = MainCenterValue::AverageConsumption;
@@ -120,7 +120,7 @@ std::vector<uint8_t> v6Record() {
   c.brightnessNight = 15;
   c.lpgEnabled = true;
   c.lpgCorrection = 1.2f;
-  c.speedCorrectionKph = 5.0f;
+  c.displaySpeedOffsetKph = 5.0f;
   c.obdTimeoutMs = 200;
   c.maxRequestsPerSecond = 50;
   c.fuelSource = FuelSource::SpeedDensity;
@@ -143,7 +143,7 @@ void testSchema6RecordKeepsEverySetting() {
   CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
   CHECK(c.brightnessDay == 92 && c.brightnessNight == 15);
   CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.2f));
-  CHECK(near(c.speedCorrectionKph, 5.0f));
+  CHECK(near(c.displaySpeedOffsetKph, 5.0f));
   CHECK(c.obdTimeoutMs == 200 && c.maxRequestsPerSecond == 50);
   CHECK(c.fuelSource == FuelSource::SpeedDensity);
   CHECK(c.centerValue == MainCenterValue::CurrentConsumption);
@@ -446,7 +446,7 @@ int main() {
     CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA && c.brightnessDay == 73 &&
           c.brightnessNight == 19);
     CHECK(near(c.petrolCorrection, 1.18f) && near(c.lpgCorrection, 1.31f));
-    CHECK(near(c.speedCorrectionKph, -4.5f) && c.lpgEnabled);
+    CHECK(near(c.displaySpeedOffsetKph, -4.5f) && c.lpgEnabled);
     CHECK(c.colorText == 0x1234 && c.startPage == 2 && !c.dfcoCorrectionEnabled);
     CHECK(c.language == UiLanguage::English);
     CHECK(c.centerValue == MainCenterValue::AverageConsumption);

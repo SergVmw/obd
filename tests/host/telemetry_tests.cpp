@@ -53,7 +53,7 @@ ConfigData testConfig() {
   config.lpgAfr = 15.5f;
   config.lpgDensity = 540.0f;
   config.switchSpeedKph = 5;
-  config.speedCorrectionKph = 0.0f;
+  config.displaySpeedOffsetKph = 0.0f;
 
   config.lpgEnabled = false;
   config.fuelTrimPollingEnabled = true;
@@ -414,7 +414,7 @@ void testBoostDerivationAndSmoothing() {
 void testSpeedCorrectionPreservesTimestampAndClampsAtZero() {
   Rig rig;
   ConfigData config = testConfig();
-  config.speedCorrectionKph = -10.0f;
+  config.displaySpeedOffsetKph = -10.0f;
   rig.data.rpm.set(2000.0f, 2000);
   rig.data.rawSpeedKph.set(40.0f, 2000);
   rig.engine.update(2000, config, false);
@@ -428,7 +428,7 @@ void testSpeedCorrectionPreservesTimestampAndClampsAtZero() {
   // the opposite — that the correction could switch the gauge out of per-distance
   // mode — which is the coupling this change removes, and switchSpeedKph asks
   // whether the car is moving, not what the screen happens to claim.
-  config.speedCorrectionKph = -50.0f;
+  config.displaySpeedOffsetKph = -50.0f;
   rig.data.rpm.set(2000.0f, 3000);
   rig.data.rawSpeedKph.set(20.0f, 3000);
   rig.data.fuelRateLph.set(10.0f, 3000);
@@ -446,7 +446,7 @@ void testStandingBandSuppressesCorrectionAndDistance() {
   // switched to L/100km and integrated trip distance from an idling engine.
   Rig rig;
   ConfigData config = testConfig();
-  config.speedCorrectionKph = 5.0f;
+  config.displaySpeedOffsetKph = 5.0f;
   rig.data.rpm.set(750.0f, 1000);
   rig.data.fuelRateLph.set(2.275f, 1000);
 
@@ -484,7 +484,7 @@ void testStandingBandSuppressesCorrectionAndDistance() {
   CHECK(near(rig.trip.totalDistanceKm, distanceAtBandEdge));
 }
 
-// speedCorrectionKph exists so the readout agrees with the dashboard needle, and
+// displaySpeedOffsetKph exists so the readout agrees with the dashboard needle, and
 // for nothing else. It used to reach two calculated figures: the distance
 // integral and the divisor of the instantaneous L/100 km. On the measured trip
 // that made it 14.2% of the LPG distance and 40.1% of the petrol leg, so a
@@ -503,7 +503,7 @@ struct DriveResult {
 DriveResult driveWithCorrection(float correction) {
   Rig rig;
   ConfigData config = testConfig();
-  config.speedCorrectionKph = correction;
+  config.displaySpeedOffsetKph = correction;
   // begin() stamps lastUpdateAt_ at the rig's millis, so the first call lands on
   // a zero-length interval and contributes nothing. Starting one second later
   // makes every remaining interval exactly one second and the expected distance

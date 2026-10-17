@@ -48,7 +48,7 @@ float_ranges = {
     "boostWarningBar": (0.2, 2.0), "boostDangerBar": (0.3, 2.5),
     "petrolCorrection": (0.5, 1.5), "lpgCorrection": (0.5, 2.0),
     "lpgAfr": (10.0, 20.0), "lpgDensity": (400.0, 700.0),
-    "speedCorrectionKph": (-20.0, 20.0),
+    "displaySpeedOffsetKph": (-20.0, 20.0),
 }
 for field, (low, high) in integer_ranges.items():
     pattern = rf'\{{\s*"{field}"\s*,\s*{low}\s*,\s*{high}\s*\}}'

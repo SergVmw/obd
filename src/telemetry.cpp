@@ -209,7 +209,7 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
     const bool standing = data_.rawSpeedKph.value < kParkedRawSpeedKph;
     data_.speedKph.value = standing
         ? 0.0f
-        : fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
+        : fmaxf(0.0f, data_.rawSpeedKph.value + config.displaySpeedOffsetKph);
     data_.speedKph.updatedAt = data_.rawSpeedKph.updatedAt;
   } else {
     data_.speedKph.value = NAN;
@@ -358,7 +358,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   }
 
   // The divisor is the measured speed, not the displayed one. Dividing by a
-  // value carrying speedCorrectionKph made the large readout a different figure
+  // value carrying displaySpeedOffsetKph made the large readout a different figure
   // from the two cells beneath it on the same screen: the cells divide by
   // accumulated distance, this one by instantaneous speed, and only this one was
   // scaled. That is a correction of a measurement the driver never sees.
@@ -397,7 +397,7 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   //
   // This is where the correction used to enter, and it fed every distance the
   // gauge keeps: recentDistanceKm_, totalDistanceKm, both per-fuel distances and
-  // the tank calibration. On one measured trip speedCorrectionKph = 5 accounted
+  // the tank calibration. On one measured trip displaySpeedOffsetKph = 5 accounted
   // for 14.2% of the LPG distance and 40.1% of the petrol leg, so a display
   // preference was silently rescaling litres per 100 km by 16.6%. What it does
   // now is confined to the readout, where it belongs.

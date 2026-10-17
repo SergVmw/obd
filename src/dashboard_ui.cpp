@@ -24,8 +24,13 @@ constexpr int16_t kDisplaySize = 240;
 constexpr int16_t kSmallTextHeight = 24;
 constexpr int16_t kMediumTextHeight = 32;
 constexpr int16_t kLargeTextHeight = 46;
-// 28 px digits need a band no shorter than their ascent plus descent; 34 is the
-// same padding the 38 px size gets over 46.
+// The 28 px digits have ascent 19 and no descent, so a band of 34 leaves 15 rows
+// of headroom; the 38 px size is ascent 28 plus descent 1 in a band of 46, which
+// leaves 17. The two are close but not equal, and an earlier comment here claimed
+// they were the same padding. They are not, and the difference is two rows, which
+// moves the baseline by about a pixel between the two sizes - small enough not to
+// be worth tuning blind against a screen, and noted so the next reader does not
+// mistake the near-match for a rule.
 constexpr int16_t kSmallDigitTextHeight = 34;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t);
