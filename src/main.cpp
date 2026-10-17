@@ -64,7 +64,9 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
 
 bool serviceMode = false;
 bool engineWasRunning = false;
-// Rollback-by-button state, both cleared whenever service mode is left.
+// Rollback-by-button state. Cleared on entry to service mode, not on leaving
+// it: the selector is only reachable from here, so a stale one from a previous
+// session has nothing to leak into.
 bool rollbackSelector = false;
 bool rollbackArmed = false;
 uint32_t lastMemoryLogAt = 0;
@@ -498,9 +500,10 @@ void loop() {
     else if (engineStopped) engineWasRunning = false;
   }
 
-if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
+  if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
     enterLowVoltageSleep();
   }
+
   dashboard.render(now, telemetry, telemetryEngine, configStore.data());
 
   if (event == ButtonEvent::ShortPress) {
