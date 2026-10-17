@@ -64,6 +64,9 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
 
 bool serviceMode = false;
 bool engineWasRunning = false;
+// Rollback-by-button state, both cleared whenever service mode is left.
+bool rollbackSelector = false;
+bool rollbackArmed = false;
 uint32_t lastMemoryLogAt = 0;
 
 void serviceDtcPersistence(uint32_t now) {
@@ -218,6 +221,9 @@ void captureDiagnosticTrace(uint32_t now) {
 void enterServiceMode() {
   if (serviceMode) return;
   serviceMode = true;
+  // A fresh session starts with no half-made rollback decision behind it.
+  rollbackSelector = false;
+  rollbackArmed = false;
 #ifdef H2G_DIAGNOSTIC_BUILD
   diagnosticTrace.setCaptureActive(false);
 #endif
@@ -344,6 +350,11 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  // Service mode owns the two-press gesture; the dashboard owns it as a double
+  // page turn. Stated here rather than derived from the brightness setting,
+  // because a slot selector that only works in manual brightness is a selector
+  // most owners never find.
+  button.setMultiClickMode(serviceMode ? 1 : 0);
   button.update(now, configStore.data());
   const ButtonEvent event = button.takeEvent();
   if (event == ButtonEvent::QuadPress &&
@@ -401,6 +412,53 @@ void loop() {
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
     servicePortal.loop();
+    // Rollback without a laptop. Two presses open the selector, a long press
+    // points the next boot at the other slot, and a longer hold restarts. The
+    // versions are on the screen at each step because the whole point is that
+    // the owner can see what they are choosing before it happens.
+    if (event == ButtonEvent::DoublePress && !rollbackSelector) {
+      char version[33];
+      if (servicePortal.otherSlotVersion(version, sizeof(version))) {
+        rollbackSelector = true;
+        rollbackArmed = false;
+        dashboard.showMessage("ОТКАТ ПРОШИВКИ", version,
+                              configStore.data(), "ДЛИННОЕ - ВЫБОР СЛОТА");
+      } else {
+        dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "ВТОРОЙ СЛОТ ПУСТ",
+                              configStore.data(), "УСТАНОВИТЕ ПРОШИВКУ");
+      }
+    } else if (rollbackSelector && event == ButtonEvent::LongPress &&
+               !rollbackArmed) {
+      switch (servicePortal.selectOtherSlotForBoot()) {
+        case ServicePortal::RollbackResult::Ok:
+          rollbackArmed = true;
+          dashboard.showMessage("СЛОТ ВЫБРАН", "ПЕРЕЗАГРУЗКА ВЫБРАН",
+                                configStore.data(), "ДЛИННОЕ - ПЕРЕЗАПУСК");
+          break;
+        case ServicePortal::RollbackResult::NoOtherSlot:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "НЕТ ВТОРОГО СЛОТА",
+                                configStore.data(), "");
+          break;
+        case ServicePortal::RollbackResult::NoImage:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "СЛОТ БЕЗ ПРОШИВКИ",
+                                configStore.data(), "");
+          break;
+        case ServicePortal::RollbackResult::Failed:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОШИБКА ОТКАТА", "СЛОТ НЕ ВЫБРАН",
+                                configStore.data(), "");
+          break;
+      }
+    } else if (rollbackArmed && event == ButtonEvent::ServiceHold) {
+      if (!persistence.checkpoint(trip, petrolCalibration,
+                                  configStore.data().saveTrip, true)) {
+        ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+      }
+      brightnessManager.checkpoint();
+      ESP.restart();
+    }
     if (event == ButtonEvent::ServiceHold) {
       brightnessManager.checkpoint();
       ESP.restart();
@@ -439,7 +497,8 @@ void loop() {
     if (engineRunning) engineWasRunning = true;
     else if (engineStopped) engineWasRunning = false;
   }
-  if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
+
+if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
     enterLowVoltageSleep();
   }
   dashboard.render(now, telemetry, telemetryEngine, configStore.data());

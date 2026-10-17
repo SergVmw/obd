@@ -11,12 +11,28 @@ void OneButton::begin() {
 
 void OneButton::flushClicks() {
   const uint16_t total = queuedShorts_ + clickCount_;
+  // A two-press burst is one DoublePress where the caller asked for it, and still
+  // two page turns everywhere else. Emitting it eagerly on the second press would
+  // instead swallow the fourth press of the brightness gesture, because the
+  // counter would already have been reset by then.
+  if (doublePressEnabled_ && total == 2 && event_ == ButtonEvent::None) {
+    queuedShorts_ = 0;
+    clickCount_ = 0;
+    event_ = ButtonEvent::DoublePress;
+    return;
+  }
   queuedShorts_ = total > 16 ? 16 : total;
   clickCount_ = 0;
 }
 
 void OneButton::update(uint32_t now, const ConfigData& config) {
-  const bool multi = config.brightness.mode == BrightnessMode::Manual;
+  // The caller may override. Service mode needs a two-press gesture to work on a
+  // device in automatic brightness, and the brightness mode is exactly what
+  // cannot be relied on to enable it.
+  const bool multi = multiClickMode_ >= 0
+                         ? multiClickMode_ != 0
+                         : config.brightness.mode == BrightnessMode::Manual;
+  doublePressEnabled_ = multiClickMode_ > 0;
   if (multi != multiEnabled_) {
     flushClicks();
     multiEnabled_ = multi;

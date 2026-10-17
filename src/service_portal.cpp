@@ -2970,6 +2970,108 @@ void ServicePortal::handleOtaPreflight() {
   server_.send(200, "application/json", output);
 }
 
+
+const esp_partition_t* ServicePortal::resolveOtherSlot() const {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
+  if (!running || !other || other->address == running->address) return nullptr;
+  return other;
+}
+
+// Whether that slot holds something runnable at all. A refusal here is better
+// than a boot loop found in a lay-by: the descriptor has to read back with a
+// sane magic word, or there is no firmware there to run.
+bool ServicePortal::readOtherSlotVersion(const esp_partition_t* slot,
+                                         char* out,
+                                         size_t capacity) const {
+  esp_app_desc_t descriptor{};
+  if (esp_ota_get_partition_description(slot, &descriptor) != ESP_OK ||
+      descriptor.magic_word != ESP_APP_DESC_MAGIC_WORD ||
+      descriptor.version[0] == '\0') {
+    return false;
+  }
+  snprintf(out, capacity, "%s", descriptor.version);
+  return true;
+}
+
+bool ServicePortal::otherSlotVersion(char* out, size_t capacity) const {
+  const esp_partition_t* other = resolveOtherSlot();
+  return other && readOtherSlotVersion(other, out, capacity);
+}
+
+ServicePortal::RollbackResult ServicePortal::selectOtherSlotForBoot() {
+  const esp_partition_t* other = resolveOtherSlot();
+  if (!other) return RollbackResult::NoOtherSlot;
+
+  char version[33]{};
+  if (!readOtherSlotVersion(other, version, sizeof(version))) {
+    ESP_LOGE(kTag, "Rollback target at 0x%x holds no readable image",
+             static_cast<unsigned>(other->address));
+    return RollbackResult::NoImage;
+  }
+
+  // Same helper the upload path uses, so the partition write happens off
+  // loopTask rather than stalling it past the watchdog.
+  const NativeOtaJobResult job =
+      runNativeOtaJob(NativeOtaJob::SelectBoot, 0, other,
+                      kNativeOtaJobTimeoutMs);
+  if (!job.started || job.result != ESP_OK) {
+    ESP_LOGE(kTag, "Rollback boot selection failed: %s",
+             esp_err_to_name(job.started ? job.result : ESP_ERR_NO_MEM));
+    return RollbackResult::Failed;
+  }
+
+  const esp_partition_t* selected = esp_ota_get_boot_partition();
+  if (!selected || selected->address != other->address) {
+    return RollbackResult::Failed;
+  }
+  ESP_LOGI(kTag, "Rollback to %s at 0x%x selected",
+           version, static_cast<unsigned>(other->address));
+  return RollbackResult::Ok;
+}
+
+// Hands the boot selection back to the slot that is not running.
+//
+// The device lives in a car. A firmware that boots but behaves wrongly - a
+// broken screen, a portal that will not answer, a fuel figure that lies - leaves
+// the owner with no way back except a programmer and a bench, and the one
+// automatic guard does not help: the image is marked valid as soon as it loads,
+// so the chip's own rollback is cancelled before it can fire. Found that way on
+// the car, with a working 0.4.19 sitting in the other slot and nothing able to
+// select it.
+void ServicePortal::handleOtaRollback() {
+  touch();
+  if (!requireAction("ota-rollback", lastRollbackAt_, 30000)) return;
+
+  char version[33]{};
+  switch (selectOtherSlotForBoot()) {
+    case RollbackResult::NoOtherSlot:
+      server_.send(409, "application/json", "{\"error\":\"no_other_slot\"}");
+      return;
+    case RollbackResult::NoImage:
+      server_.send(409, "application/json",
+                   "{\"error\":\"other_slot_holds_no_image\"}");
+      return;
+    case RollbackResult::Failed:
+      server_.send(500, "application/json",
+                   "{\"error\":\"boot_selection_failed\"}");
+      return;
+    case RollbackResult::Ok:
+      break;
+  }
+
+  (void)otherSlotVersion(version, sizeof(version));
+  // The same shutdown sequence a normal exit uses, so brightness and the
+  // runtime record reach storage before the reset rather than after.
+  if (!persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                               configStore_.data().saveTrip, true)) {
+    ESP_LOGE(kTag, "Rollback runtime checkpoint failed");
+  }
+  brightness_.checkpoint();
+  server_.send(200, "application/json",
+               String("{\"rollback\":true,\"version\":\"") + version + "\"}");
+  rebootAt_ = millis() + 1500;
+}
 void ServicePortal::sendOtaStatus() {
   touch();
   const esp_partition_t* nextPartition =

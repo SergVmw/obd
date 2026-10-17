@@ -7,6 +7,7 @@
 enum class ButtonEvent : uint8_t {
   None = 0,
   ShortPress,
+  DoublePress,
   LongPress,
   ServiceHold,
   QuadPress,
@@ -22,11 +23,21 @@ class OneButton {
   static constexpr uint32_t kMultiClickGapMs = 400;
   static constexpr uint32_t kQuickPressMaxMs = 500;
 
+  // Two quick presses normally mean two page turns, and that is the behaviour
+  // everywhere except service mode, where it means "open the slot selector".
+  // Turning it on for good would cost the dashboard a double-tap it uses, and
+  // turning it on by brightness mode is no better: the gesture has to work on a
+  // device in automatic brightness, so the caller states it rather than
+  // inferring it. -1 leaves the decision to the brightness setting.
+  void setMultiClickMode(int8_t mode) { multiClickMode_ = mode; }
+
  private:
   bool rawPressed_ = false;
   bool stablePressed_ = false;
   bool serviceFired_ = false;
   bool multiEnabled_ = false;
+  int8_t multiClickMode_ = -1;
+  bool doublePressEnabled_ = false;
   uint8_t clickCount_ = 0;
   uint8_t queuedShorts_ = 0;
   uint32_t lastReleaseAt_ = 0;
