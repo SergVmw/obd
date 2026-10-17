@@ -257,7 +257,13 @@
  </div>
 </div>
 </section>
-<div class="save"><span id="msg">Конфигурация загружена</span><button class="btn primary" id="save" disabled>Сохранить настройки</button></div>
+<div class="note" id="restorePanel" hidden style="margin-top:12px">
+  <b>Восстановление из файла</b>
+  <div id="restoreSummary" style="margin:8px 0"></div>
+  <div id="restoreDiff" class="canwrap" style="max-height:240px"></div>
+  <div class="buttons"><button class="btn primary" id="restoreApply">Восстановить эти настройки</button><button class="btn" id="restoreCancel">Отмена</button></div>
+</div>
+<div class="save"><span id="msg">Конфигурация загружена</span><span class="buttons" style="margin:0"><button class="btn" id="exportConfig" title="Скачать все настройки в файл">Выгрузить в файл</button><button class="btn" id="importConfig" title="Восстановить настройки из ранее выгруженного файла">Загрузить из файла</button><input id="importFile" type="file" accept=".json,application/json" hidden><button class="btn primary" id="save" disabled>Сохранить настройки</button></span></div>
 </main>
 <script>
 const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).value, c=id=>$(id).checked;
@@ -395,6 +401,131 @@ function drawGaugePreview(){
 }
 async function load(){try{const saved=await api('/api/config');apply(saved);$('save').disabled=false;$('msg').textContent='Сохранённая конфигурация ESP32 загружена'}catch(e){$('msg').textContent='Нет ответа ESP32 — показаны заводские настройки: '+e.message}}
 $('save').onclick=async()=>{const lightError=brightnessFormError();if(lightError){$('msg').textContent=lightError;return}const q=config(),b=q.boost;if(!Number.isFinite(b.boostMinBar)||!Number.isFinite(b.boostMaxBar)||!Number.isFinite(b.boostWarningBar)||!Number.isFinite(b.boostDangerBar)||!(b.boostMinBar<0&&b.boostWarningBar>0&&b.boostWarningBar<b.boostDangerBar&&b.boostDangerBar<=b.boostMaxBar)){$('msg').textContent='Ошибка: требуется min < 0 < предупреждение < опасность ≤ max';return}try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(q)});$('msg').textContent='Сохранено. День / Ночь применяются по режиму; временная яркость остаётся отдельной до перезагрузки. Оформление — после выхода из сервиса.';await status()}catch(e){$('msg').textContent='Ошибка: '+e.message}};
+// Выгрузка и восстановление настроек. Всё делается здесь, на странице:
+// /api/config уже отдаёт весь набор полей, а receiveConfig сливает присланное
+// с текущим, проверяет диапазоны и откатывается в памяти, если NVS отказал
+// (service_portal.cpp:893-896). Прошивке для этого ничего не нужно, а значит и
+// риска нет — файл читает браузер, прибор только принимает результат.
+const BACKUP_KIND='h2g-settings-backup';
+
+// Листья дерева настроек в плоский вид: путь → значение. Сравнение по путям, а
+// не по ключам верхнего уровня, иначе любая перестановка групп выглядела бы
+// изменением всех настроек разом.
+function flattenSettings(obj,prefix,out){
+  for(const key of Object.keys(obj||{})){
+    const value=obj[key],path=prefix?prefix+'.'+key:key;
+    if(value&&typeof value==='object'&&!Array.isArray(value))flattenSettings(value,path,out);
+    else out[path]=value;
+  }
+  return out;
+}
+
+function downloadSettingsFile(envelope,filename){
+  const blob=new Blob([JSON.stringify(envelope,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+}
+
+async function readStoredConfig(){
+  const stored=await api('/api/config');
+  if(!stored||typeof stored!=='object')throw Error('прибор не отдал настройки');
+  return stored;
+}
+
+$('exportConfig').onclick=async()=>{
+  try{
+    const stored=await readStoredConfig();
+    const config={...stored};
+    // Служебные поля не настройки: оставляем их только в конверте.
+    const schemaVersion=config.schemaVersion,firmwareVersion=config.firmwareVersion;
+    delete config.schemaVersion;delete config.firmwareVersion;
+    downloadSettingsFile({kind:BACKUP_KIND,version:1,savedAt:diagStamp(),
+      firmwareVersion:firmwareVersion||null,schemaVersion:schemaVersion||null,config:config},
+      `h2g-settings-${diagStamp()}.json`);
+    $('msg').textContent='Копия настроек выгружена. Перед восстановлением с текущего состояния снимается своя копия.';
+  }catch(e){$('msg').textContent='Выгрузка не удалась: '+e.message}
+};
+
+let pendingRestore=null;
+
+function closeRestorePanel(){
+  pendingRestore=null;$('restorePanel').hidden=true;
+  $('restoreApply').disabled=false;
+}
+
+async function previewRestore(file){
+  let parsed;
+  try{parsed=JSON.parse(await file.text())}
+  catch(e){$('msg').textContent='Файл не является корректным JSON: '+e.message;return}
+  if(!parsed||typeof parsed!=='object'){$('msg').textContent='Файл не содержит настроек.';return}
+
+  let stored;
+  try{stored=await readStoredConfig()}
+  catch(e){$('msg').textContent='Нет ответа прибора — восстановление невозможно: '+e.message;return}
+
+  const envelope=parsed.kind===BACKUP_KIND;
+  const incoming=envelope?parsed.config:parsed;
+  if(!incoming||typeof incoming!=='object'||Array.isArray(incoming)){
+    $('msg').textContent='В файле нет объекта настроек.';return;
+  }
+
+  const fileSchema=envelope?parsed.schemaVersion:null;
+  const currentSchema=stored.schemaVersion;
+  if(Number.isFinite(fileSchema)&&Number.isFinite(currentSchema)&&fileSchema>currentSchema){
+    $('msg').textContent=`Файл записан по схеме ${fileSchema}, прибор работает по схеме ${currentSchema}. Часть полей этому прибору неизвестна, применять их нельзя. Обновите прибор или возьмите более свежий файл.`;
+    return;
+  }
+
+  const before=flattenSettings(stored),after=flattenSettings(incoming),rows=[];
+  for(const path of Object.keys(after)){
+    const to=after[path],from=before[path];
+    if(!(path in before)){rows.push([path,'—',to]);continue}
+    if(String(from)!==String(to))rows.push([path,from,to]);
+  }
+
+  pendingRestore=incoming;
+  $('restoreSummary').innerHTML=
+    `Файл <b>${file.name}</b>`+(envelope?` — выгружен ${parsed.savedAt||'дата не указана'}, прошивка ${parsed.firmwareVersion||'не указана'}, схема ${fileSchema??'не указана'}`:` — без конверта, принят как содержимое /api/config`)+
+    `. Схема прибора: <b>${currentSchema??'не указана'}</b>. Изменений: <b>${rows.length}</b>.`+
+    (rows.length===0?' Настройки совпадают с текущими.':' Поля, которых нет в файле, останутся как есть.');
+  $('restoreDiff').innerHTML=rows.length
+    ?`<table class="cantable"><thead><tr><th>Параметр</th><th>Сейчас</th><th>Из файла</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td class="tx">${r[2]}</td></tr>`).join('')}</tbody></table>`
+    :'<div class="note">Различий нет.</div>';
+  $('restorePanel').hidden=false;
+  $('msg').textContent='Проверьте различия и подтвердите восстановление. До записи снимается копия текущих настроек.';
+}
+
+$('importConfig').onclick=()=>$('importFile').click();
+$('importFile').onchange=e=>{const file=e.target.files[0];e.target.value='';if(file)previewRestore(file)};
+$('restoreCancel').onclick=closeRestorePanel;
+
+$('restoreApply').onclick=async()=>{
+  if(!pendingRestore)return;
+  const payload=pendingRestore;
+  $('restoreApply').disabled=true;
+  try{
+    // Копия того, что сейчас в приборе, снимается до записи: восстановление
+    // перезаписывает настройки, и без этого файла откат был бы невозможен.
+    const stored=await readStoredConfig();
+    const config={...stored};
+    const schemaVersion=config.schemaVersion,firmwareVersion=config.firmwareVersion;
+    delete config.schemaVersion;delete config.firmwareVersion;
+    downloadSettingsFile({kind:BACKUP_KIND,version:1,savedAt:diagStamp(),
+      firmwareVersion:firmwareVersion||null,schemaVersion:schemaVersion||null,config:config},
+      `h2g-settings-before-restore-${diagStamp()}.json`);
+    await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)});
+    closeRestorePanel();
+    $('msg').textContent='Настройки восстановлены. Оформление — после выхода из сервиса.';
+    await load();
+  }catch(e){
+    $('msg').textContent='Восстановление не выполнено: '+e.message;
+    $('restoreApply').disabled=false;
+  }
+};
+
 $('captureBaro').onclick=()=>api('/api/baro/capture',{method:'POST'}).then(()=>$('msg').textContent='Текущее MAP принято').catch(e=>$('msg').textContent=e.message);
 $('resetTrip').onclick=()=>confirm('Сбросить обычную поездку? Отдельный бензиновый интервал калибровки сохранится.')&&api('/api/trip/reset',{method:'POST'}).then(()=>$('msg').textContent='Поездка сброшена; калибровочный интервал не изменён');
 $('calcLpg').onclick=()=>{const calc=n('lpgCalculated'),actual=n('lpgActual');if(calc>0&&actual>0){set('lpgCorrection',(n('lpgCorrection')*actual/calc).toFixed(3));$('msg').textContent='Новый коэффициент LPG рассчитан. Нажмите «Сохранить».'}};

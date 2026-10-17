@@ -533,6 +533,13 @@ void ServicePortal::sendConfig() {
   const ConfigData& c = configStore_.data();
   JsonDocument doc;
 
+  // Two read-only fields so a downloaded settings file describes itself. Without
+  // them a backup is a bag of numbers with no way to tell which layout wrote it,
+  // and restore has to accept whatever arrives. Placed outside every group so
+  // receiveConfig's merge ignores them and the form's apply() never sees them.
+  doc["schemaVersion"] = c.schemaVersion;
+  doc["firmwareVersion"] = H2G_FW_VERSION;
+
   JsonObject display = doc["display"].to<JsonObject>();
   display["brightnessDay"] = c.brightnessDay;
   display["brightnessNight"] = c.brightnessNight;
