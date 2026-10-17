@@ -285,13 +285,12 @@ void appendRawResponseJson(JsonObject parent, const char* key,
   hex[out] = '\0';
   parent[key] = hex;
 }
+
 }  // namespace
 
-bool ServicePortal::begin() {
-  // Read each OTA image once before status polling starts. Flash contents do
-  // not change again until a successful OTA schedules the reboot.
-  firmwareSlots_.scan();
-
+// Everything begin() does to bring the access point up: the SSID, the password
+// rule, the radio, and the captive-DNS answer.
+bool ServicePortal::bringUpAccessPoint() {
   const ConfigData& config = configStore_.data();
   const uint16_t suffix = static_cast<uint16_t>(ESP.getEfuseMac() & 0xFFFF);
   char suffixText[8];
@@ -310,14 +309,26 @@ bool ServicePortal::begin() {
   }
 
   dns_.start(53, "*", WiFi.softAPIP());
+  return true;
+}
+
+bool ServicePortal::begin() {
+  // Read each OTA image once before status polling starts. Flash contents do
+  // not change again until a successful OTA schedules the reboot.
+  firmwareSlots_.scan();
+
+  if (!bringUpAccessPoint()) return false;
+
   setupRoutes();
   server_.begin();
   startedAt_ = lastActivityAt_ = millis();
+  serviceSession_ = true;
 
   ESP_LOGI(kTag, "AP %s, http://%s", ssid_.c_str(),
            WiFi.softAPIP().toString().c_str());
   return true;
 }
+
 
 void ServicePortal::touch() { lastActivityAt_ = millis(); }
 
@@ -347,6 +358,18 @@ bool ServicePortal::requireAction(const char* action,
   return true;
 }
 
+// The service timeout exists to end a session where the operator walked away
+// from an editable portal. The drive page has no operator and no session to
+// end, and the journey outlives any service timeout, so the reboot must not
+// reach it: a gauge that restarts at the 90-minute mark of a road trip is a
+// gauge that stopped recording the trip. Production has no drive mode and
+// compiles the check out, leaving the original condition intact.
+bool ServicePortal::serviceTimeoutDue(uint32_t now) const {
+  const uint32_t timeoutMs =
+      configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
+  return timeoutMs > 0 && now - lastActivityAt_ > timeoutMs;
+}
+
 void ServicePortal::loop() {
   dns_.processNextRequest();
   server_.handleClient();
@@ -360,9 +383,7 @@ void ServicePortal::loop() {
     ESP.restart();
   }
 
-  const uint32_t timeoutMs =
-      configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
-  if (timeoutMs > 0 && now - lastActivityAt_ > timeoutMs) {
+  if (serviceTimeoutDue(now)) {
     ESP_LOGI(kTag, "Service timeout; rebooting");
     persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                             configStore_.data().saveTrip, true);
@@ -496,6 +517,8 @@ void ServicePortal::setupRoutes() {
              [this]() { handleOtaPreflight(); });
   server_.on("/api/ota/status", HTTP_GET,
              [this]() { sendOtaStatus(); });
+  server_.on("/api/ota/rollback", HTTP_POST,
+             [this]() { handleOtaRollback(); });
 
   // The body is sent as application/octet-stream, not multipart/form-data.
   // Arduino-ESP32 2.0.17 parses multipart in one blocking byte-by-byte loop;
@@ -513,6 +536,7 @@ void ServicePortal::setupRoutes() {
     server_.send(302, "text/plain", "");
   });
 }
+
 
 void ServicePortal::sendIndex() {
   touch();
@@ -554,6 +578,11 @@ void ServicePortal::sendConfig() {
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
   display["mainDigitSize"] = static_cast<uint8_t>(c.mainDigit());
+  // A display offset, not a measurement setting: it shifts the readout so it can
+  // agree with the dashboard needle and reaches nothing that is calculated. It
+  // lives under display for that reason, and the portal's form fills inputs by
+  // matching JSON keys to element ids, so the group and the id have to agree.
+  display["displaySpeedOffsetKph"] = c.displaySpeedOffsetKph;
   display["uiLanguage"] = static_cast<uint8_t>(c.uiLanguage());
   display["autoReturnSec"] = c.autoReturnSec;
   display["pageFuel"] = c.pageFuel;
@@ -607,7 +636,6 @@ void ServicePortal::sendConfig() {
   JsonObject obd = doc["obd"].to<JsonObject>();
   obd["obdTimeoutMs"] = c.obdTimeoutMs;
   obd["maxRequestsPerSecond"] = c.maxRequestsPerSecond;
-  obd["speedCorrectionKph"] = c.speedCorrectionKph;
 
   JsonObject service = doc["service"].to<JsonObject>();
   service["deviceName"] = c.deviceName;
@@ -666,6 +694,15 @@ void ServicePortal::receiveConfig() {
       sendInvalidConfigField(server_, invalid, "a boolean");
       return;
     }
+    const FloatField displayFloats[] = {
+        {"displaySpeedOffsetKph", -20.0, 20.0}};
+    invalid = invalidFloatField(
+        d, displayFloats, sizeof(displayFloats) / sizeof(displayFloats[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "a finite number within the allowed range");
+      return;
+    }
     c.brightness.mode = static_cast<BrightnessMode>(
         d["brightnessMode"] | static_cast<int>(c.brightness.mode));
     c.brightness.manualNight = d["manualNight"] | c.brightness.manualNight;
@@ -683,6 +720,8 @@ void ServicePortal::receiveConfig() {
         d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
     c.setMainDigitSize(static_cast<MainDigitSize>(clampValue<int>(
         d["mainDigitSize"] | static_cast<int>(c.mainDigit()), 0, 1)));
+    c.displaySpeedOffsetKph = clampValue<float>(
+        d["displaySpeedOffsetKph"] | c.displaySpeedOffsetKph, -20.0f, 20.0f);
     c.setUiLanguage(static_cast<UiLanguage>(clampValue<int>(
         d["uiLanguage"] | static_cast<int>(c.uiLanguage()), 0, 1)));
     c.autoReturnSec = clampValue<int>(d["autoReturnSec"] | c.autoReturnSec, 0, 120);
@@ -843,18 +882,10 @@ void ServicePortal::receiveConfig() {
                              "an integer within the allowed range");
       return;
     }
-    const FloatField floatFields[] = {{"speedCorrectionKph", -20.0, 20.0}};
-    invalid = invalidFloatField(
-        obd, floatFields, sizeof(floatFields) / sizeof(floatFields[0]));
-    if (invalid) {
-      sendInvalidConfigField(server_, invalid,
-                             "a finite number within the allowed range");
-      return;
-    }
     c.obdTimeoutMs = clampValue<int>(obd["obdTimeoutMs"] | c.obdTimeoutMs, 50, 1000);
     c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 60);
-    c.speedCorrectionKph = clampValue<float>(
-        obd["speedCorrectionKph"] | c.speedCorrectionKph, -20.0f, 20.0f);
+    c.displaySpeedOffsetKph = clampValue<float>(
+        obd["displaySpeedOffsetKph"] | c.displaySpeedOffsetKph, -20.0f, 20.0f);
   }
 
   JsonObjectConst service = doc["service"];
@@ -874,7 +905,7 @@ void ServicePortal::receiveConfig() {
       isfinite(c.petrolCorrection) && isfinite(c.lpgCorrection) &&
       isfinite(c.petrolAfr) && isfinite(c.petrolDensity) &&
       isfinite(c.lpgAfr) && isfinite(c.lpgDensity) &&
-      isfinite(c.speedCorrectionKph);
+      isfinite(c.displaySpeedOffsetKph);
   if (!finiteValues) {
     server_.send(422, "application/json",
                  "{\"error\":\"configuration contains a non-finite number\"}");
@@ -993,7 +1024,22 @@ void ServicePortal::sendStatus() {
   } else {
     doc["speedDensityAirflowGps"] = nullptr;
   }
-  doc["fuelValueValid"] = telemetry_.fuelValueValid;
+  // Service mode runs refreshLiveTelemetry() instead of update(), and that path
+  // deliberately does not maintain the fuel model. So these three fields are not
+  // "no fuel figure" - they are "not being calculated here", and publishing them
+  // as false/zero was a document that contradicted itself: the same snapshot
+  // carried a live speedDensityAirflowGps and a fuelValueValid that meant only
+  // "the last update() before entry found nothing". Reading it that way cost an
+  // afternoon once already. Null says unknown; false would say measured.
+  const bool serviceSession = inServiceSession();
+  doc["serviceMode"] = serviceSession;
+  if (serviceSession) {
+    doc["fuelValueValid"] = nullptr;
+    doc["fuelModelState"] =
+        "service mode: refreshLiveTelemetry does not run the fuel model";
+  } else {
+    doc["fuelValueValid"] = telemetry_.fuelValueValid;
+  }
   doc["fuelSource"] = static_cast<uint8_t>(configStore_.data().fuelSource);
   doc["effectiveBaroKpa"] = telemetry_.effectiveBaroKpa;
 
@@ -1157,7 +1203,7 @@ void ServicePortal::sendStatus() {
   } else {
     doc["rpmAgeMs"] = nullptr;
   }
-  if (telemetry_.fuelValueValid && rpmFresh) {
+  if (!serviceSession && telemetry_.fuelValueValid && rpmFresh) {
     doc["fuelLph"] = telemetry_.currentFuelLph;
   } else {
     doc["fuelLph"] = nullptr;
@@ -1254,8 +1300,91 @@ void ServicePortal::sendStatus() {
   doc["speedKph"] = telemetry_.speedKph.valid(now)
                          ? telemetry_.speedKph.value
                          : 0.0f;
-  doc["speedCorrectionKph"] = configStore_.data().speedCorrectionKph;
-  doc["dfcoActive"] = telemetry_.dfcoActive;
+  doc["displaySpeedOffsetKph"] = configStore_.data().displaySpeedOffsetKph;
+  // The block's own distance counter, offered as a second reading to compare
+  // against PID 0D rather than as a measurement of anything. It is not
+  // independent of PID 0D - same wheel sensors, same block - so a disagreement
+  // says one of the two is scaled wrongly, not which. Whole kilometres, so a
+  // single reading resolves the scaling question: if the trip's own distance and
+  // this move in step, the unit is kilometres; if one moves ten times as fast,
+  // the scaling is a tenth of a kilometre and this reading is wrong.
+  // Published unconditionally. valid() defaults to a two-second window, which
+  // is right for the fast PIDs and wrong for this one: PID 31 is polled every
+  // ten seconds, so on any ordinary tick the sample is "stale" and this reported
+  // 0 with an age of -1 - indistinguishable from a counter that never answered.
+  // The reading needs its own age, not a freshness verdict.
+  if (telemetry_.odometerKm.updatedAt != 0) {
+    doc["odometerKm"] = telemetry_.odometerKm.value;
+    doc["odometerAgeMs"] = now - telemetry_.odometerKm.updatedAt;
+  } else {
+    doc["odometerKm"] = nullptr;
+    doc["odometerAgeMs"] = UINT32_MAX;
+  }
+  // True once the counter has been seen to jump backwards since the last
+  // reading: a DTC clear zeroes it, and two bytes wrap at 65535 km. A delta
+  // taken across that jump is meaningless and must be discarded, not clamped.
+  doc["odometerResetBelow"] = telemetry_.odometerResetBelow;
+
+  // PID 03 and PID 14, published as they arrived. The byte is the useful part:
+  // which of its bits closes the loop is settled by watching it against the O2
+  // swing on the car, and a named flag here would only be the current standard's
+  // answer offered in advance - a plausible one, on a gauge, before anything
+  // has been measured. The bits are numbered, never interpreted.
+  JsonObject fuelSystem = doc["fuelSystem"].to<JsonObject>();
+  const bool fuelSystemValid = telemetry_.fuelSystemStatus.valid(now);
+  const int fuelSystemRaw = fuelSystemValid
+                                ? static_cast<int>(telemetry_.fuelSystemStatus.value)
+                                : 0;
+  fuelSystem["valid"] = fuelSystemValid;
+  if (fuelSystemValid) {
+    fuelSystem["raw"] = fuelSystemRaw;
+    fuelSystem["hex"] = String("0x") + String(fuelSystemRaw, HEX);
+    // Bit 0 leftmost, so the string reads the way the byte is written.
+    char bitText[9];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      bitText[bit] = (fuelSystemRaw & (1 << (7 - bit))) ? '1' : '0';
+    }
+    bitText[8] = '\0';
+    fuelSystem["bits"] = String(bitText);
+    fuelSystem["ageMs"] = now - telemetry_.fuelSystemStatus.updatedAt;
+  } else {
+    // Null rather than zero, because a byte of 0x00 is a real answer and an
+    // absent one is not - and on this page the difference decides whether the
+    // reader is looking at the block or at a stale gauge.
+    fuelSystem["raw"] = nullptr;
+    fuelSystem["hex"] = "";
+    fuelSystem["bits"] = "";
+    fuelSystem["ageMs"] = UINT32_MAX;
+  }
+
+  JsonObject o2 = doc["o2Sensor1"].to<JsonObject>();
+  const bool o2Valid = telemetry_.o2Sensor1Raw.valid(now);
+  const bool o2TrimValid = telemetry_.o2Sensor1TrimPct.valid(now);
+  o2["valid"] = o2Valid;
+  // Named after the byte, not after what the standard says it is. This block
+  // answers 127 there, which is 0x7F - the marker for "no value" - while J1979
+  // calls byte B a trim percentage of 0..100. Publishing it as trimPercent
+  // asserted something the block does not send.
+  if (o2TrimValid) o2["byteB"] = telemetry_.o2Sensor1TrimPct.value;
+  else o2["byteB"] = nullptr;
+  o2["byteBNote"] =
+      "J1979 calls byte B a trim percent; this block answers 127 (0x7F, no value)";
+  if (o2Valid) {
+    o2["raw"] = static_cast<int>(telemetry_.o2Sensor1Raw.value);
+    // J1979 puts the voltage at 0.00495 V per bit, so the byte spans 0..1.263 V.
+    o2["volt"] = telemetry_.o2Sensor1Raw.value * 0.00495f;
+    o2["ageMs"] = now - telemetry_.o2Sensor1Raw.updatedAt;
+  } else {
+    o2["raw"] = nullptr;
+    o2["volt"] = nullptr;
+    o2["ageMs"] = UINT32_MAX;
+  }
+
+  if (serviceSession) {
+    doc["dfcoActive"] = nullptr;
+  } else {
+    doc["dfcoActive"] = telemetry_.dfcoActive;
+  }
   // The sum is formed from the two values this response carries, not read back
   // from the stored field. That field is zeroed whenever either half is older
   // than its TTL, and with a fifth of the trim requests timing out that is a
@@ -1939,9 +2068,12 @@ void ServicePortal::sendPidSupportReport() {
 
       // The subset the firmware actually requests, so the page separates "the
       // car supports this" from "we read this". Derived from the poll profile
-      // and filtered by the same conditions runPolling applies.
-      const uint32_t polled =
-          ObdClient::polledPidMask(static_cast<uint8_t>(group), configStore_.data());
+      // and filtered by the same conditions runPolling applies - including the
+      // support mask, without which this reported PIDs the scheduler never
+      // asks for.
+      const uint32_t polled = ObdClient::polledPidMask(
+          static_cast<uint8_t>(group), configStore_.data(),
+          obdClient_.pidSupport());
       JsonArray polledPids = row["polledPids"].to<JsonArray>();
       uint16_t polledCount = 0;
       appendMaskPid(polledPids, first, polled, polledCount);
