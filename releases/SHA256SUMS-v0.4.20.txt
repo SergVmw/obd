@@ -1,2 +1,2 @@
-d10c915c99d9215b0b36b1dccc4d001f1b3cbadbf804e8f34e53cd242d233f6c  h2-gauge-v0.4.20-esp32s3-n16r8.bin
-290feb2f29c7377c08fbd41b956d8e1df4541181078e379db4e9792cbde1d84a  h2-gauge-v0.4.20-esp32s3-n16r8-factory.bin
+a6ffab9610aea8521e8df45ad528e1f356d6e0392a6deddff7a776c7a8fd4d3e  h2-gauge-v0.4.20-esp32s3-n16r8.bin
+12d9a251c2cf13bda6dce209e72be7d9581c1ad9590c81931d63a6d991cb8ccd  h2-gauge-v0.4.20-esp32s3-n16r8-factory.bin
