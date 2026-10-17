@@ -68,4 +68,5 @@ assert "api('/api/diagnostics/trace')" in html
 assert "sampleIntervalMs" in portal and "eventFlags" in portal
 assert "MapTimeoutBurst" in (ROOT / "src/obd_trace.cpp").read_text(encoding="utf-8")
 
-print("Diagnostic integration: separate UI/build, five PID counters, volatile trace/events and JSON export OK")
+print("Diagnostic integration: separate UI/build, five PID counters, volatile "
+      "trace/events and JSON export OK")

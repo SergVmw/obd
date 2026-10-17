@@ -106,12 +106,13 @@
   <div><label>Стартовый экран</label><select id="startPage"><option value="0">Главный</option><option value="1">Расход / поездка</option><option value="2">Температуры</option><option value="3">Диагностика OBD</option><option value="4">ГБО: коррекции</option></select></div>
   <div><label>Значение в центре главного экрана</label><select id="mainCenterValue"><option value="0">Наддув</option><option value="1">Скорость</option><option value="2">Текущий расход</option><option value="3">Средний расход текущего топлива</option></select></div>
   <div><label>Размер цифры в центре главного экрана</label><select id="mainDigitSize"><option value="0">Крупный (38 px)</option><option value="1">Средний (28 px)</option></select></div>
+  <div><label>Смещение показания скорости, км/ч</label><input id="displaySpeedOffsetKph" type="number" min="-20" max="20" step="0.5" value="0"></div>
   <div><label>Автовозврат на главный экран, секунд</label><input id="autoReturnSec" type="number" min="0" max="120" value="5"></div>
   <div class="check"><input id="pageFuel" type="checkbox" checked><label for="pageFuel">Экран расхода</label></div>
   <div class="check"><input id="pageTemperature" type="checkbox" checked><label for="pageTemperature">Экран температур</label></div>
   <div class="check"><input id="pageDiagnostics" type="checkbox"><label for="pageDiagnostics">Служебный экран OBD</label></div>
   <div class="check"><input id="peakEnabled" type="checkbox" checked><label for="peakEnabled">Пиковый наддув</label></div>
- </div></div>
+ </div><div class="note" style="margin-top:13px"><b>Смещение показания скорости</b> меняет только то, что видно на экране: к скорости PID 0D прибавляется значение, чтобы показание совпадало со стрелкой штатной приборки. При −5 прибор покажет на 5 км/ч меньше, чем показывает стрелка, — то есть истинную скорость, если борт отдаёт непродуманную.<br><br>На расход это <b>не влияет вообще</b>: ни на пройденный путь, ни на средний л/100 км, ни на калибровку бака. Поле было выведено сюда из раздела OBD, где оно читалось как параметр измерения; имя изменено на <i>displaySpeedOffsetKph</i>, потому что «поправка скорости» обещала ровно то, чего поле не делает. Заводское значение 0.</div></div>
  <div class="section"><h3>Цвета интерфейса</h3><div class="grid">
   <div><label>Цифры и значения</label><input id="colorText" type="color" value="#f2faf7"></div>
   <div><label>Вакуум</label><input id="colorVacuum" type="color" value="#5dc9e8"></div>
@@ -207,8 +208,7 @@
  <div class="section"><div class="grid">
   <div><label>Тайм-аут OBD, мс</label><input id="obdTimeoutMs" type="number" min="50" max="1000" value="120"></div>
   <div><label>Макс. запросов в секунду</label><input id="maxRequestsPerSecond" type="number" min="5" max="60" value="50"></div>
-  <div><label>Коррекция скорости, км/ч</label><input id="speedCorrectionKph" type="number" min="-20" max="20" step="0.5" value="0"></div>
- </div><div class="note" style="margin-top:13px">Коррекция применяется как «скорость PID 0D + значение». Например, −5 уменьшает показание на 5 км/ч. Она используется на экране, в пути и при расчёте л/100 км. Заводское значение 0. Mode 22 отключён до подтверждения DID Haval.</div></div>
+ </div><div class="note" style="margin-top:13px">Mode 22 отключён до подтверждения DID Haval.</div></div>
  <div class="section" id="dtcDiagnostics"><h3>Check Engine и коды неисправностей</h3>
   <p class="desc">MIL контролируется стандартным PID 01 каждые 500 мс. Коды читаются без блокировки интерфейса: сохранённые Mode 03, ожидающие Mode 07 и постоянные Mode 0A.</p>
   <div class="calstate" aria-live="polite"><div><small>Лампа MIL</small><b id="dtcMil">—</b></div><div><small>Сохранённые</small><b id="dtcStored">—</b></div><div><small>Ожидающие</small><b id="dtcPending">—</b></div><div><small>Постоянные</small><b id="dtcPermanent">—</b></div></div>
@@ -231,7 +231,7 @@
 </div>
 
 <div class="pane" id="system"><h2>Система</h2><p class="desc">Сервисная сеть, резервное копирование и локальное OTA.</p>
- <div class="section"><h3>Прошивка и OTA-разделы</h3><div class="calstate" aria-live="polite"><div><small>Версия</small><b id="otaFirmware">—</b></div><div><small>Запущен раздел</small><b id="otaRunning">—</b></div><div><small>Выбран для загрузки</small><b id="otaBoot">—</b></div><div><small>Последнее OTA</small><b id="otaLast">—</b></div></div><p class="note" id="otaRuntime" style="margin:12px 0 0">Ожидание состояния загрузчика.</p></div>
+ <div class="section"><h3>Прошивка и OTA-разделы</h3><div class="calstate" aria-live="polite"><div><small>Версия</small><b id="otaFirmware">—</b></div><div><small>Запущен раздел</small><b id="otaRunning">—</b></div><div><small>Выбран для загрузки</small><b id="otaBoot">—</b></div><div><small>Последнее OTA</small><b id="otaLast">—</b></div></div><p class="note" id="otaRuntime" style="margin:12px 0 0">Ожидание состояния загрузчика.</p><div style="display:flex;align-items:center;gap:12px;margin-top:12px"><button class="btn" id="otaRollback" type="button">Вернуть предыдущую прошивку</button><span id="otaRollbackStatus" aria-live="polite" style="font-size:13px;color:#b8c9c7">Загрузчик загрузится при следующем старте</span></div></div>
  <div class="section"><h3>Сохранение поездки</h3><div class="calstate" aria-live="polite"><div><small>LittleFS journal</small><b id="persistJournal">—</b></div><div><small>NVS fallback</small><b id="persistNvs">—</b></div><div><small>Последняя generation</small><b id="persistSequence">—</b></div><div><small>Источник после запуска</small><b id="persistSource">—</b></div></div><p class="note" id="persistRuntime" style="margin:12px 0 0">Ожидание диагностики. Номинальные интервалы: LittleFS 20 секунд, NVS 60 секунд.</p></div>
  <div class="section"><div class="grid">
   <div><label>Имя устройства</label><input id="deviceName" maxlength="23" value="H2 Gauge"></div>
@@ -272,13 +272,13 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelect
 async function api(path,opt={}){const r=await fetch(path,{cache:'no-store',...opt}),text=await r.text();if(!r.ok){let message=text;try{const j=JSON.parse(text),code=j.code?` [${j.code}]`:'',retry=Number(j.retryAfterSeconds)>0?` Повторите через ${j.retryAfterSeconds} с.`:'';message=(j.error||j.message||text)+code+retry}catch{}throw Error(message||`HTTP ${r.status}`)}if(!text)return null;return r.headers.get('content-type')?.includes('json')?JSON.parse(text):text}
 function set(id,value){const e=$(id);if(!e||value===undefined)return;e.type==='checkbox'?e.checked=!!value:e.value=value}
 function updateBrightnessValueLabels(){$('brightnessDayValue').textContent=n('brightnessDay')+'%';$('brightnessNightValue').textContent=n('brightnessNight')+'%'}
-const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainDigitSize:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.5,boostWarningBar:.9,boostDangerBar:1.15,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1,lpgAfr:15.5,lpgDensity:540,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50,speedCorrectionKph:0},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18'}};
+const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainDigitSize:0,displaySpeedOffsetKph:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.5,boostWarningBar:.9,boostDangerBar:1.15,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1,lpgAfr:15.5,lpgDensity:540,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18'}};
 function syncLpgUi(){const on=c('lpgEnabled');document.querySelectorAll('.lpgOnly').forEach(e=>e.classList.toggle('isOff',!on));const opt=$('previewFuel')?.querySelector('option[value=lpg]');if(opt)opt.disabled=!on;if(!on&&$('previewFuel'))$('previewFuel').value='petrol';drawGaugePreview()}
 function apply(o){const d=o.display||{},b=o.boost||{},f=o.fuel||{},l=o.lpg||{},x=o.controls||{},s=o.service||{},ob=o.obd||{};
 Object.entries(d).forEach(([k,z])=>set(k,z));Object.entries(b).forEach(([k,z])=>set(k,z));Object.entries(f).forEach(([k,z])=>set(k,z));Object.entries(l).forEach(([k,z])=>set(k,z));Object.entries(x).forEach(([k,z])=>set(k,z));Object.entries(s).forEach(([k,z])=>set(k,z));Object.entries(ob).forEach(([k,z])=>set(k,z));
 if(f.speedDensityOnly){set('fuelSource',5);$('fuelSource').disabled=true;for(const option of $('fuelSource').options)option.disabled=option.value!=='5';$('fuelSourceNote').textContent='Эта тестовая сборка принудительно использует Speed-Density: PID 0B MAP + PID 0C RPM + PID 0F IAT. PID 10 и PID 5E не опрашиваются. Начальная VE = 0.85; расход оценочный и может потребовать калибровки.'}
 syncLpgUi();syncBrightnessUi();updateBrightnessValueLabels()}
-function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainDigitSize:n('mainDigitSize'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),lpgAfr:n('lpgAfr'),lpgDensity:n('lpgDensity'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond'),speedCorrectionKph:n('speedCorrectionKph')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword')}}}
+function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainDigitSize:n('mainDigitSize'),displaySpeedOffsetKph:n('displaySpeedOffsetKph'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),lpgAfr:n('lpgAfr'),lpgDensity:n('lpgDensity'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword')}}}
 function syncBrightnessUi(){
  const mode=n('brightnessMode');$('manualBrightnessRow').hidden=mode!==1;$('autoBrightnessFields').hidden=mode!==0;
  $('lightThresholdHelp').textContent=c('lightAutoCalibrate')?'Введённые пороги — исходные, до обучения. После обучения используются рабочие пороги ниже. Для точных ручных порогов отключите автокалибровку.':'Используются введённые пороги. Между ночным и дневным порогами нужно не менее 200 отсчётов ADC.';
@@ -351,6 +351,18 @@ $('resetLightCalibration').onclick=async()=>{
  setTimeout(()=>button.disabled=false,10000);
 };
 $('brightnessDay').addEventListener('input',updateBrightnessValueLabels);$('brightnessNight').addEventListener('input',updateBrightnessValueLabels);
+// Rollback is the way back from a firmware that boots and then behaves wrongly,
+// and the chip's own guard is off by the time that is discovered. Confirm, name
+// the version being returned to, and say what happens next.
+$('otaRollback').addEventListener('click',async function(){
+ const status=$('otaRollbackStatus');
+ if(!confirm('Вернуть загрузчик на предыдущую прошивку? Прибор перезагрузится и запустит её. Поездка и настройки сохранятся.'))return;
+ this.disabled=true;status.textContent='Переключаю раздел…';
+ try{
+  const r=await api('/api/ota/rollback',{method:'POST',headers:{'X-H2G-Action':'ota-rollback'}});
+  status.textContent='Возврат на '+r.version+'. Прибор перезагружается.';
+ }catch(e){status.textContent='Откат не выполнен: '+e.message;this.disabled=false;}
+});
 let assetBusy=false,assetState=null;
 const assetCandidate={background:null,logo:null},assetSource={background:null,logo:null};
 const assetIds=type=>({file:$(`${type}File`),candidate:$(`${type}Candidate`),installed:$(`${type}Installed`),upload:$(`${type}Upload`),mode:$(`${type}Mode`),del:$(`${type}Delete`),bar:$(`${type}UploadBar`)});
@@ -486,12 +498,18 @@ async function previewRestore(file){
   }
 
   pendingRestore=incoming;
+  // The file name and everything read out of it are escaped before reaching the
+  // page. The portal is local and unauthenticated and the user picks the file
+  // themselves, so this is not a privilege boundary - but every other message
+  // on this page goes through textContent, and a settings file is the one input
+  // a user is least likely to look at before opening.
+  const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   $('restoreSummary').innerHTML=
-    `Файл <b>${file.name}</b>`+(envelope?` — выгружен ${parsed.savedAt||'дата не указана'}, прошивка ${parsed.firmwareVersion||'не указана'}, схема ${fileSchema??'не указана'}`:` — без конверта, принят как содержимое /api/config`)+
-    `. Схема прибора: <b>${currentSchema??'не указана'}</b>. Изменений: <b>${rows.length}</b>.`+
+    `Файл <b>${esc(file.name)}</b>`+(envelope?` — выгружен ${esc(parsed.savedAt||'дата не указана')}, прошивка ${esc(parsed.firmwareVersion||'не указана')}, схема ${esc(fileSchema??'не указана')}`:` — без конверта, принят как содержимое /api/config`)+
+    `. Схема прибора: <b>${esc(currentSchema??'не указана')}</b>. Изменений: <b>${rows.length}</b>.`+
     (rows.length===0?' Настройки совпадают с текущими.':' Поля, которых нет в файле, останутся как есть.');
   $('restoreDiff').innerHTML=rows.length
-    ?`<table class="cantable"><thead><tr><th>Параметр</th><th>Сейчас</th><th>Из файла</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td class="tx">${r[2]}</td></tr>`).join('')}</tbody></table>`
+    ?`<table class="cantable"><thead><tr><th>Параметр</th><th>Сейчас</th><th>Из файла</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td class="tx">${esc(r[2])}</td></tr>`).join('')}</tbody></table>`
     :'<div class="note">Различий нет.</div>';
   $('restorePanel').hidden=false;
   $('msg').textContent='Проверьте различия и подтвердите восстановление. До записи снимается копия текущих настроек.';
@@ -545,6 +563,13 @@ function otaStatus(version,ota){
  for(const name of ['app0','app1']){const key=name[0].toUpperCase()+name.slice(1),s=slotByName[name],card=$(`slot${key}Card`);card.classList.toggle('running',!!s?.running);if(!s){$(`slot${key}Version`).textContent='—';$(`slot${key}Meta`).textContent='Раздел отсутствует';continue}$(`slot${key}Version`).textContent=s.versionKnown?s.version:(s.descriptorReadable?'неизвестно':'пусто');const tags=[];if(s.running)tags.push('запущен');if(s.bootSelected&&!s.running)tags.push('выбран boot');if(s.nextUpdate)tags.push('следующий OTA');if(s.state&&s.state!=='undefined')tags.push(s.state);$(`slot${key}Meta`).textContent=tags.join(' · ')||'не активен'}
  const result={none:'Нет записей',pending:'Обновление выполняется',applied:'Применено',rolled_back:'Откат',unexpected_slot:'Другой раздел',interrupted_upload:'Загрузка прервана',interrupted_finalize:'Финализация прервана',finalize_failed:'Ошибка проверки образа',boot_selection_failed:'Ошибка выбора boot'};
  $('otaRunning').textContent=ota.runningPartition||'—';$('otaBoot').textContent=ota.bootPartition||'—';$('otaLast').textContent=result[ota.last?.result]||ota.last?.result||'—';
+ const other=(ota.slots||[]).find(s=>!s.running);
+ const rb=$('otaRollback');
+ if(rb){
+  const ready=other&&other.descriptorReadable&&other.versionKnown&&other.state!=='invalid';
+  rb.disabled=!ready;
+  $('otaRollbackStatus').textContent=ready?`Вернётся ${other.version} (${other.partition})`:(other?'Второй раздел не содержит прошивки':'Второго раздела нет');
+ }
  const hex=x=>'0x'+Number(x||0).toString(16).toUpperCase();
  let text=`Сейчас ${ota.runningPartition}@${hex(ota.runningAddress)}; загрузчик выбрал ${ota.bootPartition}@${hex(ota.bootAddress)}. Следующее обновление: ${ota.nextPartition}@${hex(ota.nextAddress)}. Состояние образа: ${ota.runningState}; причина запуска: ${ota.resetReason}.`;
  if(ota.last?.result==='rolled_back')text+=' Последняя OTA была автоматически возвращена на исходный раздел.';

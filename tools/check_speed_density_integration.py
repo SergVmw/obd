@@ -22,7 +22,28 @@ assert "H2G_FW_VERSION_OVERRIDE" in platformio
 # The split is anchored on the profile itself rather than on the first #ifdef
 # with that name: kSpeedDensityBuild above also carries that directive, so
 # "first occurrence" silently stopped being the poll table.
-sd_table = header.split("kPollProfile[12] = {", 1)[1].split("};", 1)[0]
+#
+# The table is located by its declaration, not by the literal size in the
+# brackets. Both arrays are sized by a kPollCount declared above them, because
+# spelling the lengths out separately let them disagree and they did - adding one
+# PID produced a definition against the wrong declared size. Matching on the
+# count as well as the PIDs is what keeps that failure from coming back quietly.
+declared_counts = re.findall(r"static constexpr uint8_t kPollCount = (\d+);", header)
+poll_tables = re.findall(r"kPollProfile\[[^\]]+\] = \{(.*?)\n  \};", header, re.S)
+assert len(declared_counts) == len(poll_tables) == 2, (
+    "expected two poll tables, one per image, each with a kPollCount declared "
+    f"before it; found {len(poll_tables)} table(s) and {len(declared_counts)} "
+    "count declaration(s)"
+)
+for declared, body in zip(declared_counts, poll_tables):
+    entries = re.findall(r"\{\s*(0x[0-9A-Fa-f]+)\s*,", body)
+    assert int(declared) == len(entries), (
+        f"kPollCount is declared as {declared} but its table holds "
+        f"{len(entries)} entries; the request scheduler would disagree with the "
+        "poll profile about how many PIDs are in the round"
+    )
+
+sd_table = poll_tables[0]
 assert re.search(r"\{\s*0x0F\s*,\s*1000\s*\}", sd_table)
 assert not re.search(r"\{\s*0x10\s*,", sd_table)
 assert not re.search(r"\{\s*0x5E\s*,", sd_table)
