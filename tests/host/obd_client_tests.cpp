@@ -72,6 +72,16 @@ void test(const char* name, void (*body)()) {
 constexpr char kVin[] = "LGWEEA195HJ012345";
 static_assert(sizeof(kVin) - 1 == 17, "a VIN is 17 characters");
 
+// One frame as an ECU sends it. Declared before Rig because the fixture builds
+// its frames through it.
+twai_message_t fromEcu(uint16_t identifier, const uint8_t* data, uint8_t length) {
+  twai_message_t message{};
+  message.identifier = identifier;
+  message.data_length_code = length;
+  for (uint8_t i = 0; i < length && i < 8; ++i) message.data[i] = data[i];
+  return message;
+}
+
 struct Rig {
   ConfigData config = ConfigStore::defaults();
   TelemetryData telemetry{};
@@ -156,15 +166,53 @@ struct Rig {
     }
     return nullptr;
   }
-};
 
-twai_message_t fromEcu(uint16_t identifier, const uint8_t* data, uint8_t length) {
-  twai_message_t message{};
-  message.identifier = identifier;
-  message.data_length_code = length;
-  for (uint8_t i = 0; i < length && i < 8; ++i) message.data[i] = data[i];
-  return message;
-}
+  // True when the most recent frame on the wire is this request, which is what
+  // "the client is waiting for this PID" means. Checking the whole transmit
+  // history instead is not enough: a request that went out earlier and has
+  // already timed out is still in the log, so an answer queued against it
+  // arrives while a different PID is pending and is correctly discarded.
+  bool awaitingPid(uint8_t service, uint8_t pid) const {
+    const std::vector<twai_message_t>& frames = h2g_twai_stub::transmitted();
+    if (frames.empty()) return false;
+    const twai_message_t& last = frames.back();
+    return !last.rtr && last.data_length_code >= 3 &&
+           last.data[0] == 0x02 && last.data[1] == service &&
+           last.data[2] == pid;
+  }
+
+  // Pump until the client is actually waiting for this PID, so the answer below
+  // answers it rather than arriving while something else is pending.
+  void pumpUntilPidPending(uint8_t service, uint8_t pid,
+                           uint32_t maxSteps = 600) {
+    for (uint32_t i = 0; i < maxSteps && !awaitingPid(service, pid); ++i) {
+      hostMillis += 25;
+      client.loop(hostMillis);
+    }
+  }
+
+  // Discovery order is masks, then manifold, then RPM. A mask on its own is one
+    // claim and does not take the lock; the manifold is the second, and with it
+    // the block is identified. That is what the car does within a second of
+    // booting, and every Mode 01 answer from 0x7E8 depends on it - an answer
+    // from a block that has not been identified is discarded before the parser
+    // sees it, which would make a test about parsing report on that guard
+    // instead.
+  void identifyEngine() {
+    const uint8_t mask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, mask, sizeof(mask)));
+    pumpUntilPidPending(0x01, 0x0B);
+    CHECK(awaitingPid(0x01, 0x0B));
+    const uint8_t map[] = {0x03, 0x41, 0x0B, 0x21};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, map, sizeof(map)));
+    deliver();
+    CHECK(telemetry.engineEcuLocked);
+  }
+
+  // Hand the queued frames over before the clock moves far enough to time the
+  // pending request out and send the next one.
+  void deliver(uint32_t steps = 2) { pump(steps); }
+};
 
 // The reply every ECU gives to "give me the VIN", as it really goes out:
 // First Frame declaring 0x14 bytes, service 09 + 0x40, the PID echoed back
@@ -203,6 +251,37 @@ bool pollsPid(uint32_t mask, uint8_t first, uint8_t pid) {
 // The portal marks the PIDs this image actually requests. The set is derived
 // from the poll profile rather than restated, so a PID added to the profile and
 // not to the list — the failure the standing counters had — shows up here.
+// The masks this vehicle actually answered with, taken from the support report
+// of 2026-10-16. Used as the union of both responders, because polledPidMask
+// answers about what the scheduler would request, and the scheduler consults the
+// union. This car has neither MAF (0x10), nor injector flow (0x5E), nor
+// barometric pressure (0x33) - which is exactly what made those three look alive
+// in the report while none of them was ever requested.
+PidSupportTable vehicleSupportTable() {
+  PidSupportTable table;
+  const uint8_t group00[4] = {0xBE, 0x3E, 0xB8, 0x11};
+  const uint8_t group20[4] = {0x80, 0x05, 0x80, 0x01};
+  const uint8_t group40[4] = {0x4A, 0x90, 0x00, 0x00};
+  table.recordMask(0x7E8, 0x00, group00);
+  table.recordMask(0x7E8, 0x20, group20);
+  table.recordMask(0x7E8, 0x40, group40);
+  return table;
+}
+
+// A block that claims to support everything. The profile-condition assertions
+// need this rather than the real masks: whether MAF is requested is decided by
+// the fuel mode, and this car has no MAF, so testing the mode against its own
+// table would pass for the wrong reason - the support filter would remove the
+// PID and the assertion would never reach the condition it is about.
+PidSupportTable permissiveSupportTable() {
+  PidSupportTable table;
+  const uint8_t everything[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  table.recordMask(0x7E8, 0x00, everything);
+  table.recordMask(0x7E8, 0x20, everything);
+  table.recordMask(0x7E8, 0x40, everything);
+  return table;
+}
+
 void testPolledPidMaskFollowsThePollProfile() {
   // The configuration this vehicle actually runs: Speed-Density, LPG with fuel
   // trim warnings, DFCO. It is the interesting one because Speed-Density is the
@@ -213,8 +292,12 @@ void testPolledPidMaskFollowsThePollProfile() {
   config.lpgEnabled = true;
   config.setFuelTrimEnabled(true);
   config.setDfcoEnabled(true);
+  const PidSupportTable support = permissiveSupportTable();
+  const auto polled = [&config, &support](uint8_t group) {
+    return ObdClient::polledPidMask(group, config, support);
+  };
 
-  const uint32_t group00 = ObdClient::polledPidMask(0, config);
+  const uint32_t group00 = polled(0);
   CHECK(pollsPid(group00, 0x01, 0x01));   // monitor status / MIL / DTC count
   CHECK(pollsPid(group00, 0x01, 0x0B));   // MAP
   CHECK(pollsPid(group00, 0x01, 0x0C));   // RPM
@@ -225,15 +308,17 @@ void testPolledPidMaskFollowsThePollProfile() {
   CHECK(pollsPid(group00, 0x01, 0x07));   // long-term fuel trim
   // Speed-Density never asks for the two fuel-flow inputs.
   CHECK(!pollsPid(group00, 0x01, 0x10));  // MAF
-  // Supported by most engines and never requested at all. 0x03 is the fuel
-  // system status bitfield, not an engine load reading.
-  CHECK(!pollsPid(group00, 0x01, 0x03));  // fuel system status
+  // 0x03 and 0x14 are read now, and deliberately. They were negative
+  // assertions here until the closed-loop question made them worth the two
+  // requests: the trims cannot be applied to the petrol branch without knowing
+  // what the block is already doing, and 0x03's bits stay unnamed until the car
+  // says which one it is. 0x08 remains unrequested.
+  CHECK(pollsPid(group00, 0x01, 0x03));   // fuel system status, raw bits
+  CHECK(pollsPid(group00, 0x01, 0x14));   // O2 sensor 1 voltage and trim
   CHECK(!pollsPid(group00, 0x01, 0x08));  // intake manifold pressure
   CHECK(pollsPid(group00, 0x01, 0x04));   // calculated engine load
 
-  CHECK(pollsPid(ObdClient::polledPidMask(1, config), 0x21, 0x33));  // BARO
-
-  const uint32_t group40 = ObdClient::polledPidMask(2, config);
+  const uint32_t group40 = polled(2);
   CHECK(pollsPid(group40, 0x41, 0x42));   // control module voltage
   CHECK(!pollsPid(group40, 0x41, 0x44));  // commanded equivalence ratio
   CHECK(!pollsPid(group40, 0x41, 0x5E));  // fuel rate, SD only
@@ -241,26 +326,60 @@ void testPolledPidMaskFollowsThePollProfile() {
   // MAF-based mode puts the two fuel-flow inputs back and takes IAT away.
   ConfigData maf = config;
   maf.fuelSource = FuelSource::Maf;
-  CHECK(pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x10));
-  CHECK(pollsPid(ObdClient::polledPidMask(2, maf), 0x41, 0x5E));
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x0F));
+  CHECK(pollsPid(ObdClient::polledPidMask(0, maf, support), 0x01, 0x10));
+  CHECK(pollsPid(ObdClient::polledPidMask(2, maf, support), 0x41, 0x5E));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, maf, support), 0x01, 0x0F));
 
   // Each remaining condition has to take its PID out too, or the page answers
   // "we read this" about a signal that never arrives.
   ConfigData noTrims = config;
   noTrims.setFuelTrimEnabled(false);
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x06));
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x07));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims, support), 0x01, 0x06));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims, support), 0x01, 0x07));
 
   ConfigData noLpg = config;
   noLpg.lpgEnabled = false;
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noLpg), 0x01, 0x07));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noLpg, support), 0x01, 0x07));
 
   ConfigData noDfco = config;
   noDfco.setDfcoEnabled(false);
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noDfco), 0x01, 0x11));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noDfco, support), 0x01, 0x11));
 
-  CHECK(ObdClient::polledPidMask(3, config) == 0);  // no fourth group exists
+  CHECK(ObdClient::polledPidMask(3, config, support) == 0);  // no fourth group
+}
+
+// The report used to claim three PIDs this car never offers. runPolling has
+// always skipped an unsupported PID, so the requests were never made - the
+// report was the only thing lying, which is worse, because it is what the owner
+// reads when a signal goes missing.
+void testPolledPidMaskIntersectsTheSupportMask() {
+  ConfigData config = ConfigStore::defaults();
+  config.fuelSource = FuelSource::SpeedDensity;
+  config.lpgEnabled = true;
+  config.setFuelTrimEnabled(true);
+  config.setDfcoEnabled(true);
+  const PidSupportTable support = vehicleSupportTable();
+
+  // All three are in the poll profile. None is in any mask this car answered
+  // with, so none may be reported as polled. 0x5E needs a mode that would
+  // otherwise keep it: in Speed-Density the mode drops it anyway, so asserting
+  // it here would prove the mode works, not the filter.
+  CHECK(!pollsPid(ObdClient::polledPidMask(1, config, support), 0x21, 0x33));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, config, support), 0x01, 0x10));
+  ConfigData mafMode = config;
+  mafMode.fuelSource = FuelSource::Maf;
+  CHECK(!pollsPid(ObdClient::polledPidMask(2, mafMode, support), 0x41, 0x5E));
+
+  // Distance since codes cleared is offered by both blocks on this car, so it
+  // must survive the intersection - otherwise the new PID 0x31 would be added
+  // to the profile and immediately hidden by the very fix meant to expose it.
+  CHECK(support.isSupported(0x31));
+
+  // A car that does offer them keeps them: the filter is per vehicle, not a
+  // deletion from the profile.
+  const PidSupportTable generous = permissiveSupportTable();
+  CHECK(pollsPid(ObdClient::polledPidMask(1, mafMode, generous), 0x21, 0x33));
+  CHECK(pollsPid(ObdClient::polledPidMask(2, mafMode, generous), 0x41, 0x5E));
 }
 
 // VIN is Service 09, PID 02. Mode 01 PID 09 is the long-term fuel trim for
@@ -499,6 +618,84 @@ void testTheRetryCanStillSucceed() {
   CHECK(std::string(rig.client.vin()) == std::string(kVin));
 }
 
+// PID 03 is stored as the byte arrived. The reasons for that are long and live
+// in telemetry.h; what is testable here is that nothing is lost on the way in.
+// The whole byte survives, the high bits included, and no bit is named on the
+// way through - a field called "closedLoop" would be this test's assertion
+// encoding the standard's answer as if it had been measured.
+void testFuelSystemStatusKeepsTheWholeByte() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x03);
+  CHECK(rig.awaitingPid(0x01, 0x03));
+
+  const uint8_t answer[] = {0x03, 0x41, 0x03, 0xA6};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.fuelSystemStatus.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.fuelSystemStatus.value) == 0xA6);
+}
+
+// Every bit pattern has to survive, because the open question is precisely which
+// bit means what and the whole search is over these bytes. A conversion, a mask
+// or a clamp applied on the way in would each of them quietly pick an answer.
+void testFuelSystemStatusSurvivesEveryBitPattern() {
+  const uint8_t patterns[] = {0x00, 0x55, 0xAA, 0xFF};
+  for (uint8_t pattern : patterns) {
+    Rig rig;
+    rig.identifyEngine();
+    rig.pumpUntilPidPending(0x01, 0x03);
+    CHECK(rig.awaitingPid(0x01, 0x03));
+    const uint8_t answer[] = {0x03, 0x41, 0x03, pattern};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+    rig.deliver();
+    CHECK(rig.telemetry.fuelSystemStatus.valid(hostMillis));
+    CHECK(static_cast<int>(rig.telemetry.fuelSystemStatus.value) == pattern);
+  }
+}
+
+// PID 14's two bytes are both kept raw. The voltage conversion is deliberately
+// not done here: 0.00495 V per bit is J1979's arithmetic, and doing it in the
+// telemetry layer would bury it where a wrong scaling would look like a failed
+// sensor instead of like a wrong constant.
+void testO2KeepsBothBytesRaw() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x14);
+  CHECK(rig.awaitingPid(0x01, 0x14));
+
+  // 0x7F is the top of the documented 0..1.263 V span, 0x64 the trim ceiling.
+  const uint8_t answer[] = {0x04, 0x41, 0x14, 0x7F, 0x64};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.o2Sensor1Raw.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.o2Sensor1Raw.value) == 0x7F);
+  CHECK(rig.telemetry.o2Sensor1TrimPct.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.o2Sensor1TrimPct.value) == 0x64);
+}
+
+// An answer one byte short of what the PID declares must change nothing. Without
+// the length guard the missing byte would be read as zero and published as a
+// real 0 V, which on the page is indistinguishable from a failed sensor.
+void testShortO2AnswerChangesNothing() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x14);
+  CHECK(rig.awaitingPid(0x01, 0x14));
+  // Declares three bytes but PID 14 carries two, so only one is present.
+  const uint8_t answer[] = {0x03, 0x41, 0x14, 0x40};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(!rig.telemetry.o2Sensor1Raw.valid(hostMillis));
+  CHECK(!rig.telemetry.o2Sensor1TrimPct.valid(hostMillis));
+}
+
 }  // namespace
 
 // The two masks this vehicle actually reported: the engine claims a manifold,
@@ -614,6 +811,8 @@ int main() {
        testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock);
   test("the polled PID set follows the poll profile",
        testPolledPidMaskFollowsThePollProfile);
+  test("polled set is intersected with the support mask",
+       testPolledPidMaskIntersectsTheSupportMask);
   test("VIN is requested as Service 09 PID 02",
        testVinIsRequestedAsService09Pid02);
   test("a real VIN answer is accepted", testRealVinAnswerIsAccepted);
@@ -638,6 +837,13 @@ int main() {
        testVinWaitsForTheVehicleToStop);
   test("an unknown speed still retries the VIN", testUnknownSpeedStillRetries);
   test("the retry can still succeed", testTheRetryCanStillSucceed);
+  test("PID 03 is kept as the whole byte, unnamed",
+       testFuelSystemStatusKeepsTheWholeByte);
+  test("every PID 03 bit pattern survives",
+       testFuelSystemStatusSurvivesEveryBitPattern);
+  test("PID 14 keeps both bytes raw", testO2KeepsBothBytesRaw);
+  test("a short PID 14 answer changes nothing",
+       testShortO2AnswerChangesNothing);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

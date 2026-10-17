@@ -201,7 +201,8 @@ void ObdClient::handleAlerts(uint32_t now) {
 constexpr ObdClient::PollItem
     ObdClient::kPollProfile[ObdClient::kPollCount];
 
-uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config) {
+uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config,
+                                   const PidSupportTable& support) {
   if (group >= PidSupportTable::kGroupCount) return 0;
   // Group bases are 0x00/0x20/0x40 and each covers the 32 PIDs that follow, so
   // bit 31 of the word is the first PID of the group, as J1979 stores it.
@@ -211,9 +212,17 @@ uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config) {
   uint32_t mask = 0;
   for (uint8_t i = 0; i < kPollCount; ++i) {
     const uint32_t pid = kPollProfile[i].pid;
-    // The same four conditions runPolling applies, in the same order. Marking a
+    // The same five conditions runPolling applies, in the same order. Marking a
     // PID the scheduler would skip is worse than not marking it at all: the
     // page would answer "we read this" about a signal that never arrives.
+    //
+    // The support mask was the missing one. runPolling has always skipped a PID
+    // no responder claims, so 0x33 and 0x5E have never been requested on a car
+    // that lacks them - but this function reported them as polled anyway, which
+    // is what made them look alive in the support report. Its own comment
+    // claimed parity with runPolling while omitting the one condition that
+    // decides the question for a given car.
+    if (!support.isSupported(pid)) continue;
     if (pid == 0x0F && !speedDensity) continue;
     if (speedDensity && (pid == 0x10 || pid == 0x5E)) continue;
     if ((pid == 0x06 || pid == 0x07) &&
@@ -700,6 +709,21 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x0F:
       telemetry_.intakeAirC.set(static_cast<float>(a) - 40.0f, now);
       break;
+    case 0x03:
+      // Stored exactly as received. The reasons are in telemetry.h, and the
+      // short version is that the low bits of this byte were renamed between
+      // J1979 revisions and reading one of them as "closed loop" could be
+      // backwards on this block.
+      telemetry_.fuelSystemStatus.set(static_cast<float>(a), now);
+      break;
+    case 0x14:
+      // Byte A is the sensor voltage, 0.00495 V per bit; byte B is a trim
+      // percentage. Both are kept raw and converted where they are published.
+      if (payloadLength >= 4) {
+        telemetry_.o2Sensor1Raw.set(static_cast<float>(a), now);
+        telemetry_.o2Sensor1TrimPct.set(static_cast<float>(b), now);
+      }
+      break;
     case 0x10:
       if (payloadLength >= 4) {
         telemetry_.mafGps.set(((static_cast<uint16_t>(a) << 8) | b) / 100.0f,
@@ -709,6 +733,22 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x11:
       telemetry_.throttlePercent.set(static_cast<float>(a) * (100.0f / 255.0f),
                                      now);
+      break;
+    case 0x31:
+      // Two bytes of whole kilometres. J1979 names the unit, not the scaling;
+      // one kilometre resolution is what the R39 floor of 1 km implies for a
+      // value read over the diagnostic port, and a wrong guess would show up as
+      // a factor of ten against the trip's own distance within one drive.
+      if (payloadLength >= 4) {
+        const float km = static_cast<float>((static_cast<uint16_t>(a) << 8) | b);
+        // Both traps of this counter arrive as a downward jump: a DTC clear
+        // zeroes it, and two bytes wrap at 65535. Record that rather than let a
+        // consumer subtract and get a negative distance.
+        if (odometerSeen_ && km < odometerLastKm_) telemetry_.odometerResetBelow = true;
+        odometerLastKm_ = km;
+        odometerSeen_ = true;
+        telemetry_.odometerKm.set(km, now);
+      }
       break;
     case 0x33:
       telemetry_.baroKpa.set(static_cast<float>(a), now);

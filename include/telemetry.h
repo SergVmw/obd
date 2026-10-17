@@ -26,14 +26,14 @@ struct TimedFloat {
 };
 
 // Raw PID 0D at or below this reading means the vehicle is standing.
-// speedCorrectionKph compensates a measurement error, so it only corrects
+// displaySpeedOffsetKph compensates a measurement error, so it only corrects
 // anything while the vehicle is actually moving; at a standing raw reading the
 // same constant is a pure offset. With raw 0 and a +5 kph correction the
 // effective speed became 5 km/h, which switched the display to L/100km from an
 // idling engine and integrated 0.83 km of trip distance per 10 minutes.
 // The band also decides the standing poll profile, so both decisions share one
 // threshold instead of the unrelated 1.0 and 5.0 kph limits that disagreed
-// whenever speedCorrectionKph was non-zero.
+// whenever displaySpeedOffsetKph was non-zero.
 constexpr float kParkedRawSpeedKph = 4.0f;
 
 // Shortest run of distance on a fuel before its litres-over-distance is treated
@@ -49,10 +49,40 @@ constexpr double kMinAverageDistanceKm = 1.0;
 struct TelemetryData {
   TimedFloat rpm;
   TimedFloat rawSpeedKph;       // OBD PID 0D, unchanged
-  TimedFloat speedKph;          // raw + ConfigData::speedCorrectionKph
+  TimedFloat speedKph;          // raw + ConfigData::displaySpeedOffsetKph
   TimedFloat mapKpa;
   TimedFloat engineLoadPct;     // OBD PID 04, the block's own air estimate
   TimedFloat baroKpa;
+  // PID 0x31, distance since DTCs cleared, whole kilometres, two bytes. It is
+  // the car's own odometer-side counter, read over the same wheel sensors as
+  // PID 0D and therefore not independent of it - what it adds is a second
+  // accumulator inside the ECU, so the two can be compared. Its two traps are
+  // both recorded here rather than left for the reader to discover: clearing
+  // codes resets it to zero, and the two-byte counter wraps at 65535 km. Either
+  // makes the raw value jump backwards, which odometerResetBelow reports.
+  TimedFloat odometerKm;
+  bool odometerResetBelow = false;
+
+  // PID 03 fuel system status, PID 14 O2 sensor 1. Held as raw bytes on purpose.
+  //
+  // 03 is the closed-loop indicator, and it is exactly the value that must not
+  // be interpreted here. The meaning of its low bits was revised between J1979
+  // revisions, which revision a given block implements is not knowable from the
+  // wire, and the two readings differ in sign. Naming bit 0 "closed loop"
+  // because the current standard says so would be a plausible lie printed on a
+  // gauge, and applying a fuel trim on a sign that may be inverted would make
+  // the error grow rather than shrink. So the byte is stored as it arrived and
+  // the polarity is settled on the car, where the bit can be watched against
+  // the O2 swing that says the loop is closed.
+  //
+  // 14 is less ambiguous: byte A is the sensor voltage at 0.00495 V per bit and
+  // byte B a trim percentage. Both bytes are still kept raw, and the arithmetic
+  // is done where the value is published, so that if the scaling is wrong there
+  // is one place to look instead of a conversion buried in a struct field.
+  TimedFloat fuelSystemStatus;   // PID 03, the byte exactly as received
+  TimedFloat o2Sensor1Raw;       // PID 14 byte A, 0..255
+  TimedFloat o2Sensor1TrimPct;   // PID 14 byte B, 0..100
+
   TimedFloat intakeAirC;
   TimedFloat mafGps;
   TimedFloat fuelRateLph;
@@ -270,7 +300,7 @@ class TelemetryEngine {
 
  private:
   // The speed every calculated figure is derived from: raw PID 0D, never the
-  // display's corrected speed. speedCorrectionKph exists so the readout agrees
+  // display's corrected speed. displaySpeedOffsetKph exists so the readout agrees
   // with the dashboard needle; folding it into a distance or a division
   // rescales the whole measuring chain by a constant of unknown sign, and a
   // correcting value that reaches the numerator's denominator is no longer a

@@ -52,8 +52,12 @@ class ObdClient {
   // J1979 support-mask bits: one 32-bit word per group, where 0x00 covers
   // 0x01..0x20, 0x20 covers 0x21..0x40 and 0x40 covers 0x41..0x60. Read from
   // the same profile the poller walks and filtered by the same conditions, so
-  // the portal cannot report a PID the scheduler would skip.
-  static uint32_t polledPidMask(uint8_t group, const ConfigData& config);
+  // the portal cannot report a PID the scheduler would skip - including the
+  // support mask, which runPolling applies and which this takes as an argument.
+  // Reporting a PID the scheduler never asks for is what made this page claim
+  // three signals this car does not offer.
+  static uint32_t polledPidMask(uint8_t group, const ConfigData& config,
+                                const PidSupportTable& support);
 
   ObdClient(TelemetryData& telemetry, const ConfigData& config,
             CanMonitor& monitor)
@@ -253,9 +257,14 @@ class ObdClient {
   // who spoke first.
   static constexpr uint8_t kDiscoveryPids_[5] = {0x00, 0x20, 0x40, 0x0B, 0x0C};
 #ifdef H2G_SPEED_DENSITY_BUILD
+  // The count comes before the table so the table can be sized by it. Spelling
+  // both lengths out let them disagree, and they did: adding one PID to the
+  // ordinary profile produced a definition of kPollProfile[15] against a
+  // declaration of [14], which is a build failure rather than a wrong mask.
+  static constexpr uint8_t kPollCount = 14;
   // The Speed-Density test image never requests unsupported PID 10 (MAF) or
   // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).
-  static constexpr PollItem kPollProfile[12] = {
+  static constexpr PollItem kPollProfile[kPollCount] = {
       {0x01, 500},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
@@ -267,11 +276,25 @@ class ObdClient {
       {0x07, 500},   // long-term fuel trim bank 1
       {0x42, 1000},  // ECU voltage
       {0x05, 1000},  // coolant
+      // PID 03 fuel system status and PID 14 O2 sensor 1 are here to be read,
+      // not to be acted on. They feed no calculation and change no warning;
+      // they exist because applying the fuel trims to the petrol branch needs
+      // to know what the block is already doing on its own, and which bit of
+      // 03 means the loop is closed is not knowable from here. See
+      // include/telemetry.h for why the bits are stored raw.
+      //
+      // Both at 500 ms, which is slow on purpose. The closed-loop state persists
+      // for seconds, so a faster sample buys nothing, and this bus already
+      // times out in about a sixth of its requests. runPolling degrades every
+      // PID proportionally when the rate cap binds, so two more entries are a
+      // share taken from all of them and not from MAP and RPM in particular.
+      {0x03, 500},   // fuel system status, raw bits
+      {0x14, 500},   // O2 sensor 1 voltage and trim
       {0x33, 10000}  // barometric pressure
   };
-  static constexpr uint8_t kPollCount = 12;
 #else
-  static constexpr PollItem kPollProfile[14] = {
+  static constexpr uint8_t kPollCount = 17;
+  static constexpr PollItem kPollProfile[kPollCount] = {
       {0x01, 500},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
@@ -292,11 +315,29 @@ class ObdClient {
       {0x07, 500},   // long-term fuel trim bank 1, LPG + trims only
       {0x42, 1000},  // ECU voltage
       {0x05, 1000},  // coolant
-      {0x33, 10000}  // barometric pressure
+      // PID 03 and PID 14, for the reasons given in the Speed-Density profile
+      // above. They are diagnostics here for the same reason they are there:
+      // reading only, so the closed-loop question can be answered before
+      // anything is built on the answer.
+      {0x03, 500},   // fuel system status, raw bits
+      {0x14, 500},   // O2 sensor 1 voltage and trim
+      {0x33, 10000}, // barometric pressure, inert unless a block claims it
+      // PID 0x31, distance since codes cleared. Slow and quantised to whole
+      // kilometres, so at ten seconds it costs nothing and never competes with
+      // MAP or RPM for bandwidth. It exists to be compared against PID 0D, not
+      // to drive anything.
+      {0x31, 10000}  // distance since DTCs cleared, whole km
   };
-  static constexpr uint8_t kPollCount = 14;
 #endif
   // Mutable half of the schedule, split out so the profile above can stay
   // constant and be read by polledPidMask() without an instance.
   uint32_t pollLastSentAt_[kPollCount]{};
+
+  // PID 0x31 is the one entry in the profile whose traps are its own jumps, so
+  // it needs the previous reading and not just a timestamp: a DTC clear zeroes
+  // it and the two-byte counter wraps at 65535, and both arrive as a downward
+  // step. A delta taken across one of those is meaningless, so the step is
+  // recorded and the consumer discards rather than subtracting.
+  float odometerLastKm_ = 0.0f;
+  bool odometerSeen_ = false;
 };
