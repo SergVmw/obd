@@ -422,6 +422,12 @@ void testSpeedCorrectionPreservesTimestampAndClampsAtZero() {
   CHECK(rig.data.speedKph.updatedAt == rig.data.rawSpeedKph.updatedAt);
   CHECK(rig.data.speedKph.valid(2000));
 
+  // A correction large enough to clamp the displayed speed to zero must not take
+  // the measurement with it. Raw 20 is a moving vehicle, so L/100 km is stated
+  // and divided by 20; only the readout reads 0. This assertion used to require
+  // the opposite — that the correction could switch the gauge out of per-distance
+  // mode — which is the coupling this change removes, and switchSpeedKph asks
+  // whether the car is moving, not what the screen happens to claim.
   config.speedCorrectionKph = -50.0f;
   rig.data.rpm.set(2000.0f, 3000);
   rig.data.rawSpeedKph.set(20.0f, 3000);
@@ -429,7 +435,8 @@ void testSpeedCorrectionPreservesTimestampAndClampsAtZero() {
   rig.engine.update(3000, config, false);
   CHECK(near(rig.data.speedKph.value, 0.0));
   CHECK(rig.data.speedKph.valid(3000));
-  CHECK(rig.data.consumptionIsPerHour);
+  CHECK(!rig.data.consumptionIsPerHour);
+  CHECK(near(rig.data.currentConsumption, 10.0f * 100.0f / 20.0f));
 }
 
 void testStandingBandSuppressesCorrectionAndDistance() {
@@ -475,6 +482,74 @@ void testStandingBandSuppressesCorrectionAndDistance() {
   CHECK(rig.data.consumptionIsPerHour);
   CHECK(near(rig.data.currentConsumption, rig.data.currentFuelLph));
   CHECK(near(rig.trip.totalDistanceKm, distanceAtBandEdge));
+}
+
+// speedCorrectionKph exists so the readout agrees with the dashboard needle, and
+// for nothing else. It used to reach two calculated figures: the distance
+// integral and the divisor of the instantaneous L/100 km. On the measured trip
+// that made it 14.2% of the LPG distance and 40.1% of the petrol leg, so a
+// display preference was silently rescaling every litres-per-100km figure by
+// 16.6% — more than the entire volumetric-efficiency error. The same drive is run
+// under three corrections and must come out identical in everything measured;
+// only the displayed speed may move.
+struct DriveResult {
+  double distanceKm;
+  double petrolLiters;
+  float average;
+  float instantaneous;
+  float displayedSpeed;
+};
+
+DriveResult driveWithCorrection(float correction) {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.speedCorrectionKph = correction;
+  // begin() stamps lastUpdateAt_ at the rig's millis, so the first call lands on
+  // a zero-length interval and contributes nothing. Starting one second later
+  // makes every remaining interval exactly one second and the expected distance
+  // exact: 119 s at 50 km/h.
+  for (uint32_t now = 2000; now <= 120000; now += 1000) {
+    rig.data.rpm.set(2000.0f, now);
+    rig.data.rawSpeedKph.set(50.0f, now);
+    rig.data.fuelRateLph.set(6.0f, now);
+    rig.engine.update(now, config, false);
+  }
+  DriveResult result{};
+  result.distanceKm = rig.trip.totalDistanceKm;
+  result.petrolLiters = rig.trip.rawPetrolLiters;
+  result.average = rig.engine.averageForCurrentFuel(config);
+  result.instantaneous = rig.data.currentConsumption;
+  result.displayedSpeed = rig.data.speedKph.value;
+  return result;
+}
+
+void testSpeedCorrectionNeverReachesTheCalculation() {
+  const DriveResult zero = driveWithCorrection(0.0f);
+  const DriveResult plus = driveWithCorrection(5.0f);
+  const DriveResult minus = driveWithCorrection(-5.0f);
+
+  // The correction still does what it is for, and that is now all it does.
+  CHECK(near(zero.displayedSpeed, 50.0f));
+  CHECK(near(plus.displayedSpeed, 55.0f));
+  CHECK(near(minus.displayedSpeed, 45.0f));
+
+  // 119 one-second intervals at 50 km/h, and past kMinAverageDistanceKm so the
+  // average is stated rather than refused.
+  CHECK(near(zero.distanceKm, 119.0 * 50.0 / 3600.0));
+  CHECK(zero.average > 0.0f);
+  CHECK(zero.instantaneous > 0.0f);
+
+  // The claim under test: none of these move with the correction. Before the fix
+  // plus and minus differed by exactly the correction on the distance, and the
+  // instantaneous figure divided by it a second time.
+  CHECK(near(plus.distanceKm, zero.distanceKm));
+  CHECK(near(minus.distanceKm, zero.distanceKm));
+  CHECK(near(plus.petrolLiters, zero.petrolLiters));
+  CHECK(near(minus.petrolLiters, zero.petrolLiters));
+  CHECK(near(plus.average, zero.average));
+  CHECK(near(minus.average, zero.average));
+  CHECK(near(plus.instantaneous, zero.instantaneous));
+  CHECK(near(minus.instantaneous, zero.instantaneous));
 }
 
 // Drive the engine for `steps` one-second intervals. The integrator refuses
@@ -862,6 +937,8 @@ int main() {
   test("barometric pressure source selection", testBaroSelectionAndStartupMapCapture);
   test("boost derivation and smoothing", testBoostDerivationAndSmoothing);
   test("speed correction and timestamp", testSpeedCorrectionPreservesTimestampAndClampsAtZero);
+  test("speed correction never reaches a calculated figure",
+       testSpeedCorrectionNeverReachesTheCalculation);
   test("standing band suppresses correction and distance",
        testStandingBandSuppressesCorrectionAndDistance);
   test("standing fuel is split from moving fuel", testIdleFuelIsSplitFromMovingFuel);

@@ -269,6 +269,16 @@ class TelemetryEngine {
   PetrolCalibrationState& petrolCalibration() { return *petrolCalibration_; }
 
  private:
+  // The speed every calculated figure is derived from: raw PID 0D, never the
+  // display's corrected speed. speedCorrectionKph exists so the readout agrees
+  // with the dashboard needle; folding it into a distance or a division
+  // rescales the whole measuring chain by a constant of unknown sign, and a
+  // correcting value that reaches the numerator's denominator is no longer a
+  // correction of anything measurable. The standing band is applied here rather
+  // than at each site, so the threshold cannot differ between them.
+  // Returns NAN when the reading is stale, which callers already treat as
+  // "cannot state a figure" instead of as zero.
+  float measuredSpeedKph(uint32_t now) const;
   float chooseBaro(uint32_t now, const ConfigData& config);
   float calculateMafFuelLph(float mafGps, float phi, float afr, float density) const;
   float calculateSpeedDensityAirflowGps(uint32_t now) const;

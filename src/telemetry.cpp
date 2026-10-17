@@ -181,6 +181,17 @@ float TelemetryEngine::calculateSpeedDensityAirflowGps(uint32_t now) const {
   return airflowGps;
 }
 
+float TelemetryEngine::measuredSpeedKph(uint32_t now) const {
+  // rawSpeedKph carries PID 0D's own timestamp, so its validity is what decides
+  // whether the measurement is usable. speedKph inherits that timestamp and is
+  // deliberately not consulted here.
+  if (!data_.rawSpeedKph.valid(now)) return NAN;
+  // Inside the band the reading already means standing, and no correction of any
+  // kind should turn an idling engine into distance.
+  if (data_.rawSpeedKph.value < kParkedRawSpeedKph) return 0.0f;
+  return static_cast<float>(data_.rawSpeedKph.value);
+}
+
 void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
                                            const ConfigData& config,
                                            bool lpgActive) {
@@ -346,11 +357,17 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     }
   }
 
-  const bool speedValid = data_.speedKph.valid(now);
+  // The divisor is the measured speed, not the displayed one. Dividing by a
+  // value carrying speedCorrectionKph made the large readout a different figure
+  // from the two cells beneath it on the same screen: the cells divide by
+  // accumulated distance, this one by instantaneous speed, and only this one was
+  // scaled. That is a correction of a measurement the driver never sees.
+  const float measuredSpeed = measuredSpeedKph(now);
+  const bool speedValid = !isnan(measuredSpeed);
   if (data_.fuelValueValid && speedValid &&
-      data_.speedKph.value >= config.switchSpeedKph) {
+      measuredSpeed >= config.switchSpeedKph) {
     data_.currentConsumption =
-        data_.currentFuelLph * 100.0f / max(1.0f, data_.speedKph.value);
+        data_.currentFuelLph * 100.0f / max(1.0f, measuredSpeed);
     data_.consumptionIsPerHour = false;
   } else {
     data_.currentConsumption = data_.currentFuelLph;
@@ -375,8 +392,17 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   // Speed is known-good here, so zero distance means the vehicle is standing
   // rather than merely unmeasured. That distinction is what keeps a queue out
   // of the moving average, and a lost PID 0D out of the standing share.
+  // measuredSpeedKph() has already applied the standing band, so the zero below
+  // is reached for a standing vehicle and for nothing else.
+  //
+  // This is where the correction used to enter, and it fed every distance the
+  // gauge keeps: recentDistanceKm_, totalDistanceKm, both per-fuel distances and
+  // the tank calibration. On one measured trip speedCorrectionKph = 5 accounted
+  // for 14.2% of the LPG distance and 40.1% of the petrol leg, so a display
+  // preference was silently rescaling litres per 100 km by 16.6%. What it does
+  // now is confined to the readout, where it belongs.
   const double distance =
-      fmax(0.0, static_cast<double>(data_.speedKph.value)) * dtSec / 3600.0;
+      fmax(0.0, static_cast<double>(measuredSpeed)) * dtSec / 3600.0;
   // Split the fuel so the trip average and the moving average can be reported
   // separately. The tank calibration keeps using the undivided total, because
   // the engine burnt it either way.
