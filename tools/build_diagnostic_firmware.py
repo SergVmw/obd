@@ -2,6 +2,7 @@
 """Build and verify the isolated RPM/fuel diagnostic app image."""
 from pathlib import Path
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,36 @@ shutil.copyfile(BUILD_IMAGE, ARTIFACT)
 digest = hashlib.sha256(ARTIFACT.read_bytes()).hexdigest()
 (OUT_DIR / "SHA256SUMS.txt").write_text(
     f"{digest}  {ARTIFACT.name}\n", encoding="ascii")
+
+
+def describe_tree() -> str:
+    """Name the tree this image was built from.
+
+    VERSION is a constant in platformio.ini. It does not move when the code
+    does, so two different trees produce two different binaries that both report
+    the same version string. That is not hypothetical: an image built from the
+    0.4.19 sources carried the label 0.4.20-diag.1 while missing every PID that
+    0.4.20 added. A dump is only comparable against another dump if you know
+    which build wrote it.
+    """
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
+                              text=True).stdout.strip()
+
+    full = git("rev-parse", "HEAD")
+    if not full:
+        return "commit: unknown, not a git checkout"
+    line = f"commit: {git('rev-parse', '--short', 'HEAD')} ({full})"
+    changes = git("status", "--porcelain").splitlines()
+    if changes:
+        line += (f"\nuncommitted changes at build time: {len(changes)}"
+                 "\nthe image does not correspond to the commit above")
+    return line
+
+
+(OUT_DIR / "BUILD-COMMIT.txt").write_text(
+    f"{describe_tree()}\nimage: {ARTIFACT.name}\nsha256: {digest}\n",
+    encoding="utf-8")
 (OUT_DIR / "README.md").write_text(f"""# Диагностическая тестовая прошивка H2 Gauge
 
 - Версия: `{VERSION}`
@@ -73,7 +104,7 @@ digest = hashlib.sha256(ARTIFACT.read_bytes()).hexdigest()
 - App-образ: `{ARTIFACT.name}` ({ARTIFACT.stat().st_size} bytes)
 - SHA-256: `{digest}`
 
-Это отдельная тестовая сборка, **не production-релиз**. Файлы релиза 0.4.3
+Это отдельная тестовая сборка, **не production-релиз**. Файлы текущего релиза
 не изменяются. Для OTA выбирайте только этот app `.bin`; это не factory/merged
 образ и не содержит bootloader или таблицу разделов. Повторная сборка:
 `python tools/build_diagnostic_firmware.py`.
@@ -98,10 +129,31 @@ digest = hashlib.sha256(ARTIFACT.read_bytes()).hexdigest()
 выводом о причине устаревания RPM или пропадания расхода.
 """, encoding="utf-8")
 
-production = ROOT / "releases/h2-gauge-v0.4.3-esp32s3-n16r8.bin"
-if production.is_file() and ARTIFACT.read_bytes() == production.read_bytes():
-    raise SystemExit("diagnostic image unexpectedly identical to production 0.4.3")
+# This guard was pinned to a literal 0.4.3 path wrapped in is_file(), so once
+# that release left releases/ it stopped running without saying so: it compared
+# against nothing and still read as a passing check. Derive the current release
+# instead, and when it is absent, say that the comparison did not happen rather
+# than letting silence stand in for a result.
+production_text = (ROOT / "include/version.h").read_text(encoding="utf-8")
+production_version = re.search(r'H2G_FW_VERSION\s+"([^"]+)"', production_text).group(1)
+production_target = re.search(r'H2G_BUILD_TARGET\s+"([^"]+)"', production_text).group(1)
+production = ROOT / f"releases/h2-gauge-v{production_version}-{production_target}.bin"
+compared = False
+if production.is_file():
+    compared = True
+    if ARTIFACT.read_bytes() == production.read_bytes():
+        raise SystemExit(
+            f"diagnostic image is byte-identical to production {production_version}"
+        )
+else:
+    print(
+        f"note: production {production_version} is not in releases/, "
+        "so the diagnostic image was not compared against it"
+    )
 
 print(f"Diagnostic app: {ARTIFACT.relative_to(ROOT)}")
 print(f"SHA-256: {digest}")
 print(f"Size: {ARTIFACT.stat().st_size} bytes")
+print(f"Compared against production {production_version}: {'yes' if compared else 'no'}")
+print("Build tree: see artifacts/diagnostic/BUILD-COMMIT.txt - the version string "
+      "above does not change when the code does, so it cannot identify a build.")
