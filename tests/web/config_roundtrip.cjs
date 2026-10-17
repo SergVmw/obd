@@ -38,7 +38,7 @@ const DEVICE = {
     lockLongWhenMoving: true, screenOffDelaySec: 60,
   },
   service: { deviceName: 'H2 Gauge', apName: 'H2-Gauge', apPassword: 'h2gauge18' },
-  obd: { obdTimeoutMs: 120, maxRequestsPerSecond: 50, speedCorrectionKph: 0 },
+  obd: { obdTimeoutMs: 120, maxRequestsPerSecond: 50 },
 };
 
 (async () => {
@@ -109,19 +109,22 @@ const DEVICE = {
   assert.equal(await page.inputValue('#fuelSource'), '5',
     'the saved source must survive a reload');
 
-  // A numeric field, the other shape the form posts, behind its own tab.
-  await page.click('.tab[data-tab="obd"]');
-  await page.waitForSelector('#speedCorrectionKph', { state: 'visible' });
-  await page.fill('#speedCorrectionKph', '5');
+  // A numeric field, the other shape the form posts, behind its own tab. Since
+  // 0.4.19 this one is display-only and sits with the display settings.
+  await page.click('.tab[data-tab="display"]');
+  await page.waitForSelector('#displaySpeedOffsetKph', { state: 'visible' });
+  await page.fill('#displaySpeedOffsetKph', '5');
   await page.click('#save');
   await page.waitForFunction(() => document.getElementById('msg').textContent.includes('Сохранено'));
-  assert.equal(postBody.obd.speedCorrectionKph, 5);
+  assert.equal(postBody.display.displaySpeedOffsetKph, 5);
+  assert.equal(postBody.obd.speedCorrectionKph, undefined,
+    'a display-only setting must not appear under the obd group');
   assert.equal(postBody.fuel.fuelSource, 5,
     'changing one number must not roll a previously saved choice back');
 
   await page.reload();
-  await page.waitForFunction(() => document.getElementById('speedCorrectionKph').value !== '');
-  assert.equal(await page.inputValue('#speedCorrectionKph'), '5');
+  await page.waitForFunction(() => document.getElementById('displaySpeedOffsetKph').value !== '');
+  assert.equal(await page.inputValue('#displaySpeedOffsetKph'), '5');
 
   console.log('  [ok] a field set on the first attempt is what gets saved');
   console.log('  [ok] unrelated settings are not dragged along');

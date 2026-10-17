@@ -19,7 +19,8 @@ const STORED = {
     autoReturnSec: 10, manualNight: true, lightAutoCalibrate: true,
     lightNightAdc: 600, lightDayAdc: 3000, lightDimDelayMs: 3000,
     lightBrightenDelayMs: 1000, colorText: '#F6FAF6', colorVacuum: '#5ACAEE',
-    colorBoost: '#5AF2AC', colorWarning: '#FFBE5A', colorDanger: '#FF5D6A' },
+    colorBoost: '#5AF2AC', colorWarning: '#FFBE5A', colorDanger: '#FF5D6A',
+    displaySpeedOffsetKph: 5 },
   boost: { baroSource: 0, fixedBaroKpa: 99.4, boostOffsetBar: 0, boostMinBar: -1,
     boostWarningBar: 0.9, boostDangerBar: 1.15, boostMaxBar: 1.5, smoothingMs: 250 },
   fuel: { fuelSource: 5, dfcoEnabled: true, fuelTrimEnabled: true, saveTrip: true,
@@ -29,7 +30,7 @@ const STORED = {
   controls: { longPressMs: 1800, serviceHoldMs: 5000, serviceTimeoutMin: 15,
     lockLongWhenMoving: false, screenOffDelaySec: 60 },
   service: { deviceName: 'H2 Gauge', apName: 'H2-Gauge', apPassword: 'h2gauge18' },
-  obd: { obdTimeoutMs: 200, maxRequestsPerSecond: 50, speedCorrectionKph: 5 },
+  obd: { obdTimeoutMs: 200, maxRequestsPerSecond: 50 },
 };
 
 (async () => {
@@ -70,12 +71,12 @@ const STORED = {
 
   // The form is showing markup defaults, not what the device holds. Everything
   // the owner tuned is invisible right now.
-  assert.equal(await page.inputValue('#speedCorrectionKph'), '0',
+  assert.equal(await page.inputValue('#displaySpeedOffsetKph'), '0',
     'with the device silent the form can only show what the markup carries');
 
-  await page.click('.tab[data-tab="obd"]');
-  await page.waitForSelector('#speedCorrectionKph', { state: 'visible' });
-  await page.fill('#speedCorrectionKph', '5');
+  await page.click('.tab[data-tab="display"]');
+  await page.waitForSelector('#displaySpeedOffsetKph', { state: 'visible' });
+  await page.fill('#displaySpeedOffsetKph', '5');
 
   // The button is inert, so there is nothing to press and nowhere for a
   // factory value to escape through.
@@ -91,15 +92,17 @@ const STORED = {
   // Once the device answers, saving works as normal.
   configFails = false;
   await page.reload();
-  await page.waitForFunction(() => document.getElementById('speedCorrectionKph').value !== '');
-  await page.click('.tab[data-tab="obd"]');
-  await page.waitForSelector('#speedCorrectionKph', { state: 'visible' });
-  assert.equal(await page.inputValue('#speedCorrectionKph'), '5',
+  await page.waitForFunction(() => document.getElementById('displaySpeedOffsetKph').value !== '');
+  await page.click('.tab[data-tab="display"]');
+  await page.waitForSelector('#displaySpeedOffsetKph', { state: 'visible' });
+  assert.equal(await page.inputValue('#displaySpeedOffsetKph'), '5',
     'a good load must fill the form with the stored values');
   await page.click('#save');
   await page.waitForFunction(() => document.getElementById('msg').textContent.includes('Сохранено'));
   assert.equal(posts, 1);
-  assert.equal(postBody.obd.speedCorrectionKph, 5);
+  // Display-only since 0.4.19, so it belongs to display and not to the obd group
+  // where the engine's own settings live.
+  assert.equal(postBody.display.displaySpeedOffsetKph, 5);
   assert.equal(postBody.fuel.fuelSource, 5,
     'the source the device holds must not be overwritten with a factory guess');
 
