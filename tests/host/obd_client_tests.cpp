@@ -696,6 +696,71 @@ void testShortO2AnswerChangesNothing() {
   CHECK(!rig.telemetry.o2Sensor1TrimPct.valid(hostMillis));
 }
 
+// PID 31 arrives in whole kilometres and both of its traps - a DTC clear, and the
+// two-byte wrap at 65535 - arrive as the same thing, a step down. The segment
+// number exists so a reader can tell a delta taken across such a step from one
+// that was not, by comparing the number at both ends. Four readings: up, up,
+// down, up. Only the third may move the number.
+//
+// PID 31 is the slowest entry in the profile at ten seconds, so waiting for it to
+// come round costs about a whole profile period; the default 600 steps of 25 ms is
+// fifteen seconds and lands just short of one cycle. The budget here is several
+// cycles, and it is spent on waiting, not on shortening the interval under test.
+static const uint32_t kOdometerBudget = 6000;
+
+void testOdometerSegmentAdvancesOnlyOnADownwardStep() {
+  Rig rig;
+  rig.identifyEngine();
+
+  // 1200 km. Nothing has been compared against yet, so there is no step down.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  CHECK(rig.awaitingPid(0x01, 0x31));
+  const uint8_t first[] = {0x04, 0x41, 0x31, 0x04, 0xB0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, first, sizeof(first)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.valid(hostMillis));
+  CHECK(rig.telemetry.odometerKm.value == 1200.0f);
+  CHECK(rig.telemetry.odometerSegment == 0);
+
+  // 1210 km. A rise is not a step down.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t second[] = {0x04, 0x41, 0x31, 0x04, 0xBA};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, second, sizeof(second)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 1210.0f);
+  CHECK(rig.telemetry.odometerSegment == 0);
+
+  // 3 km. The counter was cleared, so this delta subtracts two unrelated
+  // numbers. One new segment, and exactly one - not a flag that can no longer
+  // be turned off.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t third[] = {0x04, 0x41, 0x31, 0x00, 0x03};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, third, sizeof(third)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerSegment == 1);
+
+  // And it settles. 3 km to 8 km is a real 5 km, as good as the one before the
+  // clear, and must not open another segment. This is the whole reason the
+  // field is a number and not a sticky flag: a boolean could never express
+  // "broken, then fine again", only "broken, forever".
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t fourth[] = {0x04, 0x41, 0x31, 0x00, 0x08};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fourth, sizeof(fourth)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 8.0f);
+  CHECK(rig.telemetry.odometerSegment == 1);
+
+  // A second clear, and it must be a second segment. This is the assertion that
+  // separates a counter from a flag: a field that latches at 1 would satisfy
+  // every check above and fail exactly here, which is the defect being removed.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t fifth[] = {0x04, 0x41, 0x31, 0x00, 0x02};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fifth, sizeof(fifth)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 2.0f);
+  CHECK(rig.telemetry.odometerSegment == 2);
+}
+
 }  // namespace
 
 // The two masks this vehicle actually reported: the engine claims a manifold,
@@ -844,6 +909,8 @@ int main() {
   test("PID 14 keeps both bytes raw", testO2KeepsBothBytesRaw);
   test("a short PID 14 answer changes nothing",
        testShortO2AnswerChangesNothing);
+  test("the odometer segment moves only on a downward step",
+       testOdometerSegmentAdvancesOnlyOnADownwardStep);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

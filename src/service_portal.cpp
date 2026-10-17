@@ -1320,10 +1320,12 @@ void ServicePortal::sendStatus() {
     doc["odometerKm"] = nullptr;
     doc["odometerAgeMs"] = UINT32_MAX;
   }
-  // True once the counter has been seen to jump backwards since the last
-  // reading: a DTC clear zeroes it, and two bytes wrap at 65535 km. A delta
-  // taken across that jump is meaningless and must be discarded, not clamped.
-  doc["odometerResetBelow"] = telemetry_.odometerResetBelow;
+  // Increments on every downward step of the counter: a DTC clear zeroes
+  // it, and two bytes wrap at 65535 km. A delta is a real distance when this
+  // matches at both ends, and a subtraction of two unrelated counters when it
+  // does not - which is the question a reader actually has, and which a sticky
+  // "has reset" flag could not answer without throwing away the whole session.
+  doc["odometerSegment"] = telemetry_.odometerSegment;
 
   // PID 03 and PID 14, published as they arrived. The byte is the useful part:
   // which of its bits closes the loop is settled by watching it against the O2

@@ -59,9 +59,20 @@ struct TelemetryData {
   // accumulator inside the ECU, so the two can be compared. Its two traps are
   // both recorded here rather than left for the reader to discover: clearing
   // codes resets it to zero, and the two-byte counter wraps at 65535 km. Either
-  // makes the raw value jump backwards, which odometerResetBelow reports.
+  // makes the raw value jump backwards, which odometerSegment numbers.
   TimedFloat odometerKm;
-  bool odometerResetBelow = false;
+  // Advances on every downward step of PID 31. A delta is a real distance when
+  // this is equal at both ends, and a subtraction of two unrelated counters when
+  // it is not. Numbering the stretch is the whole point: a flag set once stays
+  // set, says nothing about which deltas it broke, and keeps calling good deltas
+  // bad for the rest of the session - so one DTC clear on a long trip, which is
+  // when the reference odometer earns its keep, would void everything after it.
+  //
+  // uint32_t, not uint16_t: 65535 downward steps is not a reachable number, but
+  // if it were reached the rollover would make an unrelated pair compare equal
+  // again and be read as a valid delta. That is the failure this field exists
+  // to prevent, so the width is chosen so it cannot happen.
+  uint32_t odometerSegment = 0;
 
   // PID 03 fuel system status, PID 14 O2 sensor 1. Held as raw bytes on purpose.
   //

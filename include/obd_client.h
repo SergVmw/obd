@@ -336,8 +336,9 @@ class ObdClient {
   // PID 0x31 is the one entry in the profile whose traps are its own jumps, so
   // it needs the previous reading and not just a timestamp: a DTC clear zeroes
   // it and the two-byte counter wraps at 65535, and both arrive as a downward
-  // step. A delta taken across one of those is meaningless, so the step is
-  // recorded and the consumer discards rather than subtracting.
+  // step. A delta taken across one of those is meaningless, so each jump opens
+  // a new segment and the consumer compares segments at the two ends instead of
+  // reading a flag that cannot say which deltas it broke.
   float odometerLastKm_ = 0.0f;
   bool odometerSeen_ = false;
 };

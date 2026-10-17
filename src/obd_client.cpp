@@ -742,9 +742,12 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       if (payloadLength >= 4) {
         const float km = static_cast<float>((static_cast<uint16_t>(a) << 8) | b);
         // Both traps of this counter arrive as a downward jump: a DTC clear
-        // zeroes it, and two bytes wrap at 65535. Record that rather than let a
-        // consumer subtract and get a negative distance.
-        if (odometerSeen_ && km < odometerLastKm_) telemetry_.odometerResetBelow = true;
+        // zeroes it, and two bytes wrap at 65535. Open a new segment rather
+        // than let a consumer subtract and get a negative distance. Numbering
+        // the stretch rather than raising a flag is what lets the deltas after
+        // the jump be used again: they are as good as the ones before it, and a
+        // sticky flag cannot tell a consumer so.
+        if (odometerSeen_ && km < odometerLastKm_) ++telemetry_.odometerSegment;
         odometerLastKm_ = km;
         odometerSeen_ = true;
         telemetry_.odometerKm.set(km, now);
