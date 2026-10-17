@@ -546,6 +546,7 @@ void ServicePortal::sendConfig() {
   display["rotation"] = c.rotation;
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
+  display["mainDigitSize"] = static_cast<uint8_t>(c.mainDigit());
   display["uiLanguage"] = static_cast<uint8_t>(c.uiLanguage());
   display["autoReturnSec"] = c.autoReturnSec;
   display["pageFuel"] = c.pageFuel;
@@ -640,6 +641,7 @@ void ServicePortal::receiveConfig() {
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
         {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
         {"startPage", 0, 4}, {"mainCenterValue", 0, 3},
+        {"mainDigitSize", 0, 1},
         {"uiLanguage", 0, 1}, {"autoReturnSec", 0, 120}};
     const char* invalid = invalidIntegerField(
         d, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
@@ -672,6 +674,8 @@ void ServicePortal::receiveConfig() {
         d["startPage"] | c.displayStartPage(), 0, 4));
     c.setMainCenterValue(static_cast<MainCenterValue>(clampValue<int>(
         d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
+    c.setMainDigitSize(static_cast<MainDigitSize>(clampValue<int>(
+        d["mainDigitSize"] | static_cast<int>(c.mainDigit()), 0, 1)));
     c.setUiLanguage(static_cast<UiLanguage>(clampValue<int>(
         d["uiLanguage"] | static_cast<int>(c.uiLanguage()), 0, 1)));
     c.autoReturnSec = clampValue<int>(d["autoReturnSec"] | c.autoReturnSec, 0, 120);

@@ -34,6 +34,15 @@ enum class MainCenterValue : uint8_t {
   AverageConsumption = 3,
 };
 
+// Height of the large number in the centre of the first screen. Large is the
+// size the gauge has always drawn, so it stays the default and an upgrade looks
+// identical; Small is the 28 px alternative for a dashboard that shows more
+// than one figure there.
+enum class MainDigitSize : uint8_t {
+  Large = 0,
+  Small = 1,
+};
+
 enum class UiLanguage : uint8_t {
   Russian = 0,
   English = 1,
@@ -123,6 +132,8 @@ struct ConfigData {
   void setFuelTrimEnabled(bool enabled) { fuelTrimPollingEnabled = enabled; }
   bool dfcoEnabled() const { return dfcoCorrectionEnabled; }
   void setDfcoEnabled(bool enabled) { dfcoCorrectionEnabled = enabled; }
+  MainDigitSize mainDigit() const { return mainDigitSize; }
+  void setMainDigitSize(MainDigitSize value) { mainDigitSize = value; }
 
   // Schema 6: append only, preserving the complete schema-5 prefix.
   BrightnessSettings brightness;
@@ -134,6 +145,10 @@ struct ConfigData {
   // screen lit for good. The car leaves the OBD battery line live overnight, so
   // without this the gauge is lit all night.
   uint16_t screenOffDelaySec;
+
+  // Schema 8. Appended after screenOffDelaySec for the same reason: a field
+  // inserted before the schema-5 offsets would move the bytes migrateV5 reads.
+  MainDigitSize mainDigitSize;
 
   uint32_t checksum;
 };
@@ -153,6 +168,7 @@ class ConfigStore {
   static bool valid(const ConfigData& config);
   static bool migrateV5(const uint8_t* record, ConfigData& destination);
   static bool migrateV6(const uint8_t* record, ConfigData& destination);
+  static bool migrateV7(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

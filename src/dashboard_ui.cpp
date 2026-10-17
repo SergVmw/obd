@@ -24,6 +24,9 @@ constexpr int16_t kDisplaySize = 240;
 constexpr int16_t kSmallTextHeight = 24;
 constexpr int16_t kMediumTextHeight = 32;
 constexpr int16_t kLargeTextHeight = 46;
+// 28 px digits need a band no shorter than their ascent plus descent; 34 is the
+// same padding the 38 px size gets over 46.
+constexpr int16_t kSmallDigitTextHeight = 34;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t);
 
@@ -256,16 +259,20 @@ bool DashboardUi::createSmoothTextLayers() {
 
   if (!createLayer(textSmall_, kSmallTextHeight, H2GolosSmall13) ||
       !createLayer(textMedium_, kMediumTextHeight, H2GolosMedium19) ||
-      !createLayer(textLarge_, kLargeTextHeight, H2GolosDigits38)) {
+      !createLayer(textLarge_, kLargeTextHeight, H2GolosDigits38) ||
+      !createLayer(textDigitsSmall_, kSmallDigitTextHeight,
+                   H2GolosDigits28)) {
     releaseSmoothTextLayers();
     return false;
   }
 
   ESP_LOGI(kTag,
-           "Anti-aliased Golos ready: small=%u medium=%u digits=%u bytes",
+           "Anti-aliased Golos ready: small=%u medium=%u digits=%u "
+           "digits28=%u bytes",
            static_cast<unsigned>(H2GolosSmall13Size),
            static_cast<unsigned>(H2GolosMedium19Size),
-           static_cast<unsigned>(H2GolosDigits38Size));
+           static_cast<unsigned>(H2GolosDigits38Size),
+           static_cast<unsigned>(H2GolosDigits28Size));
   return true;
 }
 
@@ -274,9 +281,11 @@ void DashboardUi::releaseSmoothTextLayers() {
   textSmall_.unloadFont();
   textMedium_.unloadFont();
   textLarge_.unloadFont();
+  textDigitsSmall_.unloadFont();
   textSmall_.deleteSprite();
   textMedium_.deleteSprite();
   textLarge_.deleteSprite();
+  textDigitsSmall_.deleteSprite();
   smoothFontsReady_ = false;
 }
 
@@ -319,6 +328,9 @@ int16_t DashboardUi::drawText(const char* text, int16_t x, int16_t y,
   } else if (role == FontRole::Medium) {
     layer = &textMedium_;
     layerHeight = kMediumTextHeight;
+  } else if (role == FontRole::MainDigit) {
+    layer = mainDigitSmall_ ? &textDigitsSmall_ : &textLarge_;
+    layerHeight = mainDigitSmall_ ? kSmallDigitTextHeight : kLargeTextHeight;
   } else {
     layer = &textLarge_;
     layerHeight = kLargeTextHeight;
@@ -594,6 +606,7 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
 void DashboardUi::drawMain(const TelemetryData& data,
                            const TelemetryEngine& engine,
                            const ConfigData& config, uint32_t now) {
+  mainDigitSmall_ = config.mainDigit() == MainDigitSize::Small;
   if (data.mapKpa.valid(now) && data.filteredBoostBar > peakBoost_) {
     peakBoost_ = data.filteredBoostBar;
   }
@@ -642,7 +655,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   }
   if (!centerValid) strlcpy(buffer, "--.-", sizeof(buffer));
 
-  drawText(buffer, 120, 102, MC_DATUM, config.colorText, FontRole::Large,
+  drawText(buffer, 120, 102, MC_DATUM, config.colorText, FontRole::MainDigit,
            FSSB24);
   drawText(centerUnit, 120, 132, MC_DATUM, kMuted, FontRole::Small,
            labelFont(config, true));
