@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV = "esp32s3_n16r8_diagnostic"
-VERSION = "0.4.3-diag.1"
+VERSION = "0.4.20-diag.1"
 TARGET = "esp32s3-n16r8-diag"
 BUILD_IMAGE = ROOT / f".pio/build/{ENV}/firmware.bin"
 OUT_DIR = ROOT / "artifacts/diagnostic"
