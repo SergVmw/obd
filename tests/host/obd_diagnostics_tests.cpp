@@ -152,6 +152,19 @@ void testAutomaticSingleFrameScanAndMilLatch() {
   CHECK(enginePidOnly.observeEngineResponse(0x7E8, 0x0B, true));
   CHECK(!enginePidOnly.state().engineEcuLocked);
 
+  // Crossed signs bind nothing: the engine-only parameter from 0x7E8 and the RPM
+  // from 0x7E9 are both true, and they came from different blocks. This is the
+  // invariant that keeps the gearbox from being mistaken for the engine, and it
+  // fails the moment the two ids are collapsed into one field again.
+  TelemetryData crossedTelemetry;
+  ObdDiagnostics crossed(crossedTelemetry);
+  CHECK(crossed.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(!crossed.state().engineEcuLocked);
+  crossed.noteRpmAnswer(0x7E9, true);
+  CHECK(!crossed.state().engineEcuLocked);
+  CHECK(crossed.state().engineEcuCandidateId == 0x7E8);
+  CHECK(crossed.state().engineEcuRpmId == 0x7E9);
+
   // In the order the car produces them: RPM is seen first, and on its own binds
   // nothing, so the monitor status it would unlock is still refused.
   CHECK(diagnostics.observeEngineResponse(0x7E8, 0x0C, true));

@@ -99,4 +99,17 @@ for named in ("closedLoop", "closed_loop", "loopClosed", "loop_closed",
 assert 'fuelSystem["raw"]' in portal and 'fuelSystem["bits"]' in portal
 assert 'o2["raw"]' in portal and '* 0.00495f' in portal
 
+# The driver counter read must sit above the bail-out. Below it, the counters
+# freeze for exactly as long as the bus is unhealthy, which is the whole reason
+# they are read. A behavioural test cannot hold this: the response timeout is
+# 120 ms and the poll interval is a second, so any run long enough to reach a
+# poll has already let the pending request expire and the placement stops
+# mattering. It is a property of the source, so it is asserted here.
+counter_read = obd.index("if (now - lastStatusPollAt_ >= 1000)")
+bail_out = obd.index("if (waiting_ || recovering_) return;")
+assert counter_read < bail_out, (
+    "the CAN counter read is below the waiting bail-out, so it stops updating "
+    "while a request is in flight or the bus is recovering"
+)
+
 print(f"OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode, non-fabricated MAP status, {len(listed)} diagnostics download sources, and PID 03/14 read but unnamed OK")

@@ -107,3 +107,11 @@ esp_err_t twai_receive(twai_message_t* message, TickType_t timeout);
 esp_err_t twai_read_alerts(uint32_t* alerts, uint32_t* alert_mask);
 esp_err_t twai_get_status_info(twai_status_info_t* status_info);
 esp_err_t twai_initiate_recovery(void);
+
+namespace h2g_twai_stub {
+void reset();
+void setState(twai_state_t state);
+// Lets a test give the driver non-zero counters, so a field that is only ever
+// copied from a zeroed struct cannot pass for a working one.
+void setStatus(const twai_status_info_t& status);
+}  // namespace h2g_twai_stub

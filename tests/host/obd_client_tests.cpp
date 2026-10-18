@@ -772,6 +772,36 @@ void testOdometerSegmentAdvancesOnlyOnADownwardStep() {
   CHECK(rig.telemetry.odometerSegment == 2);
 }
 
+// The bus counters are copied from the driver rather than counted by the
+// firmware, so the stub has to be given a non-zero status: against a zeroed
+// struct every field could be wired to nothing and still look correct. rxMissed
+// earns its place on its own - it is the figure that separates "the bus did not
+// answer" from "the gauge dropped the answer".
+void testDriverCountersReachTelemetry() {
+  Rig rig;
+  twai_status_info_t status{};
+  status.bus_error_count = 7;
+  status.tx_error_counter = 8;
+  status.rx_error_counter = 3;
+  status.rx_missed_count = 11;
+  h2g_twai_stub::setStatus(status);
+
+  rig.pump(48);  // past the one-second poll interval
+
+  CHECK(rig.telemetry.canBusErrorCount == 7);
+  CHECK(rig.telemetry.canTec == 8);
+  CHECK(rig.telemetry.canRec == 3);
+  CHECK(rig.telemetry.canRxMissedCount == 11);
+}
+
+// The read sits above the waiting bail-out, not below it: TEC moves while a
+// request is in flight, and a read behind that return would sit frozen through
+// the whole failure. A behavioural test cannot hold that line - the response
+// timeout is 120 ms and the poll interval is a second, so any run long enough to
+// reach a poll has already let the request expire. check_obd_service_integration
+// asserts the placement statically instead, which is what it is: a property of
+// the source, not of a moment.
+
 }  // namespace
 
 // The two masks this vehicle actually reported: the engine claims a manifold,
@@ -943,6 +973,8 @@ int main() {
        testShortO2AnswerChangesNothing);
   test("the odometer segment moves only on a downward step",
        testOdometerSegmentAdvancesOnlyOnADownwardStep);
+  test("driver error counters reach telemetry",
+       testDriverCountersReachTelemetry);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

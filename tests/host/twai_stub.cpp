@@ -16,15 +16,25 @@ namespace {
 std::deque<twai_message_t> g_rx;
 std::vector<twai_message_t> g_tx;
 twai_state_t g_state = TWAI_STATE_STOPPED;
+// The driver's own counters, which the real controller accumulates and this stub
+// has to be told. Without them every read returns zero and a test cannot tell a
+// working path from one that copies zeros faithfully.
+twai_status_info_t g_status{};
 }  // namespace
 
 void reset() {
   g_rx.clear();
   g_tx.clear();
   g_state = TWAI_STATE_STOPPED;
+  g_status = twai_status_info_t{};
 }
 
 void setState(twai_state_t state) { g_state = state; }
+
+void setStatus(const twai_status_info_t& status) {
+  g_status = status;
+  g_status.state = g_state;
+}
 
 // Hand the next frames to twai_receive(), in order.
 void queueRx(const twai_message_t& message) { g_rx.push_back(message); }
@@ -43,6 +53,7 @@ bool takeNext(twai_message_t* out) {
   return true;
 }
 twai_state_t currentState() { return g_state; }
+const twai_status_info_t& status() { return g_status; }
 }  // namespace
 
 }  // namespace h2g_twai_stub
@@ -82,7 +93,7 @@ esp_err_t twai_read_alerts(uint32_t*, uint32_t*) { return ESP_OK; }
 
 esp_err_t twai_get_status_info(twai_status_info_t* status_info) {
   if (status_info == nullptr) return ESP_ERR_INVALID_ARG;
-  *status_info = twai_status_info_t{};
+  *status_info = h2g_twai_stub::status();
   status_info->state = h2g_twai_stub::currentState();
   return ESP_OK;
 }
