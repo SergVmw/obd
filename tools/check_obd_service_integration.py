@@ -101,15 +101,26 @@ assert 'o2["raw"]' in portal and '* 0.00495f' in portal
 
 # The driver counter read must sit above the bail-out. Below it, the counters
 # freeze for exactly as long as the bus is unhealthy, which is the whole reason
-# they are read. A behavioural test cannot hold this: the response timeout is
-# 120 ms and the poll interval is a second, so any run long enough to reach a
-# poll has already let the pending request expire and the placement stops
-# mattering. It is a property of the source, so it is asserted here.
-counter_read = obd.index("if (now - lastStatusPollAt_ >= 1000)")
-bail_out = obd.index("if (waiting_ || recovering_) return;")
+# they are read.
+#
+# Only the waiting half needs checking here. A run long enough to reach a poll
+# has already let the pending request expire - 120 ms against a one-second
+# interval - so the waiting placement stops being observable. Recovering is not
+# bounded that way and is covered by testCountersKeepUpdatingWhileTheBusIsRecovering
+# instead. This half stays a property of the source, asserted rather than run.
+counter_read = obd.find("if (now - lastStatusPollAt_ >= 1000)")
+assert counter_read != -1, (
+    "the once-a-second driver counter read is gone from ObdClient::loop"
+)
+bail_out = obd.find("if (waiting_ || recovering_) return;")
+assert bail_out != -1, (
+    "the waiting/recovering bail-out is gone from ObdClient::loop, so the "
+    "placement of the counter read can no longer be judged"
+)
 assert counter_read < bail_out, (
-    "the CAN counter read is below the waiting bail-out, so it stops updating "
-    "while a request is in flight or the bus is recovering"
+    f"the CAN counter read sits at offset {counter_read} and the waiting "
+    f"bail-out at {bail_out}: below it, the counters stop updating while a "
+    "request is in flight"
 )
 
 print(f"OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode, non-fabricated MAP status, {len(listed)} diagnostics download sources, and PID 03/14 read but unnamed OK")
