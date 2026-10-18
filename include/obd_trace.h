@@ -70,6 +70,7 @@ struct ObdTraceSample {
   uint32_t canBusErrorCount = 0;
   uint32_t canTec = 0;
   uint32_t canRec = 0;
+  uint32_t canRxMissed = 0;
   uint32_t alternateEcuResponseCount = 0;
 
   float rpm = 0.0f;
