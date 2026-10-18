@@ -621,6 +621,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       if (!diagnostics_.observeEngineResponse(message.identifier, pid,
                                               identityDiscriminates())) {
 #ifdef H2G_DIAGNOSTIC_BUILD
+        // Read here rather than before the call: observeEngineResponse leaves
+        // engineEcuLocked untouched on both of its false paths, so this is the
+        // same value, and hoisting it left a variable computed and discarded in
+        // the production build.
         if (diagnostics_.state().engineEcuLocked) {
           recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
                                  pid, now);
