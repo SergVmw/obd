@@ -440,6 +440,15 @@ function downloadSettingsFile(envelope,filename){
   setTimeout(()=>URL.revokeObjectURL(url),30000);
 }
 
+// Day first, because that is the order the date is read in here, and without the
+// time: one export per day is the normal case, and the exact moment belongs in
+// savedAt inside the file rather than in its name. Two exports on the same day
+// get the browser's own (1), (2) suffix rather than colliding.
+function settingsStamp(){
+  const d=new Date(),p=n=>String(n).padStart(2,'0');
+  return `${p(d.getDate())}-${p(d.getMonth()+1)}-${d.getFullYear()}`;
+}
+
 async function readStoredConfig(){
   const stored=await api('/api/config');
   if(!stored||typeof stored!=='object')throw Error('прибор не отдал настройки');
@@ -455,7 +464,7 @@ $('exportConfig').onclick=async()=>{
     delete config.schemaVersion;delete config.firmwareVersion;
     downloadSettingsFile({kind:BACKUP_KIND,version:1,savedAt:diagStamp(),
       firmwareVersion:firmwareVersion||null,schemaVersion:schemaVersion||null,config:config},
-      `h2g-settings-${diagStamp()}.json`);
+      `h2g-settings-${settingsStamp()}.json`);
     $('msg').textContent='Копия настроек выгружена. Перед восстановлением с текущего состояния снимается своя копия.';
   }catch(e){$('msg').textContent='Выгрузка не удалась: '+e.message}
 };
@@ -532,7 +541,7 @@ $('restoreApply').onclick=async()=>{
     delete config.schemaVersion;delete config.firmwareVersion;
     downloadSettingsFile({kind:BACKUP_KIND,version:1,savedAt:diagStamp(),
       firmwareVersion:firmwareVersion||null,schemaVersion:schemaVersion||null,config:config},
-      `h2g-settings-before-restore-${diagStamp()}.json`);
+      `h2g-settings-before-restore-${settingsStamp()}.json`);
     await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)});
     closeRestorePanel();
