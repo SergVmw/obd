@@ -1787,7 +1787,7 @@ void appendTraceSample(String& output, const ObdTraceSample& sample) {
   output += ',';
   appendTraceUInt(output, sample.canRec);
   output += ',';
-  appendTraceUInt(output, sample.canRxMissed);
+  appendTraceUInt(output, sample.canRxMissedCount);
   output += ',';
   appendTraceUInt(output, sample.alternateEcuResponseCount);
 

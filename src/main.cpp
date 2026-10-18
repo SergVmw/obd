@@ -147,7 +147,7 @@ void captureDiagnosticTrace(uint32_t now) {
   sample.canBusErrorCount = telemetry.canBusErrorCount;
   sample.canTec = telemetry.canTec;
   sample.canRec = telemetry.canRec;
-  sample.canRxMissed = telemetry.canRxMissedCount;
+  sample.canRxMissedCount = telemetry.canRxMissedCount;
   sample.ecuResponseId = telemetry.ecuResponseId;
   sample.fuelMode = static_cast<uint8_t>(telemetry.fuelMode);
   sample.fuelSource = static_cast<uint8_t>(configStore.data().fuelSource);
