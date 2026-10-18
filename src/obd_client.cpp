@@ -25,9 +25,12 @@ bool ObdClient::begin() {
       TWAI_GENERAL_CONFIG_DEFAULT(Pins::CanTx, Pins::CanRx, TWAI_MODE_NORMAL);
   general.tx_queue_len = 10;
   general.rx_queue_len = 20;
+  // No TWAI_ALERT_BUS_ERROR: the controller's counters are read once a second and
+  // carry the same numbers, so the alert added an interrupt, a queue entry and a
+  // log line per error without adding data - paid exactly when the bus is
+  // unhealthy. The log line it wrote repeated what the counters already hold.
   general.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED |
                            TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_FAILED |
-                           TWAI_ALERT_BUS_ERROR |
                            TWAI_ALERT_AND_LOG;
 
   const twai_timing_config_t timing = TWAI_TIMING_CONFIG_500KBITS();
@@ -161,18 +164,11 @@ void ObdClient::handleAlerts(uint32_t now) {
   }
   if (alerts & TWAI_ALERT_TX_FAILED) {
     ++telemetry_.canErrorCount;
+    // The transmission was cancelled, so the slot is not going to be answered.
+    // BUS_OFF releases it for the same reason; leaving it here holds the poller
+    // for the full response timeout over a frame that is already gone.
+    if (waiting_) finishPending(true);
     ESP_LOGW(kTag, "TWAI transmit failed");
-  }
-  if (alerts & TWAI_ALERT_BUS_ERROR) {
-    twai_status_info_t status{};
-    if (twai_get_status_info(&status) == ESP_OK) {
-      ESP_LOGW(kTag,
-               "CAN bus error: TEC=%lu REC=%lu state=%d busErrorCount=%lu",
-               static_cast<unsigned long>(status.tx_error_counter),
-               static_cast<unsigned long>(status.rx_error_counter),
-               static_cast<int>(status.state),
-               static_cast<unsigned long>(status.bus_error_count));
-    }
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     ++telemetry_.canErrorCount;
