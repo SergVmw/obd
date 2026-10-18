@@ -114,4 +114,7 @@ void setState(twai_state_t state);
 // Lets a test give the driver non-zero counters, so a field that is only ever
 // copied from a zeroed struct cannot pass for a working one.
 void setStatus(const twai_status_info_t& status);
+// Raises an alert for the next twai_read_alerts, which takes and clears it.
+// Without this the alert handler cannot be reached at all.
+void raiseAlert(uint32_t alert);
 }  // namespace h2g_twai_stub

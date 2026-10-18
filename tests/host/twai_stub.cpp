@@ -20,6 +20,10 @@ twai_state_t g_state = TWAI_STATE_STOPPED;
 // has to be told. Without them every read returns zero and a test cannot tell a
 // working path from one that copies zeros faithfully.
 twai_status_info_t g_status{};
+// Alerts raised by the test, consumed by the next twai_read_alerts. Before this
+// the stub ignored the call entirely, which left handleAlerts - RX_QUEUE_FULL,
+// TX_FAILED, BUS_OFF and the recovery that follows - unreachable from any test.
+uint32_t g_alerts = 0;
 }  // namespace
 
 void reset() {
@@ -27,9 +31,12 @@ void reset() {
   g_tx.clear();
   g_state = TWAI_STATE_STOPPED;
   g_status = twai_status_info_t{};
+  g_alerts = 0;
 }
 
 void setState(twai_state_t state) { g_state = state; }
+
+void raiseAlert(uint32_t alert) { g_alerts |= alert; }
 
 void setStatus(const twai_status_info_t& status) {
   g_status = status;
@@ -54,6 +61,11 @@ bool takeNext(twai_message_t* out) {
 }
 twai_state_t currentState() { return g_state; }
 const twai_status_info_t& status() { return g_status; }
+uint32_t takeAlerts() {
+  const uint32_t raised = g_alerts;
+  g_alerts = 0;
+  return raised;
+}
 }  // namespace
 
 }  // namespace h2g_twai_stub
@@ -89,7 +101,11 @@ esp_err_t twai_receive(twai_message_t* message, TickType_t) {
   return ESP_OK;
 }
 
-esp_err_t twai_read_alerts(uint32_t*, uint32_t*) { return ESP_OK; }
+esp_err_t twai_read_alerts(uint32_t* alerts, uint32_t*) {
+  if (alerts == nullptr) return ESP_ERR_INVALID_ARG;
+  *alerts = h2g_twai_stub::takeAlerts();
+  return ESP_OK;
+}
 
 esp_err_t twai_get_status_info(twai_status_info_t* status_info) {
   if (status_info == nullptr) return ESP_ERR_INVALID_ARG;

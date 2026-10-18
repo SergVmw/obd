@@ -794,13 +794,50 @@ void testDriverCountersReachTelemetry() {
   CHECK(rig.telemetry.canRxMissedCount == 11);
 }
 
-// The read sits above the waiting bail-out, not below it: TEC moves while a
-// request is in flight, and a read behind that return would sit frozen through
-// the whole failure. A behavioural test cannot hold that line - the response
-// timeout is 120 ms and the poll interval is a second, so any run long enough to
-// reach a poll has already let the request expire. check_obd_service_integration
-// asserts the placement statically instead, which is what it is: a property of
-// the source, not of a moment.
+// A cancelled transmission leaves the request slot occupied over a frame that is
+// already gone, and the poller then waits out the full response timeout for an
+// answer to it. The observable effect of releasing it is the timeout counter
+// moving, so that is what is checked - not the internal flag.
+void testACancelledTransmissionReleasesTheRequestSlot() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.pumpUntilPidPending(0x01, 0x0B);
+  CHECK(rig.awaitingPid(0x01, 0x0B));
+
+  const uint32_t before = rig.telemetry.obdTimeoutCount;
+  h2g_twai_stub::raiseAlert(TWAI_ALERT_TX_FAILED);
+  rig.pump(1);
+  CHECK(rig.telemetry.obdTimeoutCount == before + 1);
+}
+
+// The counter read sits above the bail-out, and for the recovering half of that
+// condition this can be observed rather than asserted in the source.
+//
+// The waiting half cannot: the response timeout is 120 ms and the poll interval
+// is a second, so any run long enough to reach a poll has already let the request
+// expire and the placement stops mattering. Recovering is not bounded that way -
+// the watchdog re-requests every two seconds and the state lasts until
+// BUS_RECOVERED - so a bus that stays down for several seconds gives the poll
+// several chances to be skipped by a read placed below the return.
+void testCountersKeepUpdatingWhileTheBusIsRecovering() {
+  Rig rig;
+  rig.identifyEngine();
+
+  h2g_twai_stub::raiseAlert(TWAI_ALERT_BUS_OFF);
+  rig.pump(1);
+
+  twai_status_info_t status{};
+  status.bus_error_count = 4;
+  status.tx_error_counter = 250;
+  h2g_twai_stub::setStatus(status);
+  h2g_twai_stub::setState(TWAI_STATE_BUS_OFF);
+
+  // No BUS_RECOVERED, so the client stays in recovery across the whole run, and
+  // the poll interval elapses more than once.
+  rig.pump(120);
+  CHECK(rig.telemetry.canBusErrorCount == 4);
+  CHECK(rig.telemetry.canTec == 250);
+}
 
 }  // namespace
 
@@ -975,6 +1012,10 @@ int main() {
        testOdometerSegmentAdvancesOnlyOnADownwardStep);
   test("driver error counters reach telemetry",
        testDriverCountersReachTelemetry);
+  test("a cancelled transmission releases the request slot",
+       testACancelledTransmissionReleasesTheRequestSlot);
+  test("counters keep updating while the bus is recovering",
+       testCountersKeepUpdatingWhileTheBusIsRecovering);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }
