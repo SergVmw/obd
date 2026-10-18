@@ -1327,6 +1327,20 @@ void ServicePortal::sendStatus() {
   // "has reset" flag could not answer without throwing away the whole session.
   doc["odometerSegment"] = telemetry_.odometerSegment;
 
+  // What the CAN controller counted, not what the firmware noticed. canErrorCount
+  // increments wherever the firmware reacts to something; these come from the
+  // driver and distinguish a bus that is unhealthy from a queue the device
+  // overflowed itself. rxMissed is the one that answers the question a timeout
+  // count cannot: a non-zero value means part of the timeouts are the gauge
+  // dropping answers, and the bus is not at fault.
+  doc["can"] = JsonObject();
+  JsonObject can = doc["can"].to<JsonObject>();
+  can["errorCount"] = telemetry_.canErrorCount;
+  can["busErrorCount"] = telemetry_.canBusErrorCount;
+  can["txErrorCounter"] = telemetry_.canTec;
+  can["rxErrorCounter"] = telemetry_.canRec;
+  can["rxMissed"] = telemetry_.canRxMissedCount;
+
   // PID 03 and PID 14, published as they arrived. The byte is the useful part:
   // which of its bits closes the loop is settled by watching it against the O2
   // swing on the car, and a named flag here would only be the current standard's
