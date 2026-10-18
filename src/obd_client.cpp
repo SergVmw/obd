@@ -103,9 +103,7 @@ void ObdClient::loop(uint32_t now) {
       telemetry_.canBusErrorCount = status.bus_error_count;
       telemetry_.canTec = status.tx_error_counter;
       telemetry_.canRec = status.rx_error_counter;
-      telemetry_.canArbLostCount = status.arb_lost_count;
       telemetry_.canRxMissedCount = status.rx_missed_count;
-      telemetry_.canRxOverrunCount = status.rx_overrun_count;
     }
   }
 
@@ -624,19 +622,6 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   if (engineIdentityDecides(message.identifier, pid)) {
     if (payloadLength < (pid == 0x0C ? 4 : 3)) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
-      if (!engineIdentityDecides(message.identifier, pid)) {
-#ifdef H2G_DIAGNOSTIC_BUILD
-        // Read here rather than before the call: observeEngineResponse leaves
-        // engineEcuLocked untouched on both of its false paths, so this is the
-        // same value, and hoisting it left a variable computed and discarded in
-        // the production build.
-        if (diagnostics_.state().engineEcuLocked) {
-          recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
-                                 pid, now);
-        }
-#endif
-        return;
-      }
       if (!diagnostics_.observeEngineResponse(message.identifier, pid,
                                               identityDiscriminates())) {
 #ifdef H2G_DIAGNOSTIC_BUILD

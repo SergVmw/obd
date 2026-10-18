@@ -108,13 +108,13 @@ struct TelemetryData {
   uint32_t lastObdResponseAt = 0;
   // CAN bus driver counters, read periodically via twai_get_status_info().
   // These are accumulated by the driver itself, so they need no alerts:
-  // the values are always current when read.
+  // the values are always current when read. Only the four with a reader are
+  // kept - arbLost and rxOverrun were also being collected, and nothing in the
+  // firmware, the portal or the trace ever looked at them.
   uint32_t canBusErrorCount = 0;
   uint32_t canTec = 0;
   uint32_t canRec = 0;
-  uint32_t canArbLostCount = 0;
   uint32_t canRxMissedCount = 0;
-  uint32_t canRxOverrunCount = 0;
   // Why the panel is dark, or "lit". Points at a static string owned by
   // ScreenGate, so nothing is duplicated and nothing is copied. Not persisted:
   // it is a statement about this moment, not a setting.
