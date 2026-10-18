@@ -64,6 +64,12 @@ struct ObdTraceSample {
   uint32_t obdResponseCount = 0;
   uint32_t obdTimeoutCount = 0;
   uint32_t canErrorCount = 0;
+  // Driver-side counters, read periodically from twai_get_status_info(). They are
+  // the only thing in the trace that says what the bus itself did: canErrorCount
+  // counts what the firmware noticed, these count what the controller counted.
+  uint32_t canBusErrorCount = 0;
+  uint32_t canTec = 0;
+  uint32_t canRec = 0;
   uint32_t alternateEcuResponseCount = 0;
 
   float rpm = 0.0f;

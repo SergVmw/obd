@@ -82,6 +82,7 @@ class ObdClient {
   // Whether this block's answer is allowed to decide which block is the engine,
   // and how many of the engine-only parameters its own mask claims.
   bool engineIdentityDecides(uint16_t responseId, uint8_t pid) const;
+bool identityDiscriminates() const;
   uint8_t engineClaimCount(uint16_t responseId) const;
   // The portal reports this to the user. Without it the masks are collected and
   // discarded, and which blocks a vehicle exposes can only be guessed.
@@ -341,4 +342,5 @@ class ObdClient {
   // reading a flag that cannot say which deltas it broke.
   float odometerLastKm_ = 0.0f;
   bool odometerSeen_ = false;
+  uint32_t lastStatusPollAt_ = 0;  // Periodic twai_get_status_info() polling
 };

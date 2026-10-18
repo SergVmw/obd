@@ -253,15 +253,60 @@ void ObdDiagnostics::resetHistory() {
   publishSummary();
 }
 
-bool ObdDiagnostics::observeEngineResponse(uint32_t responseId) {
+bool ObdDiagnostics::observeEngineResponse(uint32_t responseId, uint8_t pid,
+                                          bool identityEvidence) {
   if (!validEngineResponseId(responseId)) return false;
   if (state_.engineEcuLocked && state_.engineResponseId != responseId) {
     return false;
   }
+  if (!state_.engineEcuLocked) {
+    if (pid == 0x0C) {
+      noteRpmAnswer(responseId, identityEvidence);
+    } else {
+      state_.engineEcuCandidateId = static_cast<uint16_t>(responseId);
+      state_.engineEcuCandidateEnginePid = true;
+    }
+    tryBindEngine();
+    return true;
+  }
   state_.engineResponseId = static_cast<uint16_t>(responseId);
-  state_.engineEcuLocked = true;
   telemetry_.ecuResponseId = state_.engineResponseId;
   return true;
+}
+
+// RPM arrives as engine data, and by the time it answers, the block's mask has
+// usually claimed two parameters - at which point engineIdentityDecides stops
+// admitting 0x0C as an identity signal, which is exactly its intent. So the
+// observation is taken outside that gate, rather than by reopening it: the two
+// signs have to come from one block, and they are kept against separate ids
+// because the gearbox answers RPM too and must not be able to overwrite the
+// engine's own record.
+void ObdDiagnostics::noteRpmAnswer(uint32_t responseId, bool identityEvidence) {
+  if (!validEngineResponseId(responseId) || state_.engineEcuLocked) return;
+  state_.engineEcuRpmId = static_cast<uint16_t>(responseId);
+  state_.engineEcuCandidateRpm = true;
+  // With nothing to separate the blocks there is no candidate to confuse with,
+  // and no evidence that will ever arrive, so the old rule stands and RPM binds
+  // alone. Leaving such a vehicle without diagnostics would be the worse
+  // failure, and it is not the case that went wrong: the gearbox won when both
+  // blocks reported.
+  if (!identityEvidence) {
+    state_.engineEcuCandidateId = state_.engineEcuRpmId;
+    state_.engineEcuCandidateEnginePid = true;
+  }
+  tryBindEngine();
+}
+
+// One block must supply both signs. Storing the id on each side is what makes
+// that checkable; a single id plus two flags would let a gearbox that answered
+// RPM bind an engine that answered a manifold reading.
+void ObdDiagnostics::tryBindEngine() {
+  if (state_.engineEcuLocked) return;
+  if (!state_.engineEcuCandidateEnginePid || !state_.engineEcuCandidateRpm) return;
+  if (state_.engineEcuCandidateId != state_.engineEcuRpmId) return;
+  state_.engineResponseId = state_.engineEcuCandidateId;
+  state_.engineEcuLocked = true;
+  telemetry_.ecuResponseId = state_.engineResponseId;
 }
 
 bool ObdDiagnostics::acceptsEngineResponse(uint32_t responseId) const {
@@ -829,7 +874,7 @@ bool ObdDiagnostics::processVerificationPayload(const uint8_t* payload,
   if (length < 3 || payload[0] != 0x41 || payload[1] != pid) return false;
 
   if (request_ == Request::DiscoverEngineRpm) {
-    if (length < 4 || !observeEngineResponse(responseId_)) return false;
+    if (length < 4 || !observeEngineResponse(responseId_, 0x0C, true)) return false;
     const float rpm =
         ((static_cast<uint16_t>(payload[2]) << 8) | payload[3]) / 4.0f;
     telemetry_.rpm.set(rpm, now);

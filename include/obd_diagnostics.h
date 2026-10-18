@@ -76,6 +76,19 @@ struct ObdDiagnosticsState {
   uint8_t ecuReportedDtcCount = 0;
   uint16_t engineResponseId = 0;
   bool engineEcuLocked = false;
+  // Second confirmation, on observed answers rather than on a declaration. The
+  // mask gate in ObdClient already demands two claims, but a support mask is the
+  // block describing itself. These two are facts: a block that answers an
+  // engine-only parameter - 03, 0B, 0F, 11, none of which a transmission has -
+  // and also answers RPM is the engine ECU. RPM on its own decides nothing,
+  // which is precisely the case that used to let the gearbox win.
+  //
+  // Each sign carries its own id, because both must come from the same block and
+  // the gearbox answers RPM as readily as the engine does.
+  uint16_t engineEcuCandidateId = 0;
+  bool engineEcuCandidateEnginePid = false;
+  uint16_t engineEcuRpmId = 0;
+  bool engineEcuCandidateRpm = false;
   uint32_t monitorUpdatedAt = 0;
   uint32_t firstMilSeenAt = 0;
   uint32_t lastMilSeenAt = 0;
@@ -126,7 +139,9 @@ class ObdDiagnostics {
 
   bool observeMonitorStatus(uint8_t statusByte, uint32_t now,
                             uint32_t responseId);
-  bool observeEngineResponse(uint32_t responseId);
+  bool observeEngineResponse(uint32_t responseId, uint8_t pid, bool identityEvidence);
+void noteRpmAnswer(uint32_t responseId, bool identityEvidence);
+void tryBindEngine();
   bool acceptsEngineResponse(uint32_t responseId) const;
   void tick(uint32_t now, bool periodicScanAllowed);
 

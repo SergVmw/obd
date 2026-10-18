@@ -191,22 +191,33 @@ struct Rig {
     }
   }
 
-  // Discovery order is masks, then manifold, then RPM. A mask on its own is one
-    // claim and does not take the lock; the manifold is the second, and with it
-    // the block is identified. That is what the car does within a second of
-    // booting, and every Mode 01 answer from 0x7E8 depends on it - an answer
-    // from a block that has not been identified is discarded before the parser
-    // sees it, which would make a test about parsing report on that guard
-    // instead.
+  // Identity needs two observed answers, and the order is not free: each frame is
+    // queued one step ahead of the request it answers, which is how the client
+    // consumes them. The first mask claims a single engine-only parameter, so
+    // 0x0C still decides and the RPM answer is recorded; the second mask reaches
+    // two claims, after which the manifold decides and the pair binds. This is
+    // what the car does within a second of booting, and every Mode 01 answer
+    // from 0x7E8 depends on it - an answer from a block that has not been
+    // identified is discarded before the parser sees it, which would make a test
+    // about parsing report on that guard instead.
   void identifyEngine() {
+    const uint8_t oneClaim[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, oneClaim, sizeof(oneClaim)));
+    pump();
+
+    const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+    pump();
+
     const uint8_t mask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
     h2g_twai_stub::queueRx(fromEcu(0x7E8, mask, sizeof(mask)));
-    pumpUntilPidPending(0x01, 0x0B);
-    CHECK(awaitingPid(0x01, 0x0B));
+    pump();
+
     const uint8_t map[] = {0x03, 0x41, 0x0B, 0x21};
     h2g_twai_stub::queueRx(fromEcu(0x7E8, map, sizeof(map)));
-    deliver();
+    pump();
     CHECK(telemetry.engineEcuLocked);
+    CHECK(telemetry.engineEcuResponseId == 0x7E8);
   }
 
   // Hand the queued frames over before the clock moves far enough to time the
@@ -769,6 +780,10 @@ void testOdometerSegmentAdvancesOnlyOnADownwardStep() {
 // and RPM is answered by both, so whoever replies first used to take the lock.
 // Between two boots on the same car it went both ways, which pointed the DTC
 // scan and the clear at the gearbox.
+// Now neither answer binds on its own. The gearbox's RPM is recorded against its
+// own address, so it cannot lend the engine a sign it never gave; the engine's
+// manifold is likewise only half, and the lock waits for the same block to
+// answer RPM as well.
 void testManifoldDecidesTheEngineAndSpeedAloneCannot() {
   Rig rig;
   const uint8_t engineMask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
@@ -784,9 +799,18 @@ void testManifoldDecidesTheEngineAndSpeedAloneCannot() {
   CHECK(!rig.telemetry.engineEcuLocked);
   CHECK(rig.telemetry.engineEcuResponseId != 0x7E9);
 
-  // The engine's manifold is what settles it, and it takes the lock.
+  // The engine's manifold is one of the two signs, and on its own still binds
+  // nothing - the gearbox answers a manifold query just as readily.
   const uint8_t engineMap[] = {0x03, 0x41, 0x0B, 0x21};
   h2g_twai_stub::queueRx(fromEcu(0x7E8, engineMap, sizeof(engineMap)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+
+  // Only the second sign from the same block completes it.
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  CHECK(rig.awaitingPid(0x01, 0x0C));
+  const uint8_t engineRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineRpm, sizeof(engineRpm)));
   rig.pump();
   CHECK(rig.telemetry.engineEcuLocked);
   CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
@@ -847,7 +871,9 @@ void testSpeedDecidesWhenNoBlockClaimsEnoughParameters() {
 }
 
 // Two of the four is enough even when the manifold is one of the missing two,
-// so identification does not depend on a vehicle having a manifold at all.
+// so identification does not depend on a vehicle having a manifold at all. The
+// second sign is RPM, which every powertrain block answers - so what separates
+// the engine here is the engine-only parameter, not the speed.
 void testTwoClaimsIdentifyWithoutAManifold() {
   Rig rig;
   // Claims 0x03 fuel system status and 0x11 throttle, but not 0x0B or 0x0F.
@@ -856,6 +882,12 @@ void testTwoClaimsIdentifyWithoutAManifold() {
   rig.pump();
   const uint8_t fuelSystem[] = {0x03, 0x41, 0x03, 0x02};
   h2g_twai_stub::queueRx(fromEcu(0x7E8, fuelSystem, sizeof(fuelSystem)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
   rig.pump();
   CHECK(rig.telemetry.engineEcuLocked);
   CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);

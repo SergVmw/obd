@@ -70,6 +70,14 @@ jobs:
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
 
+      # The diagnostic and speed-density images were built by nobody, by
+      # anything. Their code is behind #ifdef, so a field that does not exist in
+      # the release build is a clean release build and a broken diagnostic one -
+      # which is how three trace columns were committed referencing members the
+      # struct had never had.
+      - name: Build the diagnostic and speed-density images
+        run: pio run -e esp32s3_n16r8_diagnostic -e esp32s3_n16r8_speeddensity
+
       - name: Check build and committed release artifacts
         run: |
           # The version is read from the source rather than repeated here. It

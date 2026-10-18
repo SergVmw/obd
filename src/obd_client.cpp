@@ -27,6 +27,7 @@ bool ObdClient::begin() {
   general.rx_queue_len = 20;
   general.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED |
                            TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_FAILED |
+                           TWAI_ALERT_BUS_ERROR |
                            TWAI_ALERT_AND_LOG;
 
   const twai_timing_config_t timing = TWAI_TIMING_CONFIG_500KBITS();
@@ -87,6 +88,27 @@ void ObdClient::loop(uint32_t now) {
     if (expired) finishPending(true);
   }
   receiveFrames(now);
+
+  // Read the driver's own error counters every second. Unlike alerts, these
+  // accumulate in the driver regardless of which events are subscribed, so a
+  // periodic read is the cheapest way to see what the bus is doing. Ahead of the
+  // waiting/recovering bail-out on purpose: TEC is what moves while a request is
+  // in flight and while the bus is failing, which is exactly when the reading
+  // matters most, and below that return it would sit frozen at its last value
+  // through the whole failure.
+  if (now - lastStatusPollAt_ >= 1000) {
+    lastStatusPollAt_ = now;
+    twai_status_info_t status{};
+    if (twai_get_status_info(&status) == ESP_OK) {
+      telemetry_.canBusErrorCount = status.bus_error_count;
+      telemetry_.canTec = status.tx_error_counter;
+      telemetry_.canRec = status.rx_error_counter;
+      telemetry_.canArbLostCount = status.arb_lost_count;
+      telemetry_.canRxMissedCount = status.rx_missed_count;
+      telemetry_.canRxOverrunCount = status.rx_overrun_count;
+    }
+  }
+
   if (waiting_ || recovering_) return;
 
   diagnostics_.tick(now, !paused_);
@@ -142,6 +164,17 @@ void ObdClient::handleAlerts(uint32_t now) {
   if (alerts & TWAI_ALERT_TX_FAILED) {
     ++telemetry_.canErrorCount;
     ESP_LOGW(kTag, "TWAI transmit failed");
+  }
+  if (alerts & TWAI_ALERT_BUS_ERROR) {
+    twai_status_info_t status{};
+    if (twai_get_status_info(&status) == ESP_OK) {
+      ESP_LOGW(kTag,
+               "CAN bus error: TEC=%lu REC=%lu state=%d busErrorCount=%lu",
+               static_cast<unsigned long>(status.tx_error_counter),
+               static_cast<unsigned long>(status.rx_error_counter),
+               static_cast<int>(status.state),
+               static_cast<unsigned long>(status.bus_error_count));
+    }
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
     ++telemetry_.canErrorCount;
@@ -577,6 +610,17 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 
   const uint8_t pid = message.data[2];
+  // Identity needs an observed RPM answer as well as an engine-only one, and
+  // 0x0C cannot be both: once the mask claims two parameters it stops being an
+  // identity signal, and 0x0C is not an engine-data PID either, so it falls to
+  // the "another ECU" branch below and is dropped from identity entirely. Record
+  // the observation here, where every well-formed answer passes, rather than
+  // reopening the gate - which is what let a gearbox answering first bind the
+  // engine.
+  if (pid == 0x0C && payloadLength >= 4 &&
+      !engineIdentityDecides(message.identifier, pid)) {
+    diagnostics_.noteRpmAnswer(message.identifier, identityDiscriminates());
+  }
   if (engineIdentityDecides(message.identifier, pid)) {
     if (payloadLength < (pid == 0x0C ? 4 : 3)) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
@@ -593,7 +637,8 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
 #endif
         return;
       }
-      if (!diagnostics_.observeEngineResponse(message.identifier)) {
+      if (!diagnostics_.observeEngineResponse(message.identifier, pid,
+                                              identityDiscriminates())) {
 #ifdef H2G_DIAGNOSTIC_BUILD
         if (diagnostics_.state().engineEcuLocked) {
           recordOtherEcuResponse(static_cast<uint16_t>(message.identifier),
@@ -898,6 +943,22 @@ uint8_t ObdClient::engineClaimCount(uint16_t responseId) const {
 // gearbox as readily as by the engine, so it may decide only while nothing on the
 // bus has claimed those parameters. With no mask heard at all, every score is
 // zero and speed decides, exactly as before.
+// Does any block vouch for enough engine-only parameters to tell them apart?
+// While none does there is nothing to confuse and nothing more to wait for, so
+// identity falls back to the old rule rather than leaving a sparse vehicle
+// without diagnostics. This is exactly the condition under which 0x0C is allowed
+// to decide at all; the fallback is for a quiet bus, not for one where two
+// blocks disagree, which is the case that went wrong.
+bool ObdClient::identityDiscriminates() const {
+  for (uint8_t r = 0; r < supportTable_.responderCount(); ++r) {
+    if (engineClaimCount(supportTable_.responderIdAt(r)) >=
+        kEngineIdentityMinClaims) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ObdClient::engineIdentityDecides(uint16_t responseId, uint8_t pid) const {
   bool engineOnly = false;
   for (uint8_t candidate : kEngineOnlyPids) {
