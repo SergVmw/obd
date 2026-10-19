@@ -139,8 +139,11 @@ void testSpeedDensityCalculatesStationaryLitersPerHourWithoutMafOrPid5E() {
 
   rig.engine.update(2000, config, false);
 
+  // 30 kPa is the first row of the VE table, so 0.42 exactly. Reading the
+  // number off the table rather than off a constant is what makes this test
+  // follow the curve when the table is re-measured.
   const double expectedAirGps =
-      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.42 * 28.97 /
       (8.314 * (27.0 + 273.15));
   const double expectedFuelLph =
       expectedAirGps * 3600.0 / (config.petrolAfr * config.petrolDensity);
@@ -152,6 +155,76 @@ void testSpeedDensityCalculatesStationaryLitersPerHourWithoutMafOrPid5E() {
   CHECK(rig.data.consumptionIsPerHour);
   CHECK(near(rig.data.currentConsumption, expectedFuelLph));
   CHECK(near(rig.trip.rawPetrolLiters, expectedFuelLph / 3600.0));
+}
+
+// The curve is what the fuel figure rides on, so the ways a table goes wrong are
+// pinned down here: each row has to give its own value, a pressure between rows
+// has to give their interpolation rather than a neighbour's, both ends have to
+// hold flat instead of extrapolating into a region nothing is known about, and
+// the level has to be the one the single measurement supports rather than the
+// 0.85 that stood here.
+void testVolumetricEfficiencyIsACurveInMapNotAConstant() {
+  ConfigData config = testConfig();
+  config.fuelSource = FuelSource::SpeedDensity;
+
+  // Air mass at a fixed RPM and temperature goes as MAP times VE, so air per kPa
+  // is VE times one constant. That is the invariant that lets the curve be read
+  // from outside without reaching inside it, and it is what makes the clamp
+  // checkable at all: holding VE flat below the first row still lets air rise
+  // with pressure, so a check on air alone would call that an extrapolation.
+  auto airGpsFor = [](float mapKpa, float ve) {
+    return 1000.0 * mapKpa * (750.0 / 120.0) * 0.001497 * ve * 28.97 /
+           (8.314 * (27.0 + 273.15));
+  };
+  auto airAt = [&](float mapKpa) {
+    Rig r;
+    r.data.rpm.set(750.0f, 2000);
+    r.data.mapKpa.set(mapKpa, 2000);
+    r.data.intakeAirC.set(27.0f, 2000);
+    r.data.rawSpeedKph.set(0.0f, 2000);
+    r.engine.update(2000, config, false);
+    return r.data.speedDensityAirflowGps;
+  };
+  auto vePer = [&](float mapKpa) { return airAt(mapKpa) / mapKpa; };
+
+  const float veIdle = vePer(30.0f);       // a table row, 0.42
+  const float veMeasured = vePer(43.0f);   // 0.498, interpolated 40..45
+  const float veCruise = vePer(100.0f);    // a table row, 0.81
+  CHECK(std::isfinite(veIdle) && std::isfinite(veMeasured) &&
+        std::isfinite(veCruise));
+
+  // Each row against the same expression spelled out with that row's value.
+  CHECK(near(airAt(30.0f), airGpsFor(30.0f, 0.42f), 1e-4f));
+  CHECK(near(airAt(43.0f), airGpsFor(43.0f, 0.498f), 1e-4f));
+  CHECK(near(airAt(100.0f), airGpsFor(100.0f, 0.81f), 1e-4f));
+
+  // 43 kPa is the measured pressure. The rows give it 0.48 + 0.6 * 0.03 = 0.498
+  // against the 0.496 PID 04 recovered through the J1979 formula on the 19.10
+  // dump. 47.5 kPa lies halfway between the 45 and 50 rows and has to come out
+  // at 0.525 rather than at either of them.
+  CHECK(near(veMeasured / veIdle, 0.498f / 0.42f, 2e-3f));
+  CHECK(near(vePer(47.5f) / veIdle, 0.525f / 0.42f, 2e-3f));
+
+  // The reason for the change, as a number: the constant overstated the air at
+  // the measured point by this factor and the fuel figure inherited it. 0.85
+  // against 0.498 is 1.71 times.
+  CHECK(near(airGpsFor(43.0f, 0.85f) / airAt(43.0f), 0.85f / 0.498f, 1e-4f));
+
+  // The other half of the change: the shape rises with MAP, which no constant
+  // can do. 100 kPa against 30 kPa is 1.93.
+  CHECK(near(veCruise / veIdle, 0.81f / 0.42f, 2e-3f));
+
+  // Both ends hold flat instead of extrapolating. Below the first row is a
+  // region the table says nothing about, and a fallback that guessed there would
+  // come back as a confident number nobody measured.
+  CHECK(near(vePer(10.0f), veIdle, 1e-4f));
+  CHECK(near(vePer(25.0f), veIdle, 1e-4f));
+  CHECK(near(vePer(250.0f), vePer(195.0f), 1e-4f));
+
+  // Past 255 kPa there is no reading to clamp, and the top of the table is not
+  // a licence to invent one: a boost spike has to come back as nothing rather
+  // than as a fuel figure built out of it.
+  CHECK(std::isnan(airAt(300.0f)));
 }
 
 void testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals() {
@@ -169,7 +242,7 @@ void testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals() {
   rig.engine.update(2000, config, true);
 
   const double expectedAirGps =
-      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.42 * 28.97 /
       (8.314 * (27.0 + 273.15));
   const double expectedRawLph =
       expectedAirGps * 3600.0 / (config.lpgAfr * config.lpgDensity);
@@ -311,7 +384,7 @@ void testServiceRefreshKeepsSpeedDensityAirflowLiveWithoutTripIntegration() {
   rig.engine.refreshLiveTelemetry(1000, config, false);
 
   const double expectedAirGps =
-      30000.0 * (750.0 / 120.0) * 0.001497 * 0.85 * 28.97 /
+      30000.0 * (750.0 / 120.0) * 0.001497 * 0.42 * 28.97 /
       (8.314 * (27.0 + 273.15));
   CHECK(near(rig.data.speedDensityAirflowGps, expectedAirGps));
   CHECK(!rig.data.fuelValueValid);  // service refresh does not run fuel/trip integration
@@ -923,6 +996,8 @@ int main() {
   test("MAF formula and equivalence ratio", testMafFormulaEquivalenceRatioAndCorrection);
   test("Speed-Density produces stationary L/h without MAF/PID 5E",
        testSpeedDensityCalculatesStationaryLitersPerHourWithoutMafOrPid5E);
+  test("volumetric efficiency is a curve in MAP, not a constant",
+       testVolumetricEfficiencyIsACurveInMapNotAConstant);
   test("Speed-Density supports LPG and rejects stale IAT",
        testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals);
   test("fuel source selection and stale fallback",

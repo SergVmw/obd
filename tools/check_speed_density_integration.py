@@ -73,7 +73,69 @@ assert "isEngineDataPid(pid)" in obd
 
 # Correct dimensional conversion for RPM/minute and the four-stroke cycle rate.
 assert "kEngineDisplacementM3 = 0.001497f" in telemetry
-assert "kSpeedDensityVolumetricEfficiency = 0.85f" in telemetry
+# VE is a curve in MAP, not a constant, and the single 0.85 that stood here had
+# nothing behind it. The gate checks the shape of that decision rather than the
+# text of one line: a table of paired points, a length agreement the compiler
+# already enforces, and the interpolation actually wired into the expression.
+assert "kVeByMapKpa[]" in telemetry
+assert "kVeByMapValue[]" in telemetry
+assert "volumetricEfficiencyAtMap(mapKpa)" in telemetry
+assert "kSpeedDensityVolumetricEfficiency" not in telemetry
+# The measured point has to survive in the table. 43 kPa recovered 0.496 from PID
+# 04 on the dump of 19.10, and the table carries it as the interpolation between
+# the 40 and 45 rows rather than as a row of its own, so a text match for a
+# literal would be checking the wrong thing. The rows are read out and evaluated
+# here instead; if an edit loses the point, the curve has drifted away from the
+# only measurement that exists.
+def _read_table(name):
+    match = re.search(
+        name + r"\[\] = \{([^}]*)\};", telemetry)
+    assert match, "could not read " + name + " out of telemetry.cpp"
+    return [float(v[:-1]) for v in re.findall(r"-?[0-9.]+f", match.group(1))]
+
+_ve_kpa = _read_table("kVeByMapKpa")
+_ve_value = _read_table("kVeByMapValue")
+assert len(_ve_kpa) == len(_ve_value), "VE table rows do not pair up"
+assert _ve_kpa == sorted(_ve_kpa), "VE table pressures must ascend"
+# The rise is only a property of the measurable part. PID 04 is A*100/255 and
+# pins at 100 % above atmospheric pressure, so everything past 100 kPa is the
+# table's own shape continuing, and the fall after the peak is a stated part of
+# it. Asserting a rise across the whole table would reject the very shape the
+# comment above describes.
+def _ve_at(map_kpa):
+    """The same clamp-and-interpolate the firmware does."""
+    if map_kpa <= _ve_kpa[0]:
+        return _ve_value[0]
+    if map_kpa >= _ve_kpa[-1]:
+        return _ve_value[-1]
+    for i in range(1, len(_ve_kpa)):
+        if map_kpa <= _ve_kpa[i]:
+            span = _ve_kpa[i] - _ve_kpa[i - 1]
+            t = (map_kpa - _ve_kpa[i - 1]) / span if span > 0 else 0.0
+            return _ve_value[i - 1] + t * (_ve_value[i] - _ve_value[i - 1])
+    return _ve_value[-1]
+
+
+_measured_end = 100.0
+_rising = [(k, v) for k, v in zip(_ve_kpa, _ve_value) if k <= _measured_end]
+assert all(b > a for (_, a), (_, b) in zip(_rising, _rising[1:])), (
+    "VE has to rise with MAP across the measurable range up to %g kPa"
+    % _measured_end)
+assert max(_ve_value) >= _ve_at(_measured_end), "the peak cannot precede the range"
+assert all(0.3 <= v <= 1.0 for v in _ve_value), "VE outside any plausible corridor"
+
+
+# 0.486..0.513 is the corridor the one measurement leaves across VE_peak 0.90-0.95.
+assert 0.486 <= _ve_at(43.0) <= 0.513, (
+    "the table gives %.3f at the measured 43 kPa, outside the 0.486..0.513 "
+    "corridor" % _ve_at(43.0))
+
+# And it has to be an interpolation, not the constant it replaced. The old 0.85
+# overstated the air at that pressure by 1.7 times, which is why the table
+# exists; a table that drifted back near it would be the old mistake again.
+assert _ve_at(43.0) < 0.85 / 1.5, "VE at the measured point is back near the old 0.85"
+assert _ve_at(30.0) < _ve_at(43.0) < _ve_at(100.0), "the shape must rise"
+
 assert "const float intakeCyclesPerSecond = rpm / 120.0f;" in telemetry
 assert "calculateSpeedDensityAirflowGps(now)" in telemetry
 assert "FuelSource::SpeedDensity" in telemetry

@@ -6,10 +6,61 @@
 
 namespace {
 constexpr float kEngineDisplacementM3 = 0.001497f;  // GW4G15B: 1497 cm3
-constexpr float kSpeedDensityVolumetricEfficiency = 0.85f;  // initial estimate
 constexpr float kAirMolarMassGramsPerMol = 28.97f;
 constexpr float kGasConstantJoulesPerMolKelvin = 8.314f;
 constexpr uint32_t kIntakeAirMaxAgeMs = 5000;
+
+// Volumetric efficiency as a multiplier of charge density at MAP, which is what
+// the speed-density expression below multiplies by. It replaces a single 0.85
+// that had nothing behind it.
+//
+// Measured: 43 kPa at 732 rpm, recovered from PID 04 through the J1979 formula
+// on the dump of 19.10, which gave 0.496 (0.486..0.513 across VE_peak 0.90-0.95).
+// The 0.85 constant overstated the air there by 1.7 times. Everything else is
+// shape, taken from published rules and the plausibility corridor: residual
+// gases dilute the charge at low MAP, VE climbs with MAP, peaks near the torque
+// point and falls again under boost. A capture is what turns those into
+// measurement - the trace carries MAP, RPM, IAT and the block's own air estimate
+// for exactly that. Until it does, this table is a better-founded guess than a
+// single constant was, not a calibrated one.
+//
+// One-dimensional on MAP. If the per-rpm bins of the fit disagree by more than
+// about five percent, VE has an rpm dependence this table cannot express and
+// needs a second axis.
+//
+// Above about 130 kPa the shape is continuation, not measurement: PID 04 is
+// A*100/255 and pins at 100 % above atmospheric pressure, so the boosted range
+// carries no airflow information at all.
+constexpr float kVeByMapKpa[] = {30.0f,  35.0f,  40.0f,  45.0f,  50.0f,  60.0f,
+                                  70.0f,  80.0f,  90.0f,  100.0f, 110.0f, 130.0f,
+                                  150.0f, 170.0f, 190.0f};
+constexpr float kVeByMapValue[] = {0.42f, 0.45f, 0.48f, 0.51f, 0.54f, 0.60f, 0.66f,
+                                   0.71f, 0.76f, 0.81f, 0.84f, 0.88f, 0.90f, 0.89f,
+                                   0.87f};
+constexpr size_t kVeByMapCount = sizeof(kVeByMapKpa) / sizeof(kVeByMapKpa[0]);
+static_assert(sizeof(kVeByMapValue) / sizeof(kVeByMapValue[0]) == kVeByMapCount,
+              "the VE table's pressures and values must have the same length");
+static_assert(kVeByMapCount >= 2, "interpolation needs at least two points");
+
+// Linear between the points, held flat outside them. A flat end is deliberate:
+// the alternative is to extrapolate a curve into a region where nothing is
+// known about it, and an idle reading that has fallen off the bottom would come
+// back as a number rather than as nothing.
+float volumetricEfficiencyAtMap(float mapKpa) {
+  if (mapKpa <= kVeByMapKpa[0]) return kVeByMapValue[0];
+  if (mapKpa >= kVeByMapKpa[kVeByMapCount - 1]) {
+    return kVeByMapValue[kVeByMapCount - 1];
+  }
+  for (size_t i = 1; i < kVeByMapCount; ++i) {
+    if (mapKpa > kVeByMapKpa[i]) continue;
+    const float lo = kVeByMapKpa[i - 1];
+    const float span = kVeByMapKpa[i] - lo;
+    const float t = span > 0.0f ? (mapKpa - lo) / span : 0.0f;
+    return kVeByMapValue[i - 1] +
+           t * (kVeByMapValue[i] - kVeByMapValue[i - 1]);
+  }
+  return kVeByMapValue[kVeByMapCount - 1];
+}
 }  // namespace
 
 uint32_t TripStore::checksum(const TripState& trip) {
@@ -171,9 +222,10 @@ float TelemetryEngine::calculateSpeedDensityAirflowGps(uint32_t now) const {
   // alone would overstate airflow by a factor of 60.
   const float pressurePa = mapKpa * 1000.0f;
   const float intakeCyclesPerSecond = rpm / 120.0f;
+  const float volumetricEfficiency = volumetricEfficiencyAtMap(mapKpa);
   const float airflowGps =
       pressurePa * intakeCyclesPerSecond * kEngineDisplacementM3 *
-      kSpeedDensityVolumetricEfficiency * kAirMolarMassGramsPerMol /
+      volumetricEfficiency * kAirMolarMassGramsPerMol /
       (kGasConstantJoulesPerMolKelvin * temperatureKelvin);
   if (!isfinite(airflowGps) || airflowGps <= 0.0f || airflowGps > 500.0f) {
     return NAN;
