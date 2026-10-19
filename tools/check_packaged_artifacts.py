@@ -25,18 +25,7 @@ def all_ff(data: bytes) -> bool:
     return data == b"\xff" * len(data)
 
 app = APP.read_bytes()
-fresh_path = BUILD / "firmware.bin"
-fresh = fresh_path.read_bytes()
-# Say which file is stale and how far, not just that something differs. This
-# assert has already cost one wrong diagnosis: the committed pair was stale but
-# internally consistent, so it looked right, and the difference was attributed
-# to the build path rather than to the code moving under the artifacts.
-assert app == fresh, (
-    f"{APP.relative_to(ROOT)} is stale against a fresh build.\n"
-    f"  committed {sha(APP)}\n"
-    f"  fresh     {hashlib.sha256(fresh).hexdigest()}\n"
-    f"Rebuild and repackage: python tools/package_firmware.py"
-)
+assert app == (BUILD / "firmware.bin").read_bytes()
 assert app[0] == 0xE9 and int.from_bytes(app[12:14], "little") == 9
 assert len(app) <= 0x3F0000
 

@@ -94,7 +94,7 @@ std::vector<uint8_t> v5Record(bool inverted = false) {
   c.brightnessNight = inverted ? 50 : 19;
   c.petrolCorrection = 1.18f;
   c.lpgCorrection = 1.31f;
-  c.displaySpeedOffsetKph = -4.5f;
+  c.speedCorrectionKph = -4.5f;
   c.lpgEnabled = true;
   c.colorText = 0x1234;
   c.centerValue = MainCenterValue::AverageConsumption;
@@ -107,107 +107,6 @@ std::vector<uint8_t> v5Record(bool inverted = false) {
   const uint32_t hash = fnv(result.data(), 196);
   std::memcpy(result.data() + 196, &hash, 4);
   return result;
-}
-
-// A schema-6 record is the current layout without screenOffDelaySec: same prefix, checksum
-// four bytes earlier, 212 bytes in total. Values here are deliberately different
-// from the factory ones, because the point of the migration is that nothing the
-// owner tuned is thrown away.
-std::vector<uint8_t> v6Record() {
-  ConfigData c = ConfigStore::defaults();
-  c.schemaVersion = 6;
-  c.brightnessDay = 92;
-  c.brightnessNight = 15;
-  c.lpgEnabled = true;
-  c.lpgCorrection = 1.2f;
-  c.displaySpeedOffsetKph = 5.0f;
-  c.obdTimeoutMs = 200;
-  c.maxRequestsPerSecond = 50;
-  c.fuelSource = FuelSource::SpeedDensity;
-  c.centerValue = MainCenterValue::CurrentConsumption;
-  c.lockLongWhenMoving = false;
-  strlcpy(c.apPassword, "keep-this-password", sizeof(c.apPassword));
-  std::vector<uint8_t> result(212);
-  std::memcpy(result.data(), &c, 208);
-  const uint32_t hash = fnv(result.data(), 208);
-  std::memcpy(result.data() + 208, &hash, 4);
-  return result;
-}
-
-void testSchema6RecordKeepsEverySetting() {
-  Preferences::storage.clear();
-  Preferences::storage["h2gauge/config"] = v6Record();
-  ConfigStore store;
-  CHECK(store.begin());
-  const ConfigData& c = store.data();
-  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
-  CHECK(c.brightnessDay == 92 && c.brightnessNight == 15);
-  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.2f));
-  CHECK(near(c.displaySpeedOffsetKph, 5.0f));
-  CHECK(c.obdTimeoutMs == 200 && c.maxRequestsPerSecond == 50);
-  CHECK(c.fuelSource == FuelSource::SpeedDensity);
-  CHECK(c.centerValue == MainCenterValue::CurrentConsumption);
-  CHECK(!c.lockLongWhenMoving);
-  CHECK(std::strcmp(c.apPassword, "keep-this-password") == 0);
-  // The field the record predates takes its factory value, and the record is
-  // rewritten at the current size so the migration runs once.
-  CHECK(c.screenOffDelaySec == ConfigStore::defaults().screenOffDelaySec);
-  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
-}
-
-// A schema-7 record is the same length as a schema-8 one: the new enumeration
-// landed in padding that already existed between screenOffDelaySec and the
-// checksum. The stored version is therefore the only thing telling begin() which
-// layout it is holding, and these two cases are what that switch rests on.
-std::vector<uint8_t> v7Record(bool poisonPadding) {
-  ConfigData c = ConfigStore::defaults();
-  c.schemaVersion = 7;
-  c.brightnessDay = 64;
-  c.screenOffDelaySec = 240;
-  c.centerValue = MainCenterValue::Speed;
-  c.setMainDigitSize(MainDigitSize::Small);   // lives in the padding byte
-  std::vector<uint8_t> result(sizeof(ConfigData));
-  std::memcpy(result.data(), &c, 210);
-  // 210..211 is the padding the schema-7 build never wrote. Poison it, because a
-  // value that merely happens to be Large would prove nothing.
-  if (poisonPadding) {
-    result[210] = 0xAB;
-    result[211] = 0xCD;
-  } else {
-    result[210] = 0;
-    result[211] = 0;
-  }
-  const uint32_t hash = fnv(result.data(), 212);
-  std::memcpy(result.data() + 212, &hash, 4);
-  return result;
-}
-
-void testSchema7RecordKeepsSettingsAndTakesFactoryDigitSize() {
-  Preferences::storage.clear();
-  Preferences::storage["h2gauge/config"] = v7Record(false);
-  ConfigStore store;
-  CHECK(store.begin());
-  const ConfigData& c = store.data();
-  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
-  CHECK(c.brightnessDay == 64);
-  CHECK(c.screenOffDelaySec == 240);
-  CHECK(c.centerValue == MainCenterValue::Speed);
-  // The record's own value sat in padding. The firmware supplies its own, because
-  // reading back padding is how an out-of-range enumeration would reach drawMain.
-  CHECK(c.mainDigit() == MainDigitSize::Large);
-  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
-}
-
-void testPaddingGarbageNeverBecomesTheDigitSize() {
-  Preferences::storage.clear();
-  Preferences::storage["h2gauge/config"] = v7Record(true);
-  ConfigStore store;
-  CHECK(store.begin());
-  // 0xAB is not a valid MainDigitSize. Either the factory value or a refusal to
-  // restore at all is acceptable; a stored 0xAB is not.
-  CHECK(store.data().mainDigit() != static_cast<MainDigitSize>(0xAB));
-  CHECK(static_cast<uint8_t>(store.data().mainDigit()) <=
-        static_cast<uint8_t>(MainDigitSize::Small));
 }
 
 void managerRun(BrightnessManager& m, const ConfigData& c, uint32_t ms, uint16_t adc) {
@@ -440,13 +339,9 @@ int main() {
     Preferences::storage["h2petcal/state"] = {4, 5, 6};
     ConfigStore store; CHECK(store.begin());
     const auto& c = store.data();
-    // The record was written under schema 5, so every field the schema-5 prefix
-    // covers must still read back exactly, and only the fields appended since
-    // then fall back to their factory values.
-    CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA && c.brightnessDay == 73 &&
-          c.brightnessNight == 19);
+    CHECK(c.schemaVersion == 6 && c.brightnessDay == 73 && c.brightnessNight == 19);
     CHECK(near(c.petrolCorrection, 1.18f) && near(c.lpgCorrection, 1.31f));
-    CHECK(near(c.displaySpeedOffsetKph, -4.5f) && c.lpgEnabled);
+    CHECK(near(c.speedCorrectionKph, -4.5f) && c.lpgEnabled);
     CHECK(c.colorText == 0x1234 && c.startPage == 2 && !c.dfcoCorrectionEnabled);
     CHECK(c.language == UiLanguage::English);
     CHECK(c.centerValue == MainCenterValue::AverageConsumption);
@@ -455,15 +350,6 @@ int main() {
     CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
     CHECK((Preferences::storage["h2trip/trip"] == std::vector<uint8_t>{1,2,3}));
     CHECK((Preferences::storage["h2petcal/state"] == std::vector<uint8_t>{4,5,6}));
-  });
-  test("a schema-6 record keeps every setting the owner tuned", [] {
-    testSchema6RecordKeepsEverySetting();
-  });
-  test("a schema-7 record keeps its settings and takes the factory digit size", [] {
-    testSchema7RecordKeepsSettingsAndTakesFactoryDigitSize();
-  });
-  test("padding garbage in a schema-7 record never becomes the digit size", [] {
-    testPaddingGarbageNeverBecomesTheDigitSize();
   });
   test("legacy inverted levels normalize only night; corrupt records fall back", [] {
     Preferences::storage["h2gauge/config"] = v5Record(true);

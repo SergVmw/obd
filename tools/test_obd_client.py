@@ -34,10 +34,6 @@ with tempfile.TemporaryDirectory(prefix="h2g-obd-client-tests-") as tmp:
     command = [
         "g++", "-std=c++14", "-O1", "-U_FORTIFY_SOURCE",
         "-D_FORTIFY_SOURCE=3", "-g", "-Wall", "-Wextra", "-Werror",
-        # This rig holds down the mask-driven discovery rule, so it is built with
-        # the engine address unknown. The fixed address this instrument actually
-        # ships is covered by test_obd_diagnostics.py, which uses the default.
-        "-D", "H2G_ENGINE_ECU_ID=0",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
         "-fno-pie", "-no-pie",
         "-I", str(ROOT / "tests/host"), "-I", str(ROOT / "include"),

@@ -76,19 +76,6 @@ struct ObdDiagnosticsState {
   uint8_t ecuReportedDtcCount = 0;
   uint16_t engineResponseId = 0;
   bool engineEcuLocked = false;
-  // Second confirmation, on observed answers rather than on a declaration. The
-  // mask gate in ObdClient already demands two claims, but a support mask is the
-  // block describing itself. These two are facts: a block that answers an
-  // engine-only parameter - 03, 0B, 0F, 11, none of which a transmission has -
-  // and also answers RPM is the engine ECU. RPM on its own decides nothing,
-  // which is precisely the case that used to let the gearbox win.
-  //
-  // Each sign carries its own id, because both must come from the same block and
-  // the gearbox answers RPM as readily as the engine does.
-  uint16_t engineEcuCandidateId = 0;
-  bool engineEcuCandidateEnginePid = false;
-  uint16_t engineEcuRpmId = 0;
-  bool engineEcuCandidateRpm = false;
   uint32_t monitorUpdatedAt = 0;
   uint32_t firstMilSeenAt = 0;
   uint32_t lastMilSeenAt = 0;
@@ -125,41 +112,12 @@ struct ObdDiagnosticsState {
   char lastError[64]{};
 };
 
-// Which block is the engine on this vehicle. 0x7E8 answers as the engine and
-// 0x7E9 as the transmission; both declare PID 04 in their support mask, so the
-// mask cannot separate them, and the discovery rule that reads the masks is
-// there for vehicles where that doubt exists. On this one the answer is not in
-// doubt, so it is stated rather than re-derived at every boot.
-//
-// Seeding identity from here is not the same as bypassing the gate. Discovery
-// still runs and the support report still describes both blocks; what changes
-// is that nothing discovered later can move the engine off this address. A
-// vehicle whose engine lives elsewhere needs this constant changed, and nothing
-// else.
-// Overridable so the discovery path stays tested on a host build. Zero means
-// "work the blocks out from their masks", which is what a vehicle whose engine
-// address is not known needs and what every build before this one did.
-#ifndef H2G_ENGINE_ECU_ID
-#define H2G_ENGINE_ECU_ID 0x7E8
-#endif
-constexpr uint32_t kEngineResponseIdFixed = H2G_ENGINE_ECU_ID;
-
 // Bounded, non-blocking SAE OBD diagnostics for the primary engine ECU.
 // Automatic work reads only Mode 01 PID 01 and services 03/07/0A. Service 04
 // is never automatic and is gated by fresh physical speed/RPM/voltage reads.
 class ObdDiagnostics {
  public:
-  explicit ObdDiagnostics(TelemetryData& telemetry) : telemetry_(telemetry) {
-    if (kEngineResponseIdFixed != 0) {
-      state_.engineResponseId = static_cast<uint16_t>(kEngineResponseIdFixed);
-      state_.engineEcuLocked = true;
-      // Mirrored at construction, not only when a frame is parsed. Otherwise the
-      // dashboard would report no engine until the first answer arrived, on a
-      // gauge that has known the address since the moment it was created.
-      telemetry_.engineEcuResponseId = state_.engineResponseId;
-      telemetry_.engineEcuLocked = true;
-    }
-  }
+  explicit ObdDiagnostics(TelemetryData& telemetry) : telemetry_(telemetry) {}
 
   const ObdDiagnosticsState& state() const { return state_; }
   const DtcHistoryData& history() const { return history_; }
@@ -168,9 +126,7 @@ class ObdDiagnostics {
 
   bool observeMonitorStatus(uint8_t statusByte, uint32_t now,
                             uint32_t responseId);
-  bool observeEngineResponse(uint32_t responseId, uint8_t pid, bool identityEvidence);
-void noteRpmAnswer(uint32_t responseId, bool identityEvidence);
-void tryBindEngine();
+  bool observeEngineResponse(uint32_t responseId);
   bool acceptsEngineResponse(uint32_t responseId) const;
   void tick(uint32_t now, bool periodicScanAllowed);
 

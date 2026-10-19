@@ -136,6 +136,49 @@ assert 0.486 <= _ve_at(43.0) <= 0.513, (
 assert _ve_at(43.0) < 0.85 / 1.5, "VE at the measured point is back near the old 0.85"
 assert _ve_at(30.0) < _ve_at(43.0) < _ve_at(100.0), "the shape must rise"
 
+# --- Past the measured range ------------------------------------------------
+# Nothing above 100 kPa is measured, but the fuel figure rides on it anyway: in a
+# cycle matched to this car about a fifth of the litres are spent above 100 kPa.
+# So the continuation is pinned by its shape even where its level is a guess.
+# These three came out of four mutations that all passed before they existed:
+# 150 kPa at 0.50, 150 kPa at 0.95, a boosted hump at 0.95/0.99, and an upper
+# clamp handing out a constant instead of the last row.
+_ve_at_end = _ve_at(_measured_end)
+_tail = [(k, v) for k, v in zip(_ve_kpa, _ve_value) if k > _measured_end]
+assert _tail, "the table has to continue past the measured range"
+# The engine is pressure-charged up there, so it keeps breathing at least as well
+# as it does at atmospheric pressure. A row that fell below the last measured one
+# would say boost costs more air than it delivers.
+assert all(v >= 0.9 * _ve_at_end for _, v in _tail), (
+    "the boosted rows may not fall below %.3f, nine tenths of VE at %g kPa; "
+    "got %s" % (_ve_at_end, _measured_end,
+                ", ".join("%g kPa: %.3f" % kv for kv in _tail)))
+# The peak belongs at or after the last measured row, and after it the table is
+# only allowed to fall: the taper is a stated part of the shape, so a second rise
+# further out is a typo rather than a calibration.
+_peak_at = _ve_kpa[_ve_value.index(max(_ve_value))]
+assert _peak_at >= _measured_end, (
+    "the peak of %.3f sits at %g kPa, before the end of the measured range"
+    % (max(_ve_value), _peak_at))
+_after_peak = [v for k, v in zip(_ve_kpa, _ve_value) if k >= _peak_at]
+assert all(b <= a for a, b in zip(_after_peak, _after_peak[1:])), (
+    "past the peak at %g kPa the table may only fall, got %s"
+    % (_peak_at, ", ".join("%.3f" % v for v in _after_peak)))
+# ...and the taper has to actually happen. The check above is satisfied by a peak
+# in the last row, which is precisely the shape this one rules out: a table still
+# rising at the top of the range says the engine breathes best at its highest
+# boost, and that is not how a small pressure-charged engine behaves.
+assert _ve_value[-1] < max(_ve_value), (
+    "the table has to taper: %.3f at the top is not below the peak of %.3f"
+    % (_ve_value[-1], max(_ve_value)))
+# The last row is what the clamp hands out at any pressure above the table. The
+# firmware's clamp is checked in the telemetry suite against this row; here the
+# row only has to be one the clamp can hand out - inside the corridor already
+# asserted above, and not the value at the bottom of the table.
+assert _ve_value[-1] >= _ve_at_end, (
+    "the clamp returns %.3f, less than VE at the end of the measured range"
+    % _ve_value[-1])
+
 assert "const float intakeCyclesPerSecond = rpm / 120.0f;" in telemetry
 assert "calculateSpeedDensityAirflowGps(now)" in telemetry
 assert "FuelSource::SpeedDensity" in telemetry

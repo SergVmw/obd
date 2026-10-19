@@ -647,6 +647,9 @@ const DIAG_SOURCES=[
  {id:'pids',file:'pid-support',path:'/api/pid-support',need:false,what:'Какие блоки отвечают на шине и какие PID каждый поддерживает, поразборно'},
 ];
 let diagBusy=false;
+// Whether this firmware serves the trace at all. Set by the status poll, which
+// is the only thing that knows; the page is the same page in both builds.
+let diagIsDiagnostic=false;
 function diagStamp(){
  const d=new Date(),p=n=>String(n).padStart(2,'0');
  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
@@ -667,10 +670,13 @@ async function diagDownload(src,quiet){
   a.href=url;a.download=`h2g-${src.file}-${diagStamp()}.json`;
   document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),30000);
-  if(!quiet)showDiagResult(src,'скачан',true);
+  showDiagResult(src,'скачан · '+(text.length/1024).toFixed(0)+' КБ',true);
   return true;
  }catch(e){
-  if(!quiet)showDiagResult(src,'недоступно: '+e.message,false);
+  // Shown in the bulk run too: a failure there is otherwise invisible, and the
+  // one that matters - the trace running out of memory - arrives as HTTP 503
+  // with a JSON body the reader would never see.
+  showDiagResult(src,'недоступно: '+e.message,false);
   return false;
  }
 }
@@ -684,6 +690,7 @@ function diagRender(s){
  // wipe a download result within a second, so it is rendered once and only
  // again when the set of available sources actually changes.
  const diag=!!(s&&s.diagnosticBuild);
+ diagIsDiagnostic=diag;
  if(diagRenderedFor===diag)return;
  diagRenderedFor=diag;
  $('diagRows').innerHTML=DIAG_SOURCES.map(src=>{
@@ -697,11 +704,14 @@ function diagRender(s){
 }
 function diagDownloadAll(){
  if(diagBusy)return;
- const avail=DIAG_SOURCES.filter(x=>!x.need);
+ // The trace is served only by a diagnostic build. Asking a release image for
+ // it would spend one of the saved files on an HTTP 404, so it is included where
+ // it exists and left out where it does not.
+ const avail=DIAG_SOURCES.filter(x=>!x.need||diagIsDiagnostic);
  if(!avail.length)return;
  diagBusy=true;
  const btn=$('diagAll');btn.disabled=true;btn.textContent='Идёт выгрузка…';
- $('diagAllNote').textContent=`Будет сохранено файлов: ${avail.length}. Браузер может спросить разрешение на несколько загрузок.`;
+ $('diagAllNote').textContent=`Будет сохранено файлов: ${avail.length}${diagIsDiagnostic?', включая трейс':''}. Браузер может спросить разрешение на несколько загрузок.`;
  (async()=>{
   let ok=0;
   for(const src of avail){if(await diagDownload(src,true))ok++}

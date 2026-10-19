@@ -107,11 +107,6 @@ def generate_smooth() -> None:
                                      "H2 Golos Medium 19")),
         ("H2GolosDigits38", make_vlw(BOLD, 38, DIGIT_CODEPOINTS,
                                      "H2 Golos Digits 38")),
-        # Second centre-digit size, selectable as mainDigitSize=1. Same digits-only
-        # codepoint set as Digits38, so it costs a few kilobytes rather than the
-        # ~44 KB a Cyrillic-capable size would add at this height.
-        ("H2GolosDigits28", make_vlw(BOLD, 28, DIGIT_CODEPOINTS,
-                                     "H2 Golos Digits 28")),
     ]
     output = [
         "#pragma once",

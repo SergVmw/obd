@@ -11,7 +11,7 @@ class DashboardUi {
  public:
   DashboardUi()
       : sprite_(&tft_), backgroundCache_(&tft_), textSmall_(&tft_),
-        textMedium_(&tft_), textLarge_(&tft_), textDigitsSmall_(&tft_) {}
+        textMedium_(&tft_), textLarge_(&tft_) {}
 
   void begin(const ConfigData& config, bool normalMode,
              float initialBrightnessPercent, AssetStore* assets = nullptr);
@@ -36,7 +36,7 @@ class DashboardUi {
   void prepareForSleep();
 
  private:
-  enum class FontRole : uint8_t { Small, Medium, Large, MainDigit };
+  enum class FontRole : uint8_t { Small, Medium, Large };
 
   void drawMain(const TelemetryData& data, const TelemetryEngine& engine,
                 const ConfigData& config, uint32_t now);
@@ -74,15 +74,6 @@ class DashboardUi {
   TFT_eSprite textSmall_;
   TFT_eSprite textMedium_;
   TFT_eSprite textLarge_;
-  // The 28 px alternative for the first screen's centre figure. Kept apart from
-  // textLarge_ because the fuel page and the trim sum deliberately keep drawing
-  // at 38 px: those are the surfaces a field test reads, and the setting is not
-  // allowed to move them.
-  TFT_eSprite textDigitsSmall_;
-  // Resolved from config at the top of drawMain, because drawText has no
-  // config of its own to consult. False keeps the 38 px layer, which is what an
-  // upgrade from any earlier release draws unless the owner asks otherwise.
-  bool mainDigitSmall_ = false;
   bool pwmReady_ = false;
   uint8_t lastPwmDuty_ = 0;
   bool framebufferReady_ = false;

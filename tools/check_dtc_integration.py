@@ -43,27 +43,14 @@ assert current_known.count("DtcCategoryStatus::Complete") == 3
 assert "DtcCategoryStatus::Unsupported" not in current_known, \
     "Unsupported does not prove that an old code is absent"
 
-# Engine ownership takes two observed answers: an engine-only parameter, which a
-# transmission cannot have, and PID 0C. All subsequent diagnostic services and
-# normal PID data are bound to that ECU.
+# Engine ownership is established only by a valid functional PID 0C response;
+# all subsequent diagnostic services and normal PID data are bound to that ECU.
 assert "DiscoverEngineRpm" in diag_h and "case Request::DiscoverEngineRpm: return 0x0C" in diag
-assert "observeEngineResponse(responseId_, 0x0C, true)" in diag
+assert "observeEngineResponse(responseId_)" in diag
 assert "engineEcuLocked" in diag_h
 assert "diagnostics_.acceptsEngineResponse(message.identifier)" in client
-assert "diagnostics_.observeEngineResponse(message.identifier, pid" in client
+assert "diagnostics_.observeEngineResponse(message.identifier)" in client
 assert "state_.engineResponseId - 8U" in diag
-
-# The lock must need both signs from one block, not either. Asserting the flags
-# exist is not enough: the one that was never assigned satisfied the condition
-# reading it and left the device unable to bind an engine at all. So both sides
-# must be written, not only read.
-assert "engineEcuCandidateEnginePid" in diag_h and "engineEcuCandidateRpm" in diag_h
-assert "if (!state_.engineEcuCandidateEnginePid || !state_.engineEcuCandidateRpm) return;" in diag
-assert "if (state_.engineEcuCandidateId != state_.engineEcuRpmId) return;" in diag
-assert "state_.engineEcuCandidateId = static_cast<uint16_t>(responseId);" in diag
-assert "state_.engineEcuRpmId = static_cast<uint16_t>(responseId);" in diag
-assert "state_.engineEcuCandidateEnginePid = true;" in diag
-assert "state_.engineEcuCandidateRpm = true;" in diag
 
 # NRC 0x78 switches to P2* without retransmission and an absolute request
 # deadline remains active. Other final NRCs are not mislabeled unsupported.

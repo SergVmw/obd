@@ -24,14 +24,6 @@ constexpr int16_t kDisplaySize = 240;
 constexpr int16_t kSmallTextHeight = 24;
 constexpr int16_t kMediumTextHeight = 32;
 constexpr int16_t kLargeTextHeight = 46;
-// The 28 px digits have ascent 19 and no descent, so a band of 34 leaves 15 rows
-// of headroom; the 38 px size is ascent 28 plus descent 1 in a band of 46, which
-// leaves 17. The two are close but not equal, and an earlier comment here claimed
-// they were the same padding. They are not, and the difference is two rows, which
-// moves the baseline by about a pixel between the two sizes - small enough not to
-// be worth tuning blind against a screen, and noted so the next reader does not
-// mistake the near-match for a rule.
-constexpr int16_t kSmallDigitTextHeight = 34;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kDisplaySize) * kDisplaySize * sizeof(uint16_t);
 
@@ -264,20 +256,16 @@ bool DashboardUi::createSmoothTextLayers() {
 
   if (!createLayer(textSmall_, kSmallTextHeight, H2GolosSmall13) ||
       !createLayer(textMedium_, kMediumTextHeight, H2GolosMedium19) ||
-      !createLayer(textLarge_, kLargeTextHeight, H2GolosDigits38) ||
-      !createLayer(textDigitsSmall_, kSmallDigitTextHeight,
-                   H2GolosDigits28)) {
+      !createLayer(textLarge_, kLargeTextHeight, H2GolosDigits38)) {
     releaseSmoothTextLayers();
     return false;
   }
 
   ESP_LOGI(kTag,
-           "Anti-aliased Golos ready: small=%u medium=%u digits=%u "
-           "digits28=%u bytes",
+           "Anti-aliased Golos ready: small=%u medium=%u digits=%u bytes",
            static_cast<unsigned>(H2GolosSmall13Size),
            static_cast<unsigned>(H2GolosMedium19Size),
-           static_cast<unsigned>(H2GolosDigits38Size),
-           static_cast<unsigned>(H2GolosDigits28Size));
+           static_cast<unsigned>(H2GolosDigits38Size));
   return true;
 }
 
@@ -286,11 +274,9 @@ void DashboardUi::releaseSmoothTextLayers() {
   textSmall_.unloadFont();
   textMedium_.unloadFont();
   textLarge_.unloadFont();
-  textDigitsSmall_.unloadFont();
   textSmall_.deleteSprite();
   textMedium_.deleteSprite();
   textLarge_.deleteSprite();
-  textDigitsSmall_.deleteSprite();
   smoothFontsReady_ = false;
 }
 
@@ -333,9 +319,6 @@ int16_t DashboardUi::drawText(const char* text, int16_t x, int16_t y,
   } else if (role == FontRole::Medium) {
     layer = &textMedium_;
     layerHeight = kMediumTextHeight;
-  } else if (role == FontRole::MainDigit) {
-    layer = mainDigitSmall_ ? &textDigitsSmall_ : &textLarge_;
-    layerHeight = mainDigitSmall_ ? kSmallDigitTextHeight : kLargeTextHeight;
   } else {
     layer = &textLarge_;
     layerHeight = kLargeTextHeight;
@@ -611,7 +594,6 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
 void DashboardUi::drawMain(const TelemetryData& data,
                            const TelemetryEngine& engine,
                            const ConfigData& config, uint32_t now) {
-  mainDigitSmall_ = config.mainDigit() == MainDigitSize::Small;
   if (data.mapKpa.valid(now) && data.filteredBoostBar > peakBoost_) {
     peakBoost_ = data.filteredBoostBar;
   }
@@ -642,7 +624,9 @@ void DashboardUi::drawMain(const TelemetryData& data,
                        : translated(config, "Л/100", "L/100");
       break;
     case MainCenterValue::AverageConsumption: {
-      centerValid = engine.averageAvailable();
+      const bool lpg = data.fuelMode == FuelMode::Lpg;
+      centerValid = lpg ? engine.trip().lpgDistanceKm >= 0.1
+                        : engine.trip().petrolDistanceKm >= 0.1;
       if (centerValid) {
         snprintf(buffer, sizeof(buffer), "%.1f",
                  engine.averageForCurrentFuel(config));
@@ -660,7 +644,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   }
   if (!centerValid) strlcpy(buffer, "--.-", sizeof(buffer));
 
-  drawText(buffer, 120, 102, MC_DATUM, config.colorText, FontRole::MainDigit,
+  drawText(buffer, 120, 102, MC_DATUM, config.colorText, FontRole::Large,
            FSSB24);
   drawText(centerUnit, 120, 132, MC_DATUM, kMuted, FontRole::Small,
            labelFont(config, true));
@@ -672,15 +656,8 @@ void DashboardUi::drawMain(const TelemetryData& data,
   } else {
     strlcpy(current, "--.-", sizeof(current));
   }
-  // The average cell had no guard at all: with the engine shut down it printed
-  // whatever the petrol leg held, formatted as a normal figure. Asked the
-  // engine instead, so it and the two cells below cannot disagree.
-  if (engine.averageAvailable()) {
-    snprintf(average, sizeof(average), "%.1f",
-             engine.averageForCurrentFuel(config));
-  } else {
-    strlcpy(average, "--.-", sizeof(average));
-  }
+  snprintf(average, sizeof(average), "%.1f",
+           engine.averageForCurrentFuel(config));
   drawValueCell(68, 169, current,
                 data.consumptionIsPerHour
                     ? translated(config, "Л/Ч", "L/H")
@@ -838,7 +815,8 @@ void DashboardUi::drawFuel(const TelemetryData& data,
   // The three cells sit on an 80 px pitch, so every label has to stay under
   // 78 px in the 13 px face: "В ДВИЖЕНИИ" measures 81 and would have collided
   // with its neighbours, hence the shorter wording.
-  const bool haveAverage = engine.averageAvailable();
+  const bool haveAverage = lpg ? engine.trip().lpgDistanceKm >= 0.1
+                                : engine.trip().petrolDistanceKm >= 0.1;
   if (haveAverage) {
     snprintf(value, sizeof(value), "%.1f", engine.averageForCurrentFuel(config));
   } else {

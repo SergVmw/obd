@@ -8,38 +8,13 @@
 namespace {
 constexpr size_t kV5ChecksumOffset = 196;
 constexpr size_t kV5RecordSize = 200;
-// Schema 6 is schema 8 without screenOffDelaySec and mainDigitSize, so its
-// checksum sits six bytes earlier; schema 7 is schema 8 without mainDigitSize.
-// Every record is a byte-identical prefix of the current layout, which is what
-// makes each migration below a single move.
-constexpr size_t kV6ChecksumOffset = 208;
-constexpr size_t kV6RecordSize = 212;
-// A one-byte enum after a two-byte field fills padding that was already there,
-// so schema 8 does not move the checksum: it sits at 212 exactly as in schema 7
-// and both records are the same length. That equality is why begin() cannot tell
-// them apart by size and why the stored schemaVersion is what selects the path.
-constexpr size_t kV7ChecksumOffset = 212;
-// kV7RecordSize is deliberately absent: it equals sizeof(ConfigData), so it has
-// no branch of its own in begin(). The two are asserted equal instead.
-// Everything a schema-7 record holds. The copy stops before mainDigitSize so the
-// padding byte the old record leaves there cannot be read back as the new field.
-constexpr size_t kV7FieldsEnd = 210;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
 static_assert(offsetof(ConfigData, brightness) == kV5ChecksumOffset,
               "Schema-5 prefix changed; update migration explicitly");
-static_assert(offsetof(ConfigData, displaySpeedOffsetKph) == 192,
+static_assert(offsetof(ConfigData, speedCorrectionKph) == 192,
               "Schema-5 speed correction offset");
-static_assert(offsetof(ConfigData, screenOffDelaySec) == kV6ChecksumOffset,
-              "Schema-6 prefix changed; update the migration explicitly");
-static_assert(offsetof(ConfigData, mainDigitSize) == kV7FieldsEnd,
-              "Schema-7 prefix changed; update the migration explicitly");
-static_assert(offsetof(ConfigData, checksum) == kV7ChecksumOffset,
-              "Schema-7 checksum offset");
-static_assert(kV7ChecksumOffset + 4 == sizeof(ConfigData),
-              "Schema-7 and schema-8 records are the same length; begin() reads "
-              "the stored version to tell them apart");
 
 uint32_t fnv1a(const uint8_t* bytes, size_t length) {
   uint32_t hash = 2166136261UL;
@@ -110,10 +85,6 @@ ConfigData ConfigStore::defaults() {
   c.longPressMs = 1800;
   c.serviceHoldMs = 5000;
   c.serviceTimeoutMin = 15;
-  c.screenOffDelaySec = 60;
-  // The height the gauge has always drawn. An upgrade must look identical, so
-  // the value the first screen needs no field is the one it starts with.
-  c.setMainDigitSize(MainDigitSize::Large);
   c.lockLongWhenMoving = true;
 
   c.obdTimeoutMs = 120;
@@ -129,7 +100,7 @@ ConfigData ConfigStore::defaults() {
 
   // User-selectable. A typical speedometer correction can be entered as -5,
   // but a firmware update must not silently change distance accounting.
-  c.displaySpeedOffsetKph = 0.0f;
+  c.speedCorrectionKph = 0.0f;
 
   c.checksum = checksum(c);
   return c;
@@ -160,7 +131,7 @@ bool ConfigStore::valid(const ConfigData& config) {
       std::isfinite(config.petrolDensity) &&
       std::isfinite(config.lpgAfr) &&
       std::isfinite(config.lpgDensity) &&
-      std::isfinite(config.displaySpeedOffsetKph);
+      std::isfinite(config.speedCorrectionKph);
   const size_t deviceNameLength =
       strnlen(config.deviceName, sizeof(config.deviceName));
   const size_t apNameLength = strnlen(config.apName, sizeof(config.apName));
@@ -204,12 +175,11 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.longPressMs >= 800 && config.longPressMs <= 4000 &&
          config.serviceHoldMs >= 3000 && config.serviceHoldMs <= 10000 &&
          config.serviceTimeoutMin >= 3 && config.serviceTimeoutMin <= 60 &&
-         config.screenOffDelaySec <= 600 &&
          config.obdTimeoutMs >= 50 && config.obdTimeoutMs <= 1000 &&
          config.maxRequestsPerSecond >= 5 &&
          config.maxRequestsPerSecond <= 60 &&
-         config.displaySpeedOffsetKph >= -20.0f &&
-         config.displaySpeedOffsetKph <= 20.0f &&
+         config.speedCorrectionKph >= -20.0f &&
+         config.speedCorrectionKph <= 20.0f &&
          deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
          apNameLength > 0 && apNameLength < sizeof(config.apName) &&
          apPasswordLength >= 8 &&
@@ -240,47 +210,6 @@ bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
-bool ConfigStore::migrateV6(const uint8_t* record, ConfigData& destination) {
-  uint32_t magic = 0, storedChecksum = 0;
-  uint16_t schema = 0;
-  memcpy(&magic, record, sizeof(magic));
-  memcpy(&schema, record + 4, sizeof(schema));
-  memcpy(&storedChecksum, record + kV6ChecksumOffset, sizeof(storedChecksum));
-  if (magic != kMagic || schema != 6 ||
-      storedChecksum != fnv1a(record, kV6ChecksumOffset)) return false;
-
-  destination = defaults();
-  // One move covers every setting the record holds; defaults() supplies the
-  // appended field and invents nothing else. Losing this migration means a
-  // 212-byte record fails both length checks in begin() and every setting the
-  // owner tuned falls back to the factory, including the fuel model, which on
-  // this vehicle stops entirely because it has neither a MAF nor PID 5E.
-  memcpy(static_cast<void*>(&destination), record, kV6ChecksumOffset);
-  destination.schemaVersion = H2G_CONFIG_SCHEMA;
-  destination.checksum = checksum(destination);
-  return valid(destination);
-}
-
-bool ConfigStore::migrateV7(const uint8_t* record, ConfigData& destination) {
-  uint32_t magic = 0, storedChecksum = 0;
-  uint16_t schema = 0;
-  memcpy(&magic, record, sizeof(magic));
-  memcpy(&schema, record + 4, sizeof(schema));
-  memcpy(&storedChecksum, record + kV7ChecksumOffset, sizeof(storedChecksum));
-  if (magic != kMagic || schema != 7 ||
-      storedChecksum != fnv1a(record, kV7ChecksumOffset)) return false;
-
-  destination = defaults();
-  // The new field lands in padding the old record never wrote, so the copy stops
-  // before it and defaults() supplies the value. A checksum covering that byte is
-  // valid for schema 7 precisely because the byte was padding, and reading it
-  // back as an enumeration is what this line exists to prevent.
-  memcpy(static_cast<void*>(&destination), record, kV7FieldsEnd);
-  destination.schemaVersion = H2G_CONFIG_SCHEMA;
-  destination.checksum = checksum(destination);
-  return valid(destination);
-}
-
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -292,29 +221,8 @@ bool ConfigStore::begin() {
   bool needsSave = false;
 
   if (storedLength == sizeof(ConfigData)) {
-    uint8_t record[sizeof(ConfigData)]{};
-    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
-                 sizeof(record);
-    // Same length as a schema-7 record, so the size cannot tell them apart: read
-    // the stored version before deciding whether these bytes are already in the
-    // current layout. Loading a schema-7 record straight into config_ would copy
-    // padding over mainDigitSize and leave a stale checksum behind.
-    if (loaded) {
-      uint16_t schema = 0;
-      memcpy(&schema, record + 4, sizeof(schema));
-      if (schema == H2G_CONFIG_SCHEMA) {
-        memcpy(&config_, record, sizeof(config_));
-        loaded = valid(config_);
-      } else {
-        loaded = migrateV7(record, config_);
-        needsSave = loaded;
-      }
-    }
-  } else if (storedLength == kV6RecordSize) {
-    uint8_t record[kV6RecordSize]{};
-    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
-                 sizeof(record) && migrateV6(record, config_);
-    needsSave = loaded;
+    loaded = preferences_.getBytes("config", &config_, sizeof(config_)) ==
+                 sizeof(config_) && valid(config_);
   } else if (storedLength == kV5RecordSize) {
     uint8_t record[kV5RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
@@ -326,18 +234,10 @@ bool ConfigStore::begin() {
     config_ = defaults();
     needsSave = true;
   }
-  if (!std::isfinite(config_.displaySpeedOffsetKph) ||
-      config_.displaySpeedOffsetKph < -20.0f ||
-      config_.displaySpeedOffsetKph > 20.0f) {
-    config_.displaySpeedOffsetKph = 0.0f;
-    needsSave = true;
-  }
-  // A stored value outside the enumeration would make drawMain fall through to
-  // no layer at all. Checked here rather than at the drawing site because this
-  // is where the rest of the restored-from-flash sanity checks live.
-  if (static_cast<uint8_t>(config_.mainDigitSize) >
-      static_cast<uint8_t>(MainDigitSize::Small)) {
-    config_.setMainDigitSize(MainDigitSize::Large);
+  if (!std::isfinite(config_.speedCorrectionKph) ||
+      config_.speedCorrectionKph < -20.0f ||
+      config_.speedCorrectionKph > 20.0f) {
+    config_.speedCorrectionKph = 0.0f;
     needsSave = true;
   }
   if (!config_.lpgEnabled && config_.fuelSource == FuelSource::BrcKLine) {

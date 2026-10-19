@@ -1,9 +1,9 @@
-﻿#pragma once
+#pragma once
 
 #ifdef H2G_FW_VERSION_OVERRIDE
 #define H2G_FW_VERSION H2G_FW_VERSION_OVERRIDE
 #else
-#define H2G_FW_VERSION "0.4.22"
+#define H2G_FW_VERSION "0.4.23"
 #endif
 #define H2G_CONFIG_SCHEMA 8
 #ifndef H2G_BUILD_TARGET

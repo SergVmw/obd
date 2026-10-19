@@ -34,15 +34,6 @@ enum class MainCenterValue : uint8_t {
   AverageConsumption = 3,
 };
 
-// Height of the large number in the centre of the first screen. Large is the
-// size the gauge has always drawn, so it stays the default and an upgrade looks
-// identical; Small is the 28 px alternative for a dashboard that shows more
-// than one figure there.
-enum class MainDigitSize : uint8_t {
-  Large = 0,
-  Small = 1,
-};
-
 enum class UiLanguage : uint8_t {
   Russian = 0,
   English = 1,
@@ -118,18 +109,9 @@ struct ConfigData {
   char apName[32];
   char apPassword[32];
 
-  // Display only. PID 0x0D has been checked against GPS at four points and
-  // tracks it; the block's own speed reading is true and the wheels are stock,
-  // so what this corrects is the dashboard needle, which reads about 5 km/h high.
-  // Nothing calculated reads this field - measuredSpeedKph() in telemetry.cpp
-  // works from rawSpeedKph.
-  //
-  // The comment this replaced claimed the offset was applied before the distance
-  // and L/100 km calculations, which was true until 0.4.19 closed that leak and
-  // false afterwards. It was left behind in a field whose whole purpose is to be
-  // understood by whoever changes it next.
-  // Range is validated to -20..+20 km/h.
-  float displaySpeedOffsetKph;
+  // Applied to OBD PID 0D before display, distance and L/100 km
+  // calculations. Range is validated to -20..+20 km/h.
+  float speedCorrectionKph;
 
   uint8_t displayStartPage() const { return startPage; }
   void setDisplayStartPage(uint8_t page) { startPage = page; }
@@ -141,23 +123,9 @@ struct ConfigData {
   void setFuelTrimEnabled(bool enabled) { fuelTrimPollingEnabled = enabled; }
   bool dfcoEnabled() const { return dfcoCorrectionEnabled; }
   void setDfcoEnabled(bool enabled) { dfcoCorrectionEnabled = enabled; }
-  MainDigitSize mainDigit() const { return mainDigitSize; }
-  void setMainDigitSize(MainDigitSize value) { mainDigitSize = value; }
 
   // Schema 6: append only, preserving the complete schema-5 prefix.
   BrightnessSettings brightness;
-
-  // Schema 7. Appended after brightness and never inside it: the static
-  // assertions above pin the offsets the schema-5 migration reads, so a field
-  // inserted before them silently invalidates every stored record.
-  // Seconds of engine silence before the backlight goes dark. 0 keeps the
-  // screen lit for good. The car leaves the OBD battery line live overnight, so
-  // without this the gauge is lit all night.
-  uint16_t screenOffDelaySec;
-
-  // Schema 8. Appended after screenOffDelaySec for the same reason: a field
-  // inserted before the schema-5 offsets would move the bytes migrateV5 reads.
-  MainDigitSize mainDigitSize;
 
   uint32_t checksum;
 };
@@ -176,8 +144,6 @@ class ConfigStore {
   static uint32_t checksum(const ConfigData& config);
   static bool valid(const ConfigData& config);
   static bool migrateV5(const uint8_t* record, ConfigData& destination);
-  static bool migrateV6(const uint8_t* record, ConfigData& destination);
-  static bool migrateV7(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

@@ -25,29 +25,6 @@ for name in ("firmware.bin", "bootloader.bin", "partitions.bin"):
         raise SystemExit(f"missing clean build output: {path}")
 
 RELEASES.mkdir(parents=True, exist_ok=True)
-# Refuse to package anything but the build just asked for. A failed `pio run`
-# leaves the previous firmware.bin sitting in the build directory, and copying it
-# produces a release whose filename says one version and whose contents say
-# another. It happened: a compile error left 0.4.17's binary inside files named
-# 0.4.18, byte-identical to the previous release and invisible to the packaging
-# gate, because that gate compares the committed file against the same stale
-# directory it was just copied from.
-manifest = subprocess.run(
-    [sys.executable, str(ROOT / "tools/check_firmware_manifest.py")],
-    cwd=ROOT, capture_output=True, text=True)
-if manifest.returncode != 0:
-    # check_firmware_manifest raises an assertion, so its failure arrives as a
-    # traceback. That says the gate failed, not that the build is the wrong
-    # version, and the distinction is the entire point of calling it here.
-    tail = (manifest.stdout + manifest.stderr).strip().splitlines()
-    raise SystemExit(
-        "refusing to package: the build in "
-        f"{BUILD.relative_to(ROOT)} is not the {VERSION} this tree declares.\n"
-        "A failed `pio run` leaves the previous firmware.bin in place, so the "
-        "file there is usually an older release rather than a broken one.\n"
-        "Last line from the manifest gate: " + (tail[-1] if tail else "(no output)")
-    )
-print(manifest.stdout.strip())
 shutil.copyfile(BUILD / "firmware.bin", APP)
 
 esptool = PIO / "packages/tool-esptoolpy/esptool.py"

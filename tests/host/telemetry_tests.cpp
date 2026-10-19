@@ -221,6 +221,23 @@ void testVolumetricEfficiencyIsACurveInMapNotAConstant() {
   CHECK(near(vePer(25.0f), veIdle, 1e-4f));
   CHECK(near(vePer(250.0f), vePer(195.0f), 1e-4f));
 
+  // Past the measured range the table is continuation, but the fuel figure rides
+  // on it: in a cycle matched to this car about a fifth of the litres are spent
+  // above 100 kPa. So those rows are pinned to the table's own numbers the same
+  // way the measured ones are, as ratios against a row pinned above. Four edits
+  // out here - 150 kPa at 0.50, at 0.95, a hump at 0.95/0.99 and a clamp
+  // returning any constant - all passed before these existed.
+  CHECK(near(vePer(130.0f) / veCruise, 0.88f / 0.81f, 2e-3f));
+  CHECK(near(vePer(150.0f) / veCruise, 0.90f / 0.81f, 2e-3f));
+  CHECK(vePer(150.0f) >= vePer(130.0f));  // the peak sits at or after 130
+  CHECK(vePer(190.0f) <= vePer(150.0f));  // and only falls after it
+
+  // The top clamp has to hand out the last row's value, not merely one number
+  // consistently. Written only as ve(250) == ve(195) it passed a clamp that
+  // returned the 0.42 from the bottom of the table.
+  CHECK(near(vePer(195.0f) / veCruise, 0.87f / 0.81f, 2e-3f));
+  CHECK(near(vePer(250.0f) / veCruise, 0.87f / 0.81f, 2e-3f));
+
   // Past 255 kPa there is no reading to clamp, and the top of the table is not
   // a licence to invent one: a boost spike has to come back as nothing rather
   // than as a fuel figure built out of it.

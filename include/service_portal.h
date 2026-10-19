@@ -49,26 +49,12 @@ class ServicePortal {
 
   bool begin();
   void loop();
-  String ip() const { return WiFi.softAPIP().toString(); }
   const String& ssid() const { return ssid_; }
-  // True while the editable portal is up. Service mode runs
+  String ip() const { return WiFi.softAPIP().toString(); }
   String runningFirmwareLine() const { return firmwareSlots_.runningLine(); }
   String slotVersionsLine() const { return firmwareSlots_.slotsLine(); }
-  // refreshLiveTelemetry() instead of update(), so sendStatus() has to say so
-  // rather than publish fuel-model fields that nothing is maintaining.
-  bool inServiceSession() const { return serviceSession_; }
-
-  // Rollback core, shared by the portal route and the button gesture in
-  // service mode. Split so the screen can name the target before anything is
-  // selected: a gesture that reboots the owner into a firmware they cannot
-  // see first is not a rollback, it is a surprise.
-  enum class RollbackResult : uint8_t { Ok, NoOtherSlot, NoImage, Failed };
-  bool otherSlotVersion(char* out, size_t capacity) const;
-  RollbackResult selectOtherSlotForBoot();
 
  private:
-  bool bringUpAccessPoint();
-  bool serviceTimeoutDue(uint32_t now) const;
   void setupRoutes();
   void sendIndex();
   void sendConfig();
@@ -109,9 +95,7 @@ class ServicePortal {
   };
 
   void handleOtaPreflight();
-  void handleOtaRollback();
   void sendOtaStatus();
-
   void handleOtaBody();
   void handleOtaRaw();
   void handleOtaFinished();
@@ -158,7 +142,6 @@ class ServicePortal {
   DNSServer dns_;
   WebServer server_;
   String ssid_;
-  bool serviceSession_ = false;
   uint32_t startedAt_ = 0;
   uint32_t lastActivityAt_ = 0;
   uint32_t lastCanSnapshotAt_ = 0;
@@ -166,9 +149,8 @@ class ServicePortal {
   uint32_t lastDtcClearAt_ = 0;
   uint32_t lastFactoryResetAt_ = 0;
   uint32_t lastLightResetAt_ = 0;
-  uint32_t lastOtaAttemptAt_ = 0;
   uint32_t lastAssetAttemptAt_ = 0;
-  uint32_t lastRollbackAt_ = 0;
+  uint32_t lastOtaAttemptAt_ = 0;
   uint32_t rebootAt_ = 0;
   bool assetAllowed_ = false;
   bool assetInProgress_ = false;
@@ -192,9 +174,6 @@ class ServicePortal {
   esp_ota_handle_t otaHandle_ = 0;
   const esp_partition_t* otaSourcePartition_ = nullptr;
   const esp_partition_t* otaTargetPartition_ = nullptr;
-  const esp_partition_t* resolveOtherSlot() const;
-  bool readOtherSlotVersion(const esp_partition_t* slot, char* out,
-                            size_t capacity) const;
   size_t otaExpectedSize_ = 0;
   size_t otaReceivedSize_ = 0;
   size_t otaWrittenSize_ = 0;

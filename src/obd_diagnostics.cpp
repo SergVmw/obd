@@ -253,76 +253,15 @@ void ObdDiagnostics::resetHistory() {
   publishSummary();
 }
 
-bool ObdDiagnostics::observeEngineResponse(uint32_t responseId, uint8_t pid,
-                                          bool identityEvidence) {
+bool ObdDiagnostics::observeEngineResponse(uint32_t responseId) {
   if (!validEngineResponseId(responseId)) return false;
   if (state_.engineEcuLocked && state_.engineResponseId != responseId) {
     return false;
   }
-  if (!state_.engineEcuLocked) {
-    if (pid == 0x0C) {
-      noteRpmAnswer(responseId, identityEvidence);
-    } else {
-      state_.engineEcuCandidateId = static_cast<uint16_t>(responseId);
-      state_.engineEcuCandidateEnginePid = true;
-    }
-    tryBindEngine();
-    return true;
-  }
   state_.engineResponseId = static_cast<uint16_t>(responseId);
-  telemetry_.ecuResponseId = state_.engineResponseId;
-  return true;
-}
-
-// RPM arrives as engine data, and by the time it answers, the block's mask has
-// usually claimed two parameters - at which point engineIdentityDecides stops
-// admitting 0x0C as an identity signal, which is exactly its intent. So the
-// observation is taken outside that gate, rather than by reopening it: the two
-// signs have to come from one block, and they are kept against separate ids
-// because the gearbox answers RPM too and must not be able to overwrite the
-// engine's own record.
-void ObdDiagnostics::noteRpmAnswer(uint32_t responseId, bool identityEvidence) {
-  if (!validEngineResponseId(responseId) || state_.engineEcuLocked) return;
-  state_.engineEcuRpmId = static_cast<uint16_t>(responseId);
-  state_.engineEcuCandidateRpm = true;
-  // With nothing to separate the blocks there is no candidate to confuse with,
-  // and no evidence that will ever arrive, so the old rule stands and RPM binds
-  // alone. Leaving such a vehicle without diagnostics would be the worse
-  // failure, and it is not the case that went wrong: the gearbox won when both
-  // blocks reported.
-  if (!identityEvidence) {
-    // The fallback that binds on RPM alone exists for a vehicle where nothing
-    // else will ever separate the blocks. Where the engine is fixed, that
-    // fallback must not be free to bind the transmission: it is the exact case
-    // where the transmission also answers RPM.
-    if (kEngineResponseIdFixed != 0 && state_.engineEcuRpmId != kEngineResponseIdFixed) {
-      return;
-    }
-    state_.engineEcuCandidateId = state_.engineEcuRpmId;
-    state_.engineEcuCandidateEnginePid = true;
-  }
-  tryBindEngine();
-}
-
-// One block must supply both signs. Storing the id on each side is what makes
-// that checkable; a single id plus two flags would let a gearbox that answered
-// RPM bind an engine that answered a manifold reading.
-void ObdDiagnostics::tryBindEngine() {
-  // With the engine fixed, discovery decides only whether the fixed block really
-  // behaves like an engine. It can never move the identity elsewhere: a candidate
-  // from any other address is refused rather than bound, which is the one way a
-  // transmission could otherwise take the address if its mask ever claimed two of
-  // the engine-only PIDs.
-  if (state_.engineEcuLocked) return;
-  if (!state_.engineEcuCandidateEnginePid || !state_.engineEcuCandidateRpm) return;
-  if (state_.engineEcuCandidateId != state_.engineEcuRpmId) return;
-  if (kEngineResponseIdFixed != 0 &&
-      state_.engineEcuCandidateId != kEngineResponseIdFixed) {
-    return;
-  }
-  state_.engineResponseId = state_.engineEcuCandidateId;
   state_.engineEcuLocked = true;
   telemetry_.ecuResponseId = state_.engineResponseId;
+  return true;
 }
 
 bool ObdDiagnostics::acceptsEngineResponse(uint32_t responseId) const {
@@ -890,7 +829,7 @@ bool ObdDiagnostics::processVerificationPayload(const uint8_t* payload,
   if (length < 3 || payload[0] != 0x41 || payload[1] != pid) return false;
 
   if (request_ == Request::DiscoverEngineRpm) {
-    if (length < 4 || !observeEngineResponse(responseId_, 0x0C, true)) return false;
+    if (length < 4 || !observeEngineResponse(responseId_)) return false;
     const float rpm =
         ((static_cast<uint16_t>(payload[2]) << 8) | payload[3]) / 4.0f;
     telemetry_.rpm.set(rpm, now);
@@ -971,8 +910,6 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
   categoryStatus(kindForRequest(request_)) = status;
   if (status == DtcCategoryStatus::Timeout) {
     setError("one or more DTC services timed out");
-  } else if (status == DtcCategoryStatus::Unsupported) {
-    setError("the engine answered other DTC services but not this one");
   } else if (status == DtcCategoryStatus::Malformed) {
     setError("one or more DTC responses were malformed");
   } else if (status == DtcCategoryStatus::TransportError) {
@@ -994,40 +931,6 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
 }
 
 void ObdDiagnostics::completeScan(uint32_t now) {
-  // Re-read the timeouts now that the whole scan is in, rather than at the
-  // moment each one failed. Done inline, the rescue could only look backwards:
-  // Mode 03 is requested first, so a block that went silent exactly there had
-  // nothing ahead of it and kept Timeout, blocking the clear while 07 and 0A
-  // went on to prove the bus was fine.
-  //
-  // One service answering while another stays silent is the block declining to
-  // implement the silent one, not a broken bus: a bus fault takes all three and
-  // still leaves three timeouts with nothing Complete to pair against. Judged
-  // the same, a refusal and a silence of the same kind produced opposite answers
-  // to the same question, and the clear gate accepts Complete and Unsupported
-  // only, so whether the clear was reachable came down to whether the block
-  // bothered to send a negative response or nothing at all. This block has been
-  // seen doing both.
-  bool anyComplete = false;
-  for (size_t i = 0; i < state_.kCategoryCount; ++i) {
-    if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Complete) {
-      anyComplete = true;
-      break;
-    }
-  }
-  if (anyComplete) {
-    bool reclassified = false;
-    for (size_t i = 0; i < state_.kCategoryCount; ++i) {
-      if (categoryStatus(static_cast<DtcKind>(i)) == DtcCategoryStatus::Timeout) {
-        categoryStatus(static_cast<DtcKind>(i)) = DtcCategoryStatus::Unsupported;
-        reclassified = true;
-      }
-    }
-    if (reclassified) {
-      setError("the engine answered other DTC services but not this one");
-    }
-  }
-
   waiting_ = false;
   requestPending_ = false;
   request_ = Request::None;

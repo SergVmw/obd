@@ -34,7 +34,6 @@ typedef enum {
 #define TWAI_ALERT_BUS_OFF (1u << 2)
 #define TWAI_ALERT_BUS_RECOVERED (1u << 3)
 #define TWAI_ALERT_ABORT_FAILED (1u << 4)
-#define TWAI_ALERT_BUS_ERROR (1u << 6)
 #define TWAI_ALERT_AND_LOG (1u << 5)
 
 typedef enum {
@@ -79,21 +78,17 @@ typedef struct {
 
 #define TWAI_FILTER_CONFIG_ACCEPT_ALL() {0u, 0xFFFFFFFFu, 0u, 0xFFFFFFFFu, 0u}
 
-// Field names follow ESP-IDF's twai_status_info_t rather than this stub's own
-// naming. They used to differ here and nothing read them, so the divergence was
-// free; the moment firmware reads a counter, a stub with the wrong name would
-// let a test pass against fields the real driver does not have.
 typedef struct {
   twai_state_t state;
   uint32_t msgs_to_tx;
-  uint32_t msgs_to_rx;
-  uint32_t tx_error_counter;
-  uint32_t rx_error_counter;
-  uint32_t tx_failed_count;
-  uint32_t rx_missed_count;
-  uint32_t rx_overrun_count;
-  uint32_t arb_lost_count;
-  uint32_t bus_error_count;
+  uint32_t tx_failed;
+  uint32_t rx_missed;
+  uint32_t rx_overrun;
+  uint32_t arbitration_lost;
+  uint32_t bus_error;
+  struct {
+    uint32_t bus_off_recovery;
+  } bus_off_recovery;
 } twai_status_info_t;
 
 esp_err_t twai_driver_install(const twai_general_config_t* general_config,
@@ -107,14 +102,3 @@ esp_err_t twai_receive(twai_message_t* message, TickType_t timeout);
 esp_err_t twai_read_alerts(uint32_t* alerts, uint32_t* alert_mask);
 esp_err_t twai_get_status_info(twai_status_info_t* status_info);
 esp_err_t twai_initiate_recovery(void);
-
-namespace h2g_twai_stub {
-void reset();
-void setState(twai_state_t state);
-// Lets a test give the driver non-zero counters, so a field that is only ever
-// copied from a zeroed struct cannot pass for a working one.
-void setStatus(const twai_status_info_t& status);
-// Raises an alert for the next twai_read_alerts, which takes and clears it.
-// Without this the alert handler cannot be reached at all.
-void raiseAlert(uint32_t alert);
-}  // namespace h2g_twai_stub

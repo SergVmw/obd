@@ -285,12 +285,13 @@ void appendRawResponseJson(JsonObject parent, const char* key,
   hex[out] = '\0';
   parent[key] = hex;
 }
-
 }  // namespace
 
-// Everything begin() does to bring the access point up: the SSID, the password
-// rule, the radio, and the captive-DNS answer.
-bool ServicePortal::bringUpAccessPoint() {
+bool ServicePortal::begin() {
+  // Read each OTA image once before status polling starts. Flash contents do
+  // not change again until a successful OTA schedules the reboot.
+  firmwareSlots_.scan();
+
   const ConfigData& config = configStore_.data();
   const uint16_t suffix = static_cast<uint16_t>(ESP.getEfuseMac() & 0xFFFF);
   char suffixText[8];
@@ -309,26 +310,14 @@ bool ServicePortal::bringUpAccessPoint() {
   }
 
   dns_.start(53, "*", WiFi.softAPIP());
-  return true;
-}
-
-bool ServicePortal::begin() {
-  // Read each OTA image once before status polling starts. Flash contents do
-  // not change again until a successful OTA schedules the reboot.
-  firmwareSlots_.scan();
-
-  if (!bringUpAccessPoint()) return false;
-
   setupRoutes();
   server_.begin();
   startedAt_ = lastActivityAt_ = millis();
-  serviceSession_ = true;
 
   ESP_LOGI(kTag, "AP %s, http://%s", ssid_.c_str(),
            WiFi.softAPIP().toString().c_str());
   return true;
 }
-
 
 void ServicePortal::touch() { lastActivityAt_ = millis(); }
 
@@ -358,18 +347,6 @@ bool ServicePortal::requireAction(const char* action,
   return true;
 }
 
-// The service timeout exists to end a session where the operator walked away
-// from an editable portal. The drive page has no operator and no session to
-// end, and the journey outlives any service timeout, so the reboot must not
-// reach it: a gauge that restarts at the 90-minute mark of a road trip is a
-// gauge that stopped recording the trip. Production has no drive mode and
-// compiles the check out, leaving the original condition intact.
-bool ServicePortal::serviceTimeoutDue(uint32_t now) const {
-  const uint32_t timeoutMs =
-      configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
-  return timeoutMs > 0 && now - lastActivityAt_ > timeoutMs;
-}
-
 void ServicePortal::loop() {
   dns_.processNextRequest();
   server_.handleClient();
@@ -383,7 +360,9 @@ void ServicePortal::loop() {
     ESP.restart();
   }
 
-  if (serviceTimeoutDue(now)) {
+  const uint32_t timeoutMs =
+      configStore_.data().serviceTimeoutMin * 60UL * 1000UL;
+  if (timeoutMs > 0 && now - lastActivityAt_ > timeoutMs) {
     ESP_LOGI(kTag, "Service timeout; rebooting");
     persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                             configStore_.data().saveTrip, true);
@@ -517,8 +496,6 @@ void ServicePortal::setupRoutes() {
              [this]() { handleOtaPreflight(); });
   server_.on("/api/ota/status", HTTP_GET,
              [this]() { sendOtaStatus(); });
-  server_.on("/api/ota/rollback", HTTP_POST,
-             [this]() { handleOtaRollback(); });
 
   // The body is sent as application/octet-stream, not multipart/form-data.
   // Arduino-ESP32 2.0.17 parses multipart in one blocking byte-by-byte loop;
@@ -536,7 +513,6 @@ void ServicePortal::setupRoutes() {
     server_.send(302, "text/plain", "");
   });
 }
-
 
 void ServicePortal::sendIndex() {
   touch();
@@ -557,13 +533,6 @@ void ServicePortal::sendConfig() {
   const ConfigData& c = configStore_.data();
   JsonDocument doc;
 
-  // Two read-only fields so a downloaded settings file describes itself. Without
-  // them a backup is a bag of numbers with no way to tell which layout wrote it,
-  // and restore has to accept whatever arrives. Placed outside every group so
-  // receiveConfig's merge ignores them and the form's apply() never sees them.
-  doc["schemaVersion"] = c.schemaVersion;
-  doc["firmwareVersion"] = H2G_FW_VERSION;
-
   JsonObject display = doc["display"].to<JsonObject>();
   display["brightnessDay"] = c.brightnessDay;
   display["brightnessNight"] = c.brightnessNight;
@@ -577,12 +546,6 @@ void ServicePortal::sendConfig() {
   display["rotation"] = c.rotation;
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
-  display["mainDigitSize"] = static_cast<uint8_t>(c.mainDigit());
-  // A display offset, not a measurement setting: it shifts the readout so it can
-  // agree with the dashboard needle and reaches nothing that is calculated. It
-  // lives under display for that reason, and the portal's form fills inputs by
-  // matching JSON keys to element ids, so the group and the id have to agree.
-  display["displaySpeedOffsetKph"] = c.displaySpeedOffsetKph;
   display["uiLanguage"] = static_cast<uint8_t>(c.uiLanguage());
   display["autoReturnSec"] = c.autoReturnSec;
   display["pageFuel"] = c.pageFuel;
@@ -630,12 +593,12 @@ void ServicePortal::sendConfig() {
   controls["longPressMs"] = c.longPressMs;
   controls["serviceHoldMs"] = c.serviceHoldMs;
   controls["serviceTimeoutMin"] = c.serviceTimeoutMin;
-  controls["screenOffDelaySec"] = c.screenOffDelaySec;
   controls["lockLongWhenMoving"] = c.lockLongWhenMoving;
 
   JsonObject obd = doc["obd"].to<JsonObject>();
   obd["obdTimeoutMs"] = c.obdTimeoutMs;
   obd["maxRequestsPerSecond"] = c.maxRequestsPerSecond;
+  obd["speedCorrectionKph"] = c.speedCorrectionKph;
 
   JsonObject service = doc["service"].to<JsonObject>();
   service["deviceName"] = c.deviceName;
@@ -676,7 +639,6 @@ void ServicePortal::receiveConfig() {
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
         {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
         {"startPage", 0, 4}, {"mainCenterValue", 0, 3},
-        {"mainDigitSize", 0, 1},
         {"uiLanguage", 0, 1}, {"autoReturnSec", 0, 120}};
     const char* invalid = invalidIntegerField(
         d, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
@@ -694,15 +656,6 @@ void ServicePortal::receiveConfig() {
       sendInvalidConfigField(server_, invalid, "a boolean");
       return;
     }
-    const FloatField displayFloats[] = {
-        {"displaySpeedOffsetKph", -20.0, 20.0}};
-    invalid = invalidFloatField(
-        d, displayFloats, sizeof(displayFloats) / sizeof(displayFloats[0]));
-    if (invalid) {
-      sendInvalidConfigField(server_, invalid,
-                             "a finite number within the allowed range");
-      return;
-    }
     c.brightness.mode = static_cast<BrightnessMode>(
         d["brightnessMode"] | static_cast<int>(c.brightness.mode));
     c.brightness.manualNight = d["manualNight"] | c.brightness.manualNight;
@@ -718,10 +671,6 @@ void ServicePortal::receiveConfig() {
         d["startPage"] | c.displayStartPage(), 0, 4));
     c.setMainCenterValue(static_cast<MainCenterValue>(clampValue<int>(
         d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
-    c.setMainDigitSize(static_cast<MainDigitSize>(clampValue<int>(
-        d["mainDigitSize"] | static_cast<int>(c.mainDigit()), 0, 1)));
-    c.displaySpeedOffsetKph = clampValue<float>(
-        d["displaySpeedOffsetKph"] | c.displaySpeedOffsetKph, -20.0f, 20.0f);
     c.setUiLanguage(static_cast<UiLanguage>(clampValue<int>(
         d["uiLanguage"] | static_cast<int>(c.uiLanguage()), 0, 1)));
     c.autoReturnSec = clampValue<int>(d["autoReturnSec"] | c.autoReturnSec, 0, 120);
@@ -846,8 +795,7 @@ void ServicePortal::receiveConfig() {
   if (!controls.isNull()) {
     const IntegerField integerFields[] = {
         {"longPressMs", 800, 4000}, {"serviceHoldMs", 3000, 10000},
-        {"serviceTimeoutMin", 3, 60},
-        {"screenOffDelaySec", 0, 600}};
+        {"serviceTimeoutMin", 3, 60}};
     const char* invalid = invalidIntegerField(
         controls, integerFields,
         sizeof(integerFields) / sizeof(integerFields[0]));
@@ -867,7 +815,6 @@ void ServicePortal::receiveConfig() {
     c.longPressMs = clampValue<int>(controls["longPressMs"] | c.longPressMs, 800, 4000);
     c.serviceHoldMs = clampValue<int>(controls["serviceHoldMs"] | c.serviceHoldMs, 3000, 10000);
     c.serviceTimeoutMin = clampValue<int>(controls["serviceTimeoutMin"] | c.serviceTimeoutMin, 3, 60);
-    c.screenOffDelaySec = clampValue<int>(controls["screenOffDelaySec"] | c.screenOffDelaySec, 0, 600);
     c.lockLongWhenMoving = controls["lockLongWhenMoving"] | c.lockLongWhenMoving;
   }
 
@@ -882,10 +829,18 @@ void ServicePortal::receiveConfig() {
                              "an integer within the allowed range");
       return;
     }
+    const FloatField floatFields[] = {{"speedCorrectionKph", -20.0, 20.0}};
+    invalid = invalidFloatField(
+        obd, floatFields, sizeof(floatFields) / sizeof(floatFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "a finite number within the allowed range");
+      return;
+    }
     c.obdTimeoutMs = clampValue<int>(obd["obdTimeoutMs"] | c.obdTimeoutMs, 50, 1000);
     c.maxRequestsPerSecond = clampValue<int>(obd["maxRequestsPerSecond"] | c.maxRequestsPerSecond, 5, 60);
-    c.displaySpeedOffsetKph = clampValue<float>(
-        obd["displaySpeedOffsetKph"] | c.displaySpeedOffsetKph, -20.0f, 20.0f);
+    c.speedCorrectionKph = clampValue<float>(
+        obd["speedCorrectionKph"] | c.speedCorrectionKph, -20.0f, 20.0f);
   }
 
   JsonObjectConst service = doc["service"];
@@ -905,7 +860,7 @@ void ServicePortal::receiveConfig() {
       isfinite(c.petrolCorrection) && isfinite(c.lpgCorrection) &&
       isfinite(c.petrolAfr) && isfinite(c.petrolDensity) &&
       isfinite(c.lpgAfr) && isfinite(c.lpgDensity) &&
-      isfinite(c.displaySpeedOffsetKph);
+      isfinite(c.speedCorrectionKph);
   if (!finiteValues) {
     server_.send(422, "application/json",
                  "{\"error\":\"configuration contains a non-finite number\"}");
@@ -1001,10 +956,6 @@ void ServicePortal::sendStatus() {
     doc["engineLoadPct"] = nullptr;
     doc["engineLoadAgeMs"] = nullptr;
   }
-  // Which condition darkened the panel, so one night with the gauge left parked
-  // says whether the ECU sleeps on this vehicle instead of a night of guessing.
-  doc["screenOffReason"] = telemetry_.screenOffReason;
-  doc["screenOffDelaySec"] = configStore_.data().screenOffDelaySec;
   if (telemetry_.baroKpa.valid(now, 15000)) {
     doc["baroKpa"] = telemetry_.baroKpa.value;
     doc["baroAgeMs"] = now - telemetry_.baroKpa.updatedAt;
@@ -1024,22 +975,7 @@ void ServicePortal::sendStatus() {
   } else {
     doc["speedDensityAirflowGps"] = nullptr;
   }
-  // Service mode runs refreshLiveTelemetry() instead of update(), and that path
-  // deliberately does not maintain the fuel model. So these three fields are not
-  // "no fuel figure" - they are "not being calculated here", and publishing them
-  // as false/zero was a document that contradicted itself: the same snapshot
-  // carried a live speedDensityAirflowGps and a fuelValueValid that meant only
-  // "the last update() before entry found nothing". Reading it that way cost an
-  // afternoon once already. Null says unknown; false would say measured.
-  const bool serviceSession = inServiceSession();
-  doc["serviceMode"] = serviceSession;
-  if (serviceSession) {
-    doc["fuelValueValid"] = nullptr;
-    doc["fuelModelState"] =
-        "service mode: refreshLiveTelemetry does not run the fuel model";
-  } else {
-    doc["fuelValueValid"] = telemetry_.fuelValueValid;
-  }
+  doc["fuelValueValid"] = telemetry_.fuelValueValid;
   doc["fuelSource"] = static_cast<uint8_t>(configStore_.data().fuelSource);
   doc["effectiveBaroKpa"] = telemetry_.effectiveBaroKpa;
 
@@ -1203,7 +1139,7 @@ void ServicePortal::sendStatus() {
   } else {
     doc["rpmAgeMs"] = nullptr;
   }
-  if (!serviceSession && telemetry_.fuelValueValid && rpmFresh) {
+  if (telemetry_.fuelValueValid && rpmFresh) {
     doc["fuelLph"] = telemetry_.currentFuelLph;
   } else {
     doc["fuelLph"] = nullptr;
@@ -1300,127 +1236,9 @@ void ServicePortal::sendStatus() {
   doc["speedKph"] = telemetry_.speedKph.valid(now)
                          ? telemetry_.speedKph.value
                          : 0.0f;
-  doc["displaySpeedOffsetKph"] = configStore_.data().displaySpeedOffsetKph;
-  // The block's own distance counter, offered as a second reading to compare
-  // against PID 0D rather than as a measurement of anything. It is not
-  // independent of PID 0D - same wheel sensors, same block - so a disagreement
-  // says one of the two is scaled wrongly, not which. Whole kilometres, so a
-  // single reading resolves the scaling question: if the trip's own distance and
-  // this move in step, the unit is kilometres; if one moves ten times as fast,
-  // the scaling is a tenth of a kilometre and this reading is wrong.
-  // Published unconditionally. valid() defaults to a two-second window, which
-  // is right for the fast PIDs and wrong for this one: PID 31 is polled every
-  // ten seconds, so on any ordinary tick the sample is "stale" and this reported
-  // 0 with an age of -1 - indistinguishable from a counter that never answered.
-  // The reading needs its own age, not a freshness verdict.
-  if (telemetry_.odometerKm.updatedAt != 0) {
-    doc["odometerKm"] = telemetry_.odometerKm.value;
-    doc["odometerAgeMs"] = now - telemetry_.odometerKm.updatedAt;
-  } else {
-    doc["odometerKm"] = nullptr;
-    doc["odometerAgeMs"] = UINT32_MAX;
-  }
-  // Increments on every downward step of the counter: a DTC clear zeroes
-  // it, and two bytes wrap at 65535 km. A delta is a real distance when this
-  // matches at both ends, and a subtraction of two unrelated counters when it
-  // does not - which is the question a reader actually has, and which a sticky
-  // "has reset" flag could not answer without throwing away the whole session.
-  doc["odometerSegment"] = telemetry_.odometerSegment;
-
-  // What the CAN controller counted, not what the firmware noticed. canErrorCount
-  // increments wherever the firmware reacts to something; these come from the
-  // driver and distinguish a bus that is unhealthy from a queue the device
-  // overflowed itself. rxMissed is the one that answers the question a timeout
-  // count cannot: a non-zero value means part of the timeouts are the gauge
-  // dropping answers, and the bus is not at fault.
-  doc["can"] = JsonObject();
-  JsonObject can = doc["can"].to<JsonObject>();
-  can["errorCount"] = telemetry_.canErrorCount;
-  can["busErrorCount"] = telemetry_.canBusErrorCount;
-  can["txErrorCounter"] = telemetry_.canTec;
-  can["rxErrorCounter"] = telemetry_.canRec;
-  can["rxMissed"] = telemetry_.canRxMissedCount;
-
-  // PID 03 and PID 14, published as they arrived. The byte is the useful part:
-  // which of its bits closes the loop is settled by watching it against the O2
-  // swing on the car, and a named flag here would only be the current standard's
-  // answer offered in advance - a plausible one, on a gauge, before anything
-  // has been measured. The bits are numbered, never interpreted.
-  JsonObject fuelSystem = doc["fuelSystem"].to<JsonObject>();
-  const bool fuelSystemValid = telemetry_.fuelSystemStatus.valid(now);
-  const int fuelSystemRaw = fuelSystemValid
-                                ? static_cast<int>(telemetry_.fuelSystemStatus.value)
-                                : 0;
-  fuelSystem["valid"] = fuelSystemValid;
-  if (fuelSystemValid) {
-    fuelSystem["raw"] = fuelSystemRaw;
-    fuelSystem["hex"] = String("0x") + String(fuelSystemRaw, HEX);
-    // Bit 0 leftmost, so the string reads the way the byte is written.
-    char bitText[9];
-    for (uint8_t bit = 0; bit < 8; ++bit) {
-      bitText[bit] = (fuelSystemRaw & (1 << (7 - bit))) ? '1' : '0';
-    }
-    bitText[8] = '\0';
-    fuelSystem["bits"] = String(bitText);
-    fuelSystem["ageMs"] = now - telemetry_.fuelSystemStatus.updatedAt;
-  } else {
-    // Null rather than zero, because a byte of 0x00 is a real answer and an
-    // absent one is not - and on this page the difference decides whether the
-    // reader is looking at the block or at a stale gauge.
-    fuelSystem["raw"] = nullptr;
-    fuelSystem["hex"] = "";
-    fuelSystem["bits"] = "";
-    fuelSystem["ageMs"] = UINT32_MAX;
-  }
-
-  JsonObject o2 = doc["o2Sensor1"].to<JsonObject>();
-  const bool o2Valid = telemetry_.o2Sensor1Raw.valid(now);
-  const bool o2TrimValid = telemetry_.o2Sensor1TrimPct.valid(now);
-  o2["valid"] = o2Valid;
-  // Named after the byte, not after what the standard says it is. This block
-  // answers 127 there, which is 0x7F - the marker for "no value" - while J1979
-  // calls byte B a trim percentage of 0..100. Publishing it as trimPercent
-  // asserted something the block does not send.
-  if (o2TrimValid) o2["byteB"] = telemetry_.o2Sensor1TrimPct.value;
-  else o2["byteB"] = nullptr;
-  o2["byteBNote"] =
-      "J1979 calls byte B a trim percent; this block answers 127 (0x7F, no value)";
-  if (o2Valid) {
-    o2["raw"] = static_cast<int>(telemetry_.o2Sensor1Raw.value);
-    // J1979 puts the voltage at 0.00495 V per bit, so the byte spans 0..1.263 V.
-    o2["volt"] = telemetry_.o2Sensor1Raw.value * 0.00495f;
-    o2["ageMs"] = now - telemetry_.o2Sensor1Raw.updatedAt;
-  } else {
-    o2["raw"] = nullptr;
-    o2["volt"] = nullptr;
-    o2["ageMs"] = UINT32_MAX;
-  }
-
-  if (serviceSession) {
-    doc["dfcoActive"] = nullptr;
-  } else {
-    doc["dfcoActive"] = telemetry_.dfcoActive;
-  }
-  // The sum is formed from the two values this response carries, not read back
-  // from the stored field. That field is zeroed whenever either half is older
-  // than its TTL, and with a fifth of the trim requests timing out that is a
-  // common tick: one vehicle snapshot reported short=8.59, long=-7.81 and
-  // sum=0 in the same object. The warning below keeps the stored value, since
-  // its five-second delay is the whole point of it.
-  const bool trimsFresh = telemetry_.shortFuelTrimPercent.valid(now) &&
-                           telemetry_.longFuelTrimPercent.valid(now);
-  const float trimSum = trimsFresh ? telemetry_.shortFuelTrimPercent.value +
-                                         telemetry_.longFuelTrimPercent.value
-                                   : 0.0f;
-  // Absent rather than zero, for both reasons it can be absent: LPG off means
-  // the trims were never polled at all, and stale halves mean they were not read
-  // this tick. Publishing 0 is the mistake the halves below already avoid — a
-  // correction nobody has measured is not a correction of zero.
-  if (lpgEnabled && trimsFresh) {
-    doc["fuelTrimPercent"] = trimSum;
-  } else {
-    doc["fuelTrimPercent"] = nullptr;
-  }
+  doc["speedCorrectionKph"] = configStore_.data().speedCorrectionKph;
+  doc["dfcoActive"] = telemetry_.dfcoActive;
+  doc["fuelTrimPercent"] = lpgEnabled ? telemetry_.fuelTrimSumPercent : 0.0f;
   doc["fuelTrimWarning"] = lpgEnabled && telemetry_.fuelTrimWarning;
   // The two halves are reported apart from their sum. A large sum alone says
   // only that the engine is compensating; a large long-term part with a small
@@ -1428,15 +1246,17 @@ void ServicePortal::sendStatus() {
   // fault from injectors hunting around a correct target.
   if (lpgEnabled) {
     JsonObject trims = doc["fuelTrims"].to<JsonObject>();
-    if (trimsFresh) {
+    const bool fresh = telemetry_.shortFuelTrimPercent.valid(now) &&
+                       telemetry_.longFuelTrimPercent.valid(now);
+    if (fresh) {
       trims["shortTermPercent"] = telemetry_.shortFuelTrimPercent.value;
       trims["longTermPercent"] = telemetry_.longFuelTrimPercent.value;
-      trims["sumPercent"] = trimSum;
+      trims["sumPercent"] = telemetry_.fuelTrimSumPercent;
       // A persistent offset is a tuning fault; a fast-changing short term with
       // a calm long term is normal fuel metering at part load.
       if (telemetry_.fuelTrimWarning) {
         trims["assessment"] =
-            trimSum > 0.0f
+            telemetry_.fuelTrimSumPercent > 0.0f
                 ? "смесь бедная: ЭБУ добавляет топливо"
                 : "смесь богатая: ЭБУ урезает топливо";
       } else {
@@ -1450,7 +1270,7 @@ void ServicePortal::sendStatus() {
       trims["sumPercent"] = nullptr;
       trims["assessment"] = "нет свежих коррекций";
     }
-    trims["valid"] = trimsFresh;
+    trims["valid"] = fresh;
     trims["warning"] = telemetry_.fuelTrimWarning;
   }
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
@@ -1727,13 +1547,10 @@ void appendTraceSample(String& output, const ObdTraceSample& sample) {
   appendTraceUInt(output, sample.eventFlags);
 
   output += ",[";
-  // Appended, never inserted: the order is published as signalsOrder, and a
-  // reader that resolves names is unaffected while one that indexes the first
-  // eight still reads the same eight.
   const float signals[] = {
       sample.rpm, sample.mapKpa, sample.baroKpa, sample.mafGps,
       sample.fuelRateLph, sample.speedKph, sample.boostRawBar,
-      sample.boostFilteredBar, sample.engineLoadPct, sample.intakeAirC};
+      sample.boostFilteredBar};
   for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) {
     if (i != 0) output += ',';
     appendTraceFloat(output, signals[i]);
@@ -1784,23 +1601,7 @@ void appendTraceSample(String& output, const ObdTraceSample& sample) {
   output += ',';
   appendTraceUInt(output, sample.canErrorCount);
   output += ',';
-  appendTraceUInt(output, sample.canBusErrorCount);
-  output += ',';
-  appendTraceUInt(output, sample.canTec);
-  output += ',';
-  appendTraceUInt(output, sample.canRec);
-  output += ',';
-  appendTraceUInt(output, sample.canRxMissedCount);
-  output += ',';
   appendTraceUInt(output, sample.alternateEcuResponseCount);
-  output += ',';
-  appendTraceUInt(output, sample.engineLoadEcuId);
-  output += ',';
-  appendTraceUInt(output, sample.mapEcuId);
-  output += ',';
-  appendTraceUInt(output, sample.rpmEcuId);
-  output += ',';
-  appendTraceUInt(output, sample.intakeAirEcuId);
 
   output += "],[";
   for (size_t i = 0; i < ObdTraceSample::kPidCount; ++i) {
@@ -1864,10 +1665,10 @@ void ServicePortal::sendDiagnosticTrace() {
   output += ",\"ecuIdEncoding\":\"decimal CAN response ID\"";
   output += ",\"pidOrder\":[11,12,16,51,94]";
   output += ",\"sampleColumns\":[\"uptimeMs\",\"ecuResponseId\",\"validityFlags\",\"eventFlags\",\"signals\",\"signalAgesMs\",\"fuel\",\"obd\",\"pids\"]";
-  output += ",\"signalsOrder\":[\"rpm\",\"mapKpa\",\"baroKpa\",\"mafGps\",\"fuelRateLph\",\"speedKph\",\"boostRawBar\",\"boostFilteredBar\",\"engineLoadPct\",\"intakeAirC\"]";
+  output += ",\"signalsOrder\":[\"rpm\",\"mapKpa\",\"baroKpa\",\"mafGps\",\"fuelRateLph\",\"speedKph\",\"boostRawBar\",\"boostFilteredBar\"]";
   output += ",\"signalAgesOrder\":[\"rpm\",\"map\",\"baro\",\"maf\",\"fuelRate\",\"speed\",\"lastObdResponse\"]";
   output += ",\"fuelOrder\":[\"rawLph\",\"correctedLph\",\"valid\",\"consumption\",\"consumptionIsPerHour\",\"fuelModeCode\",\"fuelSourceCode\",\"lpgInputActive\",\"dfcoActive\",\"fuelTrimPercent\"]";
-  output += ",\"obdOrder\":[\"connected\",\"responses\",\"timeouts\",\"canErrors\",\"busErrors\",\"tec\",\"rec\",\"rxMissed\",\"alternateEcuResponses\",\"engineLoadEcuId\",\"mapEcuId\",\"rpmEcuId\",\"intakeAirEcuId\"]";
+  output += ",\"obdOrder\":[\"connected\",\"responses\",\"timeouts\",\"canErrors\",\"alternateEcuResponses\"]";
   output += ",\"pidColumns\":[\"requests\",\"responses\",\"timeouts\",\"consecutiveTimeouts\",\"lastResponseLatencyMs\",\"lastRequestAgeMs\",\"lastResponseAgeMs\",\"unsolicitedResponses\"]";
   output += ",\"validityFlags\":{\"rpmFresh\":1,\"mapFresh\":2,\"baroFresh\":4,\"mafFresh\":8,\"fuelRateFresh\":16,\"speedFresh\":32,\"obdConnected\":64,\"fuelValueValid\":128,\"engineRunning\":256,\"lpgInputActive\":512,\"dfcoActive\":1024,\"consumptionPerHour\":2048}";
   output += ",\"eventFlags\":{\"rpmStale\":1,\"obdDisconnected\":2,\"fuelCalculationInvalid\":4,\"lpgInputChanged\":8,\"mapTimeoutBurst\":16,\"rpmTimeoutBurst\":32,\"mafTimeoutBurst\":64,\"baroTimeoutBurst\":128,\"fuelRateTimeoutBurst\":256,\"unsolicitedMode01Response\":512,\"alternateEcuResponse\":1024}";
@@ -2103,12 +1904,9 @@ void ServicePortal::sendPidSupportReport() {
 
       // The subset the firmware actually requests, so the page separates "the
       // car supports this" from "we read this". Derived from the poll profile
-      // and filtered by the same conditions runPolling applies - including the
-      // support mask, without which this reported PIDs the scheduler never
-      // asks for.
-      const uint32_t polled = ObdClient::polledPidMask(
-          static_cast<uint8_t>(group), configStore_.data(),
-          obdClient_.pidSupport());
+      // and filtered by the same conditions runPolling applies.
+      const uint32_t polled =
+          ObdClient::polledPidMask(static_cast<uint8_t>(group), configStore_.data());
       JsonArray polledPids = row["polledPids"].to<JsonArray>();
       uint16_t polledCount = 0;
       appendMaskPid(polledPids, first, polled, polledCount);
@@ -3005,108 +2803,6 @@ void ServicePortal::handleOtaPreflight() {
   server_.send(200, "application/json", output);
 }
 
-
-const esp_partition_t* ServicePortal::resolveOtherSlot() const {
-  const esp_partition_t* running = esp_ota_get_running_partition();
-  const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
-  if (!running || !other || other->address == running->address) return nullptr;
-  return other;
-}
-
-// Whether that slot holds something runnable at all. A refusal here is better
-// than a boot loop found in a lay-by: the descriptor has to read back with a
-// sane magic word, or there is no firmware there to run.
-bool ServicePortal::readOtherSlotVersion(const esp_partition_t* slot,
-                                         char* out,
-                                         size_t capacity) const {
-  esp_app_desc_t descriptor{};
-  if (esp_ota_get_partition_description(slot, &descriptor) != ESP_OK ||
-      descriptor.magic_word != ESP_APP_DESC_MAGIC_WORD ||
-      descriptor.version[0] == '\0') {
-    return false;
-  }
-  snprintf(out, capacity, "%s", descriptor.version);
-  return true;
-}
-
-bool ServicePortal::otherSlotVersion(char* out, size_t capacity) const {
-  const esp_partition_t* other = resolveOtherSlot();
-  return other && readOtherSlotVersion(other, out, capacity);
-}
-
-ServicePortal::RollbackResult ServicePortal::selectOtherSlotForBoot() {
-  const esp_partition_t* other = resolveOtherSlot();
-  if (!other) return RollbackResult::NoOtherSlot;
-
-  char version[33]{};
-  if (!readOtherSlotVersion(other, version, sizeof(version))) {
-    ESP_LOGE(kTag, "Rollback target at 0x%x holds no readable image",
-             static_cast<unsigned>(other->address));
-    return RollbackResult::NoImage;
-  }
-
-  // Same helper the upload path uses, so the partition write happens off
-  // loopTask rather than stalling it past the watchdog.
-  const NativeOtaJobResult job =
-      runNativeOtaJob(NativeOtaJob::SelectBoot, 0, other,
-                      kNativeOtaJobTimeoutMs);
-  if (!job.started || job.result != ESP_OK) {
-    ESP_LOGE(kTag, "Rollback boot selection failed: %s",
-             esp_err_to_name(job.started ? job.result : ESP_ERR_NO_MEM));
-    return RollbackResult::Failed;
-  }
-
-  const esp_partition_t* selected = esp_ota_get_boot_partition();
-  if (!selected || selected->address != other->address) {
-    return RollbackResult::Failed;
-  }
-  ESP_LOGI(kTag, "Rollback to %s at 0x%x selected",
-           version, static_cast<unsigned>(other->address));
-  return RollbackResult::Ok;
-}
-
-// Hands the boot selection back to the slot that is not running.
-//
-// The device lives in a car. A firmware that boots but behaves wrongly - a
-// broken screen, a portal that will not answer, a fuel figure that lies - leaves
-// the owner with no way back except a programmer and a bench, and the one
-// automatic guard does not help: the image is marked valid as soon as it loads,
-// so the chip's own rollback is cancelled before it can fire. Found that way on
-// the car, with a working 0.4.19 sitting in the other slot and nothing able to
-// select it.
-void ServicePortal::handleOtaRollback() {
-  touch();
-  if (!requireAction("ota-rollback", lastRollbackAt_, 30000)) return;
-
-  char version[33]{};
-  switch (selectOtherSlotForBoot()) {
-    case RollbackResult::NoOtherSlot:
-      server_.send(409, "application/json", "{\"error\":\"no_other_slot\"}");
-      return;
-    case RollbackResult::NoImage:
-      server_.send(409, "application/json",
-                   "{\"error\":\"other_slot_holds_no_image\"}");
-      return;
-    case RollbackResult::Failed:
-      server_.send(500, "application/json",
-                   "{\"error\":\"boot_selection_failed\"}");
-      return;
-    case RollbackResult::Ok:
-      break;
-  }
-
-  (void)otherSlotVersion(version, sizeof(version));
-  // The same shutdown sequence a normal exit uses, so brightness and the
-  // runtime record reach storage before the reset rather than after.
-  if (!persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
-                               configStore_.data().saveTrip, true)) {
-    ESP_LOGE(kTag, "Rollback runtime checkpoint failed");
-  }
-  brightness_.checkpoint();
-  server_.send(200, "application/json",
-               String("{\"rollback\":true,\"version\":\"") + version + "\"}");
-  rebootAt_ = millis() + 1500;
-}
 void ServicePortal::sendOtaStatus() {
   touch();
   const esp_partition_t* nextPartition =

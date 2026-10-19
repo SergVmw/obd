@@ -9,7 +9,7 @@ constexpr uint8_t kMaxRxFramesPerLoop = 16;
 constexpr uint32_t kRxTimeBudgetUs = 2000;
 }
 
-constexpr uint8_t ObdClient::kDiscoveryPids_[5];
+constexpr uint8_t ObdClient::kDiscoveryPids_[4];
 #ifdef H2G_DIAGNOSTIC_BUILD
 const uint8_t ObdClient::kDiagnosticPidIds_[ObdClient::kDiagnosticPidCount] = {
     0x0B, 0x0C, 0x10, 0x33, 0x5E};
@@ -25,10 +25,6 @@ bool ObdClient::begin() {
       TWAI_GENERAL_CONFIG_DEFAULT(Pins::CanTx, Pins::CanRx, TWAI_MODE_NORMAL);
   general.tx_queue_len = 10;
   general.rx_queue_len = 20;
-  // No TWAI_ALERT_BUS_ERROR: the controller's counters are read once a second and
-  // carry the same numbers, so the alert added an interrupt, a queue entry and a
-  // log line per error without adding data - paid exactly when the bus is
-  // unhealthy. The log line it wrote repeated what the counters already hold.
   general.alerts_enabled = TWAI_ALERT_BUS_OFF | TWAI_ALERT_BUS_RECOVERED |
                            TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_TX_FAILED |
                            TWAI_ALERT_AND_LOG;
@@ -91,25 +87,6 @@ void ObdClient::loop(uint32_t now) {
     if (expired) finishPending(true);
   }
   receiveFrames(now);
-
-  // Read the driver's own error counters every second. Unlike alerts, these
-  // accumulate in the driver regardless of which events are subscribed, so a
-  // periodic read is the cheapest way to see what the bus is doing. Ahead of the
-  // waiting/recovering bail-out on purpose: TEC is what moves while a request is
-  // in flight and while the bus is failing, which is exactly when the reading
-  // matters most, and below that return it would sit frozen at its last value
-  // through the whole failure.
-  if (now - lastStatusPollAt_ >= 1000) {
-    lastStatusPollAt_ = now;
-    twai_status_info_t status{};
-    if (twai_get_status_info(&status) == ESP_OK) {
-      telemetry_.canBusErrorCount = status.bus_error_count;
-      telemetry_.canTec = status.tx_error_counter;
-      telemetry_.canRec = status.rx_error_counter;
-      telemetry_.canRxMissedCount = status.rx_missed_count;
-    }
-  }
-
   if (waiting_ || recovering_) return;
 
   diagnostics_.tick(now, !paused_);
@@ -164,10 +141,6 @@ void ObdClient::handleAlerts(uint32_t now) {
   }
   if (alerts & TWAI_ALERT_TX_FAILED) {
     ++telemetry_.canErrorCount;
-    // The transmission was cancelled, so the slot is not going to be answered.
-    // BUS_OFF releases it for the same reason; leaving it here holds the poller
-    // for the full response timeout over a frame that is already gone.
-    if (waiting_) finishPending(true);
     ESP_LOGW(kTag, "TWAI transmit failed");
   }
   if (alerts & TWAI_ALERT_BUS_OFF) {
@@ -228,8 +201,7 @@ void ObdClient::handleAlerts(uint32_t now) {
 constexpr ObdClient::PollItem
     ObdClient::kPollProfile[ObdClient::kPollCount];
 
-uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config,
-                                   const PidSupportTable& support) {
+uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config) {
   if (group >= PidSupportTable::kGroupCount) return 0;
   // Group bases are 0x00/0x20/0x40 and each covers the 32 PIDs that follow, so
   // bit 31 of the word is the first PID of the group, as J1979 stores it.
@@ -239,17 +211,9 @@ uint32_t ObdClient::polledPidMask(uint8_t group, const ConfigData& config,
   uint32_t mask = 0;
   for (uint8_t i = 0; i < kPollCount; ++i) {
     const uint32_t pid = kPollProfile[i].pid;
-    // The same five conditions runPolling applies, in the same order. Marking a
+    // The same four conditions runPolling applies, in the same order. Marking a
     // PID the scheduler would skip is worse than not marking it at all: the
     // page would answer "we read this" about a signal that never arrives.
-    //
-    // The support mask was the missing one. runPolling has always skipped a PID
-    // no responder claims, so 0x33 and 0x5E have never been requested on a car
-    // that lacks them - but this function reported them as polled anyway, which
-    // is what made them look alive in the support report. Its own comment
-    // claimed parity with runPolling while omitting the one condition that
-    // decides the question for a given car.
-    if (!support.isSupported(pid)) continue;
     if (pid == 0x0F && !speedDensity) continue;
     if (speedDensity && (pid == 0x10 || pid == 0x5E)) continue;
     if ((pid == 0x06 || pid == 0x07) &&
@@ -604,22 +568,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 
   const uint8_t pid = message.data[2];
-  // Identity needs an observed RPM answer as well as an engine-only one, and
-  // 0x0C cannot be both: once the mask claims two parameters it stops being an
-  // identity signal, and 0x0C is not an engine-data PID either, so it falls to
-  // the "another ECU" branch below and is dropped from identity entirely. Record
-  // the observation here, where every well-formed answer passes, rather than
-  // reopening the gate - which is what let a gearbox answering first bind the
-  // engine.
-  if (pid == 0x0C && payloadLength >= 4 &&
-      !engineIdentityDecides(message.identifier, pid)) {
-    diagnostics_.noteRpmAnswer(message.identifier, identityDiscriminates());
-  }
-  if (engineIdentityDecides(message.identifier, pid)) {
-    if (payloadLength < (pid == 0x0C ? 4 : 3)) return;
+  if (pid == 0x0C) {
+    if (payloadLength < 4) return;
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
-      if (!diagnostics_.observeEngineResponse(message.identifier, pid,
-                                              identityDiscriminates())) {
+      if (!diagnostics_.observeEngineResponse(message.identifier)) {
 #ifdef H2G_DIAGNOSTIC_BUILD
         // Read here rather than before the call: observeEngineResponse leaves
         // engineEcuLocked untouched on both of its false paths, so this is the
@@ -720,17 +672,9 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       // hard it is working, derived from MAP and speed on a vehicle with no
       // mass air flow sensor, which makes it the reference our Speed-Density
       // airflow is checked against rather than a fill-to-fill guess.
-      //
-      // ecuResponseId was set from this very frame a few lines above, so it is
-      // the responder for this PID rather than "whoever answered most recently".
-      telemetry_.engineLoadEcuId = message.identifier;
       telemetry_.engineLoadPct.set(static_cast<float>(a) * (100.0f / 255.0f), now);
       break;
     case 0x0B:
-      // Recorded from this frame, not from ecuResponseId: that one is
-      // overwritten by whatever answered last, so it cannot say who supplied
-      // this particular reading.
-      telemetry_.mapEcuId = message.identifier;
       telemetry_.mapKpa.set(static_cast<float>(a), now);
       if (mapPidRequestPending()) {
         ++mapPidStats_.responseCount;
@@ -739,30 +683,13 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       }
       break;
     case 0x0C:
-      telemetry_.rpmEcuId = message.identifier;
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
       break;
     case 0x0D:
       telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
       break;
     case 0x0F:
-      telemetry_.intakeAirEcuId = message.identifier;
       telemetry_.intakeAirC.set(static_cast<float>(a) - 40.0f, now);
-      break;
-    case 0x03:
-      // Stored exactly as received. The reasons are in telemetry.h, and the
-      // short version is that the low bits of this byte were renamed between
-      // J1979 revisions and reading one of them as "closed loop" could be
-      // backwards on this block.
-      telemetry_.fuelSystemStatus.set(static_cast<float>(a), now);
-      break;
-    case 0x14:
-      // Byte A is the sensor voltage, 0.00495 V per bit; byte B is a trim
-      // percentage. Both are kept raw and converted where they are published.
-      if (payloadLength >= 4) {
-        telemetry_.o2Sensor1Raw.set(static_cast<float>(a), now);
-        telemetry_.o2Sensor1TrimPct.set(static_cast<float>(b), now);
-      }
       break;
     case 0x10:
       if (payloadLength >= 4) {
@@ -773,25 +700,6 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x11:
       telemetry_.throttlePercent.set(static_cast<float>(a) * (100.0f / 255.0f),
                                      now);
-      break;
-    case 0x31:
-      // Two bytes of whole kilometres. J1979 names the unit, not the scaling;
-      // one kilometre resolution is what the R39 floor of 1 km implies for a
-      // value read over the diagnostic port, and a wrong guess would show up as
-      // a factor of ten against the trip's own distance within one drive.
-      if (payloadLength >= 4) {
-        const float km = static_cast<float>((static_cast<uint16_t>(a) << 8) | b);
-        // Both traps of this counter arrive as a downward jump: a DTC clear
-        // zeroes it, and two bytes wrap at 65535. Open a new segment rather
-        // than let a consumer subtract and get a negative distance. Numbering
-        // the stretch rather than raising a flag is what lets the deltas after
-        // the jump be used again: they are as good as the ones before it, and a
-        // sticky flag cannot tell a consumer so.
-        if (odometerSeen_ && km < odometerLastKm_) ++telemetry_.odometerSegment;
-        odometerLastKm_ = km;
-        odometerSeen_ = true;
-        telemetry_.odometerKm.set(km, now);
-      }
       break;
     case 0x33:
       telemetry_.baroKpa.set(static_cast<float>(a), now);
@@ -905,77 +813,8 @@ void ObdClient::recordOtherEcuResponse(uint16_t responseId, uint8_t pid,
 }
 #endif
 
-namespace {
-// The parameters only an engine can have: a transmission has no fuel system, no
-// intake manifold, no intake air path and no throttle. The vehicle states this
-// itself — the engine claimed all four, the gearbox none.
-constexpr uint8_t kEngineOnlyPids[] = {0x03, 0x0B, 0x0F, 0x11};
-// Two, not one. A single bit in a single mask is a thin thing to aim a safety
-// gate at, and one misread mask or one odd answer would put the DTC scan and the
-// clear back on the wrong block. A gearbox that reports throttle position for
-// torque management scores one and stays below the line.
-constexpr uint8_t kEngineIdentityMinClaims = 2;
-}  // namespace
-
-// How many of the engine-only parameters this block's own mask claims. Zero when
-// the mask has not been heard, so a vehicle that never answers the mask
-// requests scores nothing everywhere and keeps the previous rule.
-uint8_t ObdClient::engineClaimCount(uint16_t responseId) const {
-  const int8_t slot = supportTable_.findResponder(responseId);
-  if (slot < 0 || !supportTable_.responderGroupKnown(slot, 0)) return 0;
-  uint8_t claims = 0;
-  for (uint8_t pid : kEngineOnlyPids) {
-    if (supportTable_.responderSupports(slot, pid)) ++claims;
-  }
-  return claims;
-}
-
-// Which block is allowed to take the engine lock.
-//
-// A block takes it by answering one of the four parameters, and only if its own
-// mask claims at least two of them: the answer is then both the claim and the
-// confirmation, with no separate state to keep in step. RPM is answered by the
-// gearbox as readily as by the engine, so it may decide only while nothing on the
-// bus has claimed those parameters. With no mask heard at all, every score is
-// zero and speed decides, exactly as before.
-// Does any block vouch for enough engine-only parameters to tell them apart?
-// While none does there is nothing to confuse and nothing more to wait for, so
-// identity falls back to the old rule rather than leaving a sparse vehicle
-// without diagnostics. This is exactly the condition under which 0x0C is allowed
-// to decide at all; the fallback is for a quiet bus, not for one where two
-// blocks disagree, which is the case that went wrong.
-bool ObdClient::identityDiscriminates() const {
-  for (uint8_t r = 0; r < supportTable_.responderCount(); ++r) {
-    if (engineClaimCount(supportTable_.responderIdAt(r)) >=
-        kEngineIdentityMinClaims) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool ObdClient::engineIdentityDecides(uint16_t responseId, uint8_t pid) const {
-  bool engineOnly = false;
-  for (uint8_t candidate : kEngineOnlyPids) {
-    if (candidate == pid) {
-      engineOnly = true;
-      break;
-    }
-  }
-  if (engineOnly) {
-    return engineClaimCount(responseId) >= kEngineIdentityMinClaims;
-  }
-  if (pid != 0x0C) return false;
-  for (size_t i = 0; i < supportTable_.responderCount(); ++i) {
-    if (engineClaimCount(supportTable_.responderIdAt(i)) >=
-        kEngineIdentityMinClaims) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void ObdClient::runDiscovery(uint32_t now) {  if (discoveryIndex_ >= 5) {
+void ObdClient::runDiscovery(uint32_t now) {
+  if (discoveryIndex_ >= 4) {
     discoveryDone_ = true;
     ESP_LOGI(kTag, "Mode 01 PID discovery completed");
     return;

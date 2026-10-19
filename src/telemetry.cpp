@@ -6,61 +6,10 @@
 
 namespace {
 constexpr float kEngineDisplacementM3 = 0.001497f;  // GW4G15B: 1497 cm3
+constexpr float kSpeedDensityVolumetricEfficiency = 0.85f;  // initial estimate
 constexpr float kAirMolarMassGramsPerMol = 28.97f;
 constexpr float kGasConstantJoulesPerMolKelvin = 8.314f;
 constexpr uint32_t kIntakeAirMaxAgeMs = 5000;
-
-// Volumetric efficiency as a multiplier of charge density at MAP, which is what
-// the speed-density expression below multiplies by. It replaces a single 0.85
-// that had nothing behind it.
-//
-// Measured: 43 kPa at 732 rpm, recovered from PID 04 through the J1979 formula
-// on the dump of 19.10, which gave 0.496 (0.486..0.513 across VE_peak 0.90-0.95).
-// The 0.85 constant overstated the air there by 1.7 times. Everything else is
-// shape, taken from published rules and the plausibility corridor: residual
-// gases dilute the charge at low MAP, VE climbs with MAP, peaks near the torque
-// point and falls again under boost. A capture is what turns those into
-// measurement - the trace carries MAP, RPM, IAT and the block's own air estimate
-// for exactly that. Until it does, this table is a better-founded guess than a
-// single constant was, not a calibrated one.
-//
-// One-dimensional on MAP. If the per-rpm bins of the fit disagree by more than
-// about five percent, VE has an rpm dependence this table cannot express and
-// needs a second axis.
-//
-// Above about 130 kPa the shape is continuation, not measurement: PID 04 is
-// A*100/255 and pins at 100 % above atmospheric pressure, so the boosted range
-// carries no airflow information at all.
-constexpr float kVeByMapKpa[] = {30.0f,  35.0f,  40.0f,  45.0f,  50.0f,  60.0f,
-                                  70.0f,  80.0f,  90.0f,  100.0f, 110.0f, 130.0f,
-                                  150.0f, 170.0f, 190.0f};
-constexpr float kVeByMapValue[] = {0.42f, 0.45f, 0.48f, 0.51f, 0.54f, 0.60f, 0.66f,
-                                   0.71f, 0.76f, 0.81f, 0.84f, 0.88f, 0.90f, 0.89f,
-                                   0.87f};
-constexpr size_t kVeByMapCount = sizeof(kVeByMapKpa) / sizeof(kVeByMapKpa[0]);
-static_assert(sizeof(kVeByMapValue) / sizeof(kVeByMapValue[0]) == kVeByMapCount,
-              "the VE table's pressures and values must have the same length");
-static_assert(kVeByMapCount >= 2, "interpolation needs at least two points");
-
-// Linear between the points, held flat outside them. A flat end is deliberate:
-// the alternative is to extrapolate a curve into a region where nothing is
-// known about it, and an idle reading that has fallen off the bottom would come
-// back as a number rather than as nothing.
-float volumetricEfficiencyAtMap(float mapKpa) {
-  if (mapKpa <= kVeByMapKpa[0]) return kVeByMapValue[0];
-  if (mapKpa >= kVeByMapKpa[kVeByMapCount - 1]) {
-    return kVeByMapValue[kVeByMapCount - 1];
-  }
-  for (size_t i = 1; i < kVeByMapCount; ++i) {
-    if (mapKpa > kVeByMapKpa[i]) continue;
-    const float lo = kVeByMapKpa[i - 1];
-    const float span = kVeByMapKpa[i] - lo;
-    const float t = span > 0.0f ? (mapKpa - lo) / span : 0.0f;
-    return kVeByMapValue[i - 1] +
-           t * (kVeByMapValue[i] - kVeByMapValue[i - 1]);
-  }
-  return kVeByMapValue[kVeByMapCount - 1];
-}
 }  // namespace
 
 uint32_t TripStore::checksum(const TripState& trip) {
@@ -222,26 +171,14 @@ float TelemetryEngine::calculateSpeedDensityAirflowGps(uint32_t now) const {
   // alone would overstate airflow by a factor of 60.
   const float pressurePa = mapKpa * 1000.0f;
   const float intakeCyclesPerSecond = rpm / 120.0f;
-  const float volumetricEfficiency = volumetricEfficiencyAtMap(mapKpa);
   const float airflowGps =
       pressurePa * intakeCyclesPerSecond * kEngineDisplacementM3 *
-      volumetricEfficiency * kAirMolarMassGramsPerMol /
+      kSpeedDensityVolumetricEfficiency * kAirMolarMassGramsPerMol /
       (kGasConstantJoulesPerMolKelvin * temperatureKelvin);
   if (!isfinite(airflowGps) || airflowGps <= 0.0f || airflowGps > 500.0f) {
     return NAN;
   }
   return airflowGps;
-}
-
-float TelemetryEngine::measuredSpeedKph(uint32_t now) const {
-  // rawSpeedKph carries PID 0D's own timestamp, so its validity is what decides
-  // whether the measurement is usable. speedKph inherits that timestamp and is
-  // deliberately not consulted here.
-  if (!data_.rawSpeedKph.valid(now)) return NAN;
-  // Inside the band the reading already means standing, and no correction of any
-  // kind should turn an idling engine into distance.
-  if (data_.rawSpeedKph.value < kParkedRawSpeedKph) return 0.0f;
-  return static_cast<float>(data_.rawSpeedKph.value);
 }
 
 void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
@@ -261,7 +198,7 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
     const bool standing = data_.rawSpeedKph.value < kParkedRawSpeedKph;
     data_.speedKph.value = standing
         ? 0.0f
-        : fmaxf(0.0f, data_.rawSpeedKph.value + config.displaySpeedOffsetKph);
+        : fmaxf(0.0f, data_.rawSpeedKph.value + config.speedCorrectionKph);
     data_.speedKph.updatedAt = data_.rawSpeedKph.updatedAt;
   } else {
     data_.speedKph.value = NAN;
@@ -292,14 +229,6 @@ void TelemetryEngine::refreshLiveTelemetry(uint32_t now,
     data_.fuelMode = FuelMode::Off;
   } else {
     data_.fuelMode = data_.lpgInputActive ? FuelMode::Lpg : FuelMode::Petrol;
-  }
-  // Remembered only while the engine names a fuel, so it is the last one it
-  // actually ran on and never a default. With the engine off the trip's figures
-  // belong to it; remembering is what lets them be reported at all instead of
-  // going blank the moment the RPM reading goes stale, which at this vehicle's
-  // timeout rate is as likely on the move as at a standstill.
-  if (data_.fuelMode == FuelMode::Lpg || data_.fuelMode == FuelMode::Petrol) {
-    data_.lastRunningFuel = data_.fuelMode;
   }
 
   // Keep the derived airflow live in service mode too. refreshLiveTelemetry()
@@ -409,17 +338,11 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
     }
   }
 
-  // The divisor is the measured speed, not the displayed one. Dividing by a
-  // value carrying displaySpeedOffsetKph made the large readout a different figure
-  // from the two cells beneath it on the same screen: the cells divide by
-  // accumulated distance, this one by instantaneous speed, and only this one was
-  // scaled. That is a correction of a measurement the driver never sees.
-  const float measuredSpeed = measuredSpeedKph(now);
-  const bool speedValid = !isnan(measuredSpeed);
+  const bool speedValid = data_.speedKph.valid(now);
   if (data_.fuelValueValid && speedValid &&
-      measuredSpeed >= config.switchSpeedKph) {
+      data_.speedKph.value >= config.switchSpeedKph) {
     data_.currentConsumption =
-        data_.currentFuelLph * 100.0f / max(1.0f, measuredSpeed);
+        data_.currentFuelLph * 100.0f / max(1.0f, data_.speedKph.value);
     data_.consumptionIsPerHour = false;
   } else {
     data_.currentConsumption = data_.currentFuelLph;
@@ -444,17 +367,8 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
   // Speed is known-good here, so zero distance means the vehicle is standing
   // rather than merely unmeasured. That distinction is what keeps a queue out
   // of the moving average, and a lost PID 0D out of the standing share.
-  // measuredSpeedKph() has already applied the standing band, so the zero below
-  // is reached for a standing vehicle and for nothing else.
-  //
-  // This is where the correction used to enter, and it fed every distance the
-  // gauge keeps: recentDistanceKm_, totalDistanceKm, both per-fuel distances and
-  // the tank calibration. On one measured trip displaySpeedOffsetKph = 5 accounted
-  // for 14.2% of the LPG distance and 40.1% of the petrol leg, so a display
-  // preference was silently rescaling litres per 100 km by 16.6%. What it does
-  // now is confined to the readout, where it belongs.
   const double distance =
-      fmax(0.0, static_cast<double>(measuredSpeed)) * dtSec / 3600.0;
+      fmax(0.0, static_cast<double>(data_.speedKph.value)) * dtSec / 3600.0;
   // Split the fuel so the trip average and the moving average can be reported
   // separately. The tank calibration keeps using the undivided total, because
   // the engine burnt it either way.
@@ -590,25 +504,14 @@ float TelemetryEngine::petrolCalibrationLiters(
 
 float TelemetryEngine::averageForCurrentFuel(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel == FuelMode::Lpg) {
-    if (trip_->lpgDistanceKm < kMinAverageDistanceKm) return 0.0f;
+  if (data_.fuelMode == FuelMode::Lpg) {
+    if (trip_->lpgDistanceKm < 0.1) return 0.0f;
     return static_cast<float>(trip_->rawLpgLiters * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
-  if (fuel != FuelMode::Petrol) return 0.0f;
-  if (trip_->petrolDistanceKm < kMinAverageDistanceKm) return 0.0f;
+  if (trip_->petrolDistanceKm < 0.1) return 0.0f;
   return static_cast<float>(trip_->rawPetrolLiters * config.petrolCorrection *
                             100.0 / trip_->petrolDistanceKm);
-}
-
-bool TelemetryEngine::averageAvailable() const {
-  if (!trip_) return false;
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel == FuelMode::Lpg) return trip_->lpgDistanceKm >= kMinAverageDistanceKm;
-  if (fuel == FuelMode::Petrol)
-    return trip_->petrolDistanceKm >= kMinAverageDistanceKm;
-  return false;
 }
 
 float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
@@ -616,17 +519,15 @@ float TelemetryEngine::averageWhileMoving(const ConfigData& config) const {
   // Idle fuel covers no distance, so it stays in the numerator of the trip
   // average and leaves this one. Dividing by the same distance keeps the two
   // figures directly comparable.
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel == FuelMode::Lpg) {
-    if (trip_->lpgDistanceKm < kMinAverageDistanceKm) return 0.0f;
+  if (data_.fuelMode == FuelMode::Lpg) {
+    if (trip_->lpgDistanceKm < 0.1) return 0.0f;
     const double moving =
         trip_->rawLpgLiters - trip_->idleLpgLiters;
     if (moving <= 0.0) return 0.0f;
     return static_cast<float>(moving * config.lpgCorrection * 100.0 /
                               trip_->lpgDistanceKm);
   }
-  if (fuel != FuelMode::Petrol) return 0.0f;
-  if (trip_->petrolDistanceKm < kMinAverageDistanceKm) return 0.0f;
+  if (trip_->petrolDistanceKm < 0.1) return 0.0f;
   const double moving = trip_->rawPetrolLiters - trip_->idlePetrolLiters;
   if (moving <= 0.0) return 0.0f;
   return static_cast<float>(moving * config.petrolCorrection * 100.0 /
@@ -645,24 +546,22 @@ float TelemetryEngine::recentAverage() const {
 
 float TelemetryEngine::idleLiters(const ConfigData& config) const {
   if (!trip_) return 0.0f;
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
-  const double idle =
-      fuel == FuelMode::Lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
-  const float correction =
-      fuel == FuelMode::Lpg ? config.lpgCorrection : config.petrolCorrection;
+  const double idle = data_.fuelMode == FuelMode::Lpg
+                          ? trip_->idleLpgLiters
+                          : trip_->idlePetrolLiters;
+  const float correction = data_.fuelMode == FuelMode::Lpg
+                               ? config.lpgCorrection
+                               : config.petrolCorrection;
   return static_cast<float>(idle * correction);
 }
 
 float TelemetryEngine::idleShareOfTrip() const {
   if (!trip_) return 0.0f;
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
-  const double total =
-      fuel == FuelMode::Lpg ? trip_->rawLpgLiters : trip_->rawPetrolLiters;
+  const double total = data_.fuelMode == FuelMode::Lpg ? trip_->rawLpgLiters
+                                                       : trip_->rawPetrolLiters;
   if (total <= 1e-9) return 0.0f;
-  const double idle =
-      fuel == FuelMode::Lpg ? trip_->idleLpgLiters : trip_->idlePetrolLiters;
+  const double idle = data_.fuelMode == FuelMode::Lpg ? trip_->idleLpgLiters
+                                                       : trip_->idlePetrolLiters;
   return static_cast<float>(idle / total * 100.0);
 }
 
@@ -673,10 +572,9 @@ float TelemetryEngine::idleLitersPerHour(const ConfigData& config) const {
   // vehicle never sat at: two hours of driving with a ten-minute queue would
   // come out as a twelfth of the true standing rate. This is now the cost of
   // standing, which is what a queue actually costs.
-  const FuelMode fuel = reportedFuelMode();
-  if (fuel != FuelMode::Lpg && fuel != FuelMode::Petrol) return 0.0f;
-  const uint32_t standing =
-      fuel == FuelMode::Lpg ? trip_->lpgIdleSeconds : trip_->petrolIdleSeconds;
+  const uint32_t standing = data_.fuelMode == FuelMode::Lpg
+                                ? trip_->lpgIdleSeconds
+                                : trip_->petrolIdleSeconds;
   if (standing == 0) return 0.0f;
   return idleLiters(config) / (static_cast<float>(standing) / 3600.0f);
 }
