@@ -19,11 +19,21 @@ constexpr size_t kV6RecordSize = 212;
 // and both records are the same length. That equality is why begin() cannot tell
 // them apart by size and why the stored schemaVersion is what selects the path.
 constexpr size_t kV7ChecksumOffset = 212;
-// kV7RecordSize is deliberately absent: it equals sizeof(ConfigData), so it has
-// no branch of its own in begin(). The two are asserted equal instead.
+// kV7RecordSize is deliberately absent: it is the same length as a schema-8
+// record, so the stored version is what tells them apart and they share one
+// branch in begin(). The two are asserted equal instead.
 // Everything a schema-7 record holds. The copy stops before mainDigitSize so the
 // padding byte the old record leaves there cannot be read back as the new field.
 constexpr size_t kV7FieldsEnd = 210;
+// Schema 8 is the last layout that ends at 216 bytes. A record of that length
+// can be either schema 7 or schema 8, and only the stored version says which.
+constexpr size_t kV8ChecksumOffset = 212;
+constexpr size_t kV8RecordSize = 216;
+// Schema 9 appends lpgOnDelayMs, so its checksum sits four bytes later than
+// schema 8's: two for the field and two the compiler inserts to keep the
+// uint32_t checksum aligned. Everything a schema-8 record holds is the prefix
+// before its checksum, which is what migrateV8 copies.
+constexpr size_t kV9ChecksumOffset = 216;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -35,11 +45,13 @@ static_assert(offsetof(ConfigData, screenOffDelaySec) == kV6ChecksumOffset,
               "Schema-6 prefix changed; update the migration explicitly");
 static_assert(offsetof(ConfigData, mainDigitSize) == kV7FieldsEnd,
               "Schema-7 prefix changed; update the migration explicitly");
-static_assert(offsetof(ConfigData, checksum) == kV7ChecksumOffset,
-              "Schema-7 checksum offset");
-static_assert(kV7ChecksumOffset + 4 == sizeof(ConfigData),
-              "Schema-7 and schema-8 records are the same length; begin() reads "
-              "the stored version to tell them apart");
+static_assert(offsetof(ConfigData, lpgOnDelayMs) == kV8ChecksumOffset,
+              "Schema-8 prefix changed; update the migration explicitly");
+static_assert(offsetof(ConfigData, checksum) == kV9ChecksumOffset,
+              "Schema-9 checksum offset");
+static_assert(kV9ChecksumOffset + 4 == sizeof(ConfigData),
+              "the checksum must end the record; a field appended after it "
+              "would not be covered by it");
 
 uint32_t fnv1a(const uint8_t* bytes, size_t length) {
   uint32_t hash = 2166136261UL;
@@ -106,6 +118,11 @@ ConfigData ConfigStore::defaults() {
   c.lpgDebounceMs = 800;
   c.lpgOffDelayMs = 1000;
   c.lpgBadge = true;
+  // 0: the switchover is treated as instantaneous until the owner says the
+  // injectors take longer than the valve. Every release before this one had no
+  // such field, so this is the value that keeps an upgrade from moving fuel
+  // between tanks on a vehicle whose system does switch at once.
+  c.lpgOnDelayMs = 0;
 
   c.longPressMs = 1800;
   c.serviceHoldMs = 5000;
@@ -200,7 +217,7 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.lpgDensity >= 400.0f && config.lpgDensity <= 700.0f &&
          config.switchSpeedKph >= 1 && config.switchSpeedKph <= 30 &&
          config.lpgDebounceMs >= 100 && config.lpgDebounceMs <= 3000 &&
-         config.lpgOffDelayMs <= 5000 &&
+         config.lpgOffDelayMs <= 5000 && config.lpgOnDelayMs <= 30000 &&
          config.longPressMs >= 800 && config.longPressMs <= 4000 &&
          config.serviceHoldMs >= 3000 && config.serviceHoldMs <= 10000 &&
          config.serviceTimeoutMin >= 3 && config.serviceTimeoutMin <= 60 &&
@@ -281,6 +298,27 @@ bool ConfigStore::migrateV7(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
+bool ConfigStore::migrateV8(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV8ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 8 ||
+      storedChecksum != fnv1a(record, kV8ChecksumOffset)) return false;
+
+  destination = defaults();
+  // The whole prefix the record holds, which is every field schema 9 keeps in
+  // the same place. What the copy cannot supply is the appended switch-on
+  // delay, and defaults() gives it the value that changes no behaviour: an
+  // owner who needs one sets it, and an owner who does not cannot have fuel
+  // moved between tanks by an upgrade.
+  memcpy(static_cast<void*>(&destination), record, kV8ChecksumOffset);
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -295,20 +333,35 @@ bool ConfigStore::begin() {
     uint8_t record[sizeof(ConfigData)]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record);
-    // Same length as a schema-7 record, so the size cannot tell them apart: read
-    // the stored version before deciding whether these bytes are already in the
-    // current layout. Loading a schema-7 record straight into config_ would copy
-    // padding over mainDigitSize and leave a stale checksum behind.
     if (loaded) {
       uint16_t schema = 0;
       memcpy(&schema, record + 4, sizeof(schema));
+      // The length alone is not proof of the layout. It is today, because no
+      // other schema is this long, and it stopped being true the moment a
+      // record grew: spending one comparison here is what keeps the next
+      // append from arriving as a silent corruption of one.
       if (schema == H2G_CONFIG_SCHEMA) {
         memcpy(&config_, record, sizeof(config_));
         loaded = valid(config_);
       } else {
-        loaded = migrateV7(record, config_);
-        needsSave = loaded;
+        loaded = false;
       }
+    }
+  } else if (storedLength == kV8RecordSize) {
+    // Schema 7 and schema 8 are both this long, so the size cannot tell them
+    // apart: read the stored version before deciding which layout these bytes
+    // are. Loading a schema-7 record straight into config_ would copy padding
+    // over mainDigitSize and leave a stale checksum behind, and asking
+    // migrateV8 for a schema-7 checksum would reject a record that is sound.
+    uint8_t record[kV8RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record);
+    if (loaded) {
+      uint16_t schema = 0;
+      memcpy(&schema, record + 4, sizeof(schema));
+      loaded = (schema == 8) ? migrateV8(record, config_)
+                             : migrateV7(record, config_);
+      needsSave = loaded;
     }
   } else if (storedLength == kV6RecordSize) {
     uint8_t record[kV6RecordSize]{};

@@ -159,6 +159,22 @@ struct ConfigData {
   // inserted before the schema-5 offsets would move the bytes migrateV5 reads.
   MainDigitSize mainDigitSize;
 
+  // Schema 9. Appended after mainDigitSize for the same reason: a field
+  // inserted before the schema-5 offsets would move the bytes migrateV5 reads.
+  //
+  // How long the engine keeps burning petrol after the LPG valve signal says
+  // gas. The valve opens and the injectors follow some seconds later - on this
+  // vehicle about ten - so those seconds are petrol, and counting them as gas
+  // puts fuel in a tank it never left. The delay delays the switchover and
+  // nothing else: the trip counter and the LPG badge both read the state it
+  // produces, so the number and the lamp agree with each other and with what
+  // is in the lines.
+  //
+  // 0 treats the switch as instantaneous, which is what every earlier release
+  // assumed and what a system that does switch instantly still needs.
+  // Range is validated to 0..30000 ms.
+  uint16_t lpgOnDelayMs;
+
   uint32_t checksum;
 };
 
@@ -178,6 +194,7 @@ class ConfigStore {
   static bool migrateV5(const uint8_t* record, ConfigData& destination);
   static bool migrateV6(const uint8_t* record, ConfigData& destination);
   static bool migrateV7(const uint8_t* record, ConfigData& destination);
+  static bool migrateV8(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

@@ -119,8 +119,10 @@ void LpgValveInput::begin() {
 bool LpgValveInput::update(uint32_t now, const ConfigData& config) {
   if (!config.lpgEnabled) {
     active_ = false;
+    settled_ = false;
     candidate_ = false;
     candidateSince_ = now;
+    settledSince_ = now;
     return false;
   }
 
@@ -131,11 +133,23 @@ bool LpgValveInput::update(uint32_t now, const ConfigData& config) {
     candidateSince_ = now;
   }
 
-  const uint32_t required = candidate_
-                                ? config.lpgDebounceMs
-                                : config.lpgDebounceMs + config.lpgOffDelayMs;
-  if (active_ != candidate_ && now - candidateSince_ >= required) {
-    active_ = candidate_;
+  // First stage: the contact stops bouncing. Anything shorter is noise on a
+  // wire that runs the length of the engine bay, not a change of fuel.
+  if (settled_ != candidate_ && now - candidateSince_ >= config.lpgDebounceMs) {
+    settled_ = candidate_;
+    settledSince_ = now;
+  }
+
+  // Second stage: the engine catches up with its own plumbing. Switching on
+  // waits for the injectors to follow the valve; switching off waits out the
+  // petrol the lines still hold. Both are delays measured from a settled level,
+  // which is why the debounce above belongs to neither of them.
+  if (active_ != settled_) {
+    const uint32_t required =
+        settled_ ? config.lpgOnDelayMs : config.lpgOffDelayMs;
+    if (now - settledSince_ >= required) {
+      active_ = settled_;
+    }
   }
   return active_;
 }

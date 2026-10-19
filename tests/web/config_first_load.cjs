@@ -26,7 +26,10 @@ const STORED = {
   fuel: { fuelSource: 5, dfcoEnabled: true, fuelTrimEnabled: true, saveTrip: true,
     switchSpeedKph: 5, petrolCorrection: 1, lpgCorrection: 1.2, petrolAfr: 14.7,
     petrolDensity: 740, lpgAfr: 15.5, lpgDensity: 540 },
-  lpg: { lpgEnabled: true, lpgActiveLow: true, lpgDebounceMs: 800, lpgOffDelayMs: 1000 },
+  lpg: {
+    lpgEnabled: true, lpgActiveLow: true, lpgDebounceMs: 800,
+    lpgOffDelayMs: 1000, lpgOnDelayMs: 10000,
+  },
   controls: { longPressMs: 1800, serviceHoldMs: 5000, serviceTimeoutMin: 15,
     lockLongWhenMoving: false, screenOffDelaySec: 60 },
   service: { deviceName: 'H2 Gauge', apName: 'H2-Gauge', apPassword: 'h2gauge18' },

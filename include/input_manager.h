@@ -47,14 +47,25 @@ class OneButton {
   ButtonEvent event_ = ButtonEvent::None;
 };
 
+// The valve signal is not the fuel. The valve opens and the injectors follow
+// after a moment the engine chooses for itself, so the level on GPIO5 and the
+// fuel actually in the lines are two states, and one debounce cannot settle
+// both. Hence two stages: the contact stops bouncing, then the engine catches
+// up. Collapsing them is what would let a trip record gas for petrol.
 class LpgValveInput {
  public:
   void begin();
   bool update(uint32_t now, const ConfigData& config);
+  // True once the engine is burning gas: the contact has settled and the
+  // switch-on delay has run. The fuel model and the LPG badge both read this,
+  // so the litres and the lamp cannot disagree with each other - or with
+  // what the lines are carrying.
   bool active() const { return active_; }
 
  private:
   bool candidate_ = false;
+  bool settled_ = false;
   bool active_ = false;
   uint32_t candidateSince_ = 0;
+  uint32_t settledSince_ = 0;
 };

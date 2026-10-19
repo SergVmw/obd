@@ -38,7 +38,8 @@ integer_ranges = {
     "baroSource": (0, 4), "boostArcStyle": (0, 1),
     "smoothingMs": (0, 2000), "fuelSource": (0, 5),
     "switchSpeedKph": (1, 30), "lpgDebounceMs": (100, 3000),
-    "lpgOffDelayMs": (0, 5000), "longPressMs": (800, 4000),
+    "lpgOffDelayMs": (0, 5000), "lpgOnDelayMs": (0, 30000),
+    "longPressMs": (800, 4000),
     "serviceHoldMs": (3000, 10000), "serviceTimeoutMin": (3, 60),
     "obdTimeoutMs": (50, 1000), "maxRequestsPerSecond": (5, 60),
 }

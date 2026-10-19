@@ -166,7 +166,9 @@ std::vector<uint8_t> v7Record(bool poisonPadding) {
   c.screenOffDelaySec = 240;
   c.centerValue = MainCenterValue::Speed;
   c.setMainDigitSize(MainDigitSize::Small);   // lives in the padding byte
-  std::vector<uint8_t> result(sizeof(ConfigData));
+  // 216, spelled out rather than sizeof(ConfigData): this is the length the
+  // schema-7 and schema-8 builds wrote, and current builds are longer.
+  std::vector<uint8_t> result(216);
   std::memcpy(result.data(), &c, 210);
   // 210..211 is the padding the schema-7 build never wrote. Poison it, because a
   // value that merely happens to be Large would prove nothing.
@@ -210,6 +212,60 @@ void testPaddingGarbageNeverBecomesTheDigitSize() {
         static_cast<uint8_t>(MainDigitSize::Small));
 }
 
+// A schema-8 record is the same length as a schema-7 one and differs in what
+// the last four bytes cover: a real checksum over mainDigitSize rather than a
+// checksum over padding. It is the layout the 0.4.20 to 0.4.24 builds wrote, so
+// it is the one an upgrade in the car actually meets.
+std::vector<uint8_t> v8Record() {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = 8;
+  c.brightnessDay = 71;
+  c.lpgEnabled = true;
+  c.lpgCorrection = 1.2f;
+  c.setMainDigitSize(MainDigitSize::Small);
+  c.screenOffDelaySec = 120;
+  strlcpy(c.apPassword, "schema-eight-password", sizeof(c.apPassword));
+  std::vector<uint8_t> result(216);
+  std::memcpy(result.data(), &c, 212);
+  const uint32_t hash = fnv(result.data(), 212);
+  std::memcpy(result.data() + 212, &hash, 4);
+  return result;
+}
+
+void testSchema8RecordKeepsSettingsAndTakesFactorySwitchOnDelay() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v8Record();
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  // Everything the record held, the digit size included: it was padding in
+  // schema 7 and is a real field in schema 8, so this is the case that proves
+  // the two 216-byte layouts are told apart by the stored version and not by
+  // their length.
+  CHECK(c.brightnessDay == 71);
+  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.2f));
+  CHECK(c.mainDigit() == MainDigitSize::Small);
+  CHECK(c.screenOffDelaySec == 120);
+  CHECK(std::strcmp(c.apPassword, "schema-eight-password") == 0);
+  // The one field the record predates takes the value that changes no
+  // behaviour at all. An owner who needs a switch-on delay sets one; an owner
+  // who does not must not have an upgrade start moving fuel between tanks.
+  CHECK(c.lpgOnDelayMs == 0);
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
+void testSchema8RecordWithBrokenChecksumFallsBackToFactory() {
+  Preferences::storage.clear();
+  auto record = v8Record();
+  record[40] ^= 0xFF;
+  Preferences::storage["h2gauge/config"] = record;
+  ConfigStore store;
+  CHECK(store.begin());
+  CHECK(store.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(store.data().lpgOnDelayMs == 0);
+}
+
 void managerRun(BrightnessManager& m, const ConfigData& c, uint32_t ms, uint16_t adc) {
   hostAdc = adc;
   for (uint32_t t = 0; t < ms; t += 50) {
@@ -218,6 +274,108 @@ void managerRun(BrightnessManager& m, const ConfigData& c, uint32_t ms, uint16_t
   }
 }
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// LPG valve input. Two timers in series: the contact stops bouncing, then the
+// engine catches up with its own plumbing. The switch-on delay is the newer of
+// the two and the reason these are written down - it decides which tank the
+// trip charges for the seconds when the car is between fuels, and a delay that
+// leaked into the debounce or into the switch-off would be invisible until
+// somebody compared a full tank against the number on the screen.
+// ---------------------------------------------------------------------------
+
+struct LpgRig {
+  LpgValveInput input;
+  ConfigData config = ConfigStore::defaults();
+  LpgRig(uint32_t start = 10000) {
+    hostMillis = start;
+    hostButton = HIGH;   // active low, so pin high is petrol
+    config.lpgEnabled = true;
+    config.lpgActiveLow = true;
+    config.lpgDebounceMs = 800;
+    config.lpgOffDelayMs = 1000;
+    config.lpgOnDelayMs = 10000;
+    input.begin();
+  }
+  // Steps the way the main loop does. Returns the timestamp of the update at
+  // which the decision first became true, or 0 if it never did inside the
+  // window - which is the form that lets the expected instant be written down
+  // instead of implied by a sequence of runs.
+  uint32_t timeToActive(int level, uint32_t limit) {
+    hostButton = level;
+    for (uint32_t t = 0; t <= limit; t += 50) {
+      hostMillis += 50;
+      if (input.update(hostMillis, config)) return hostMillis;
+    }
+    return 0;
+  }
+  uint32_t timeToInactive(int level, uint32_t limit) {
+    hostButton = level;
+    for (uint32_t t = 0; t <= limit; t += 50) {
+      hostMillis += 50;
+      if (!input.update(hostMillis, config)) return hostMillis;
+    }
+    return 0;
+  }
+};
+
+void testOnDelayHoldsTheDecisionUntilTheInjectorsFollow() {
+  LpgRig r;
+  const uint32_t t0 = hostMillis;
+  // Gas. The contact settles 800 ms after the level last moved, and the
+  // injectors follow 10 s after that - not 10 s after the valve.
+  const uint32_t flip = r.timeToActive(LOW, 40000);
+  CHECK(flip == t0 + 50 + r.config.lpgDebounceMs + r.config.lpgOnDelayMs);
+}
+
+void testZeroOnDelaySwitchesAsSoonAsTheContactSettles() {
+  LpgRig r;
+  r.config.lpgOnDelayMs = 0;
+  const uint32_t t0 = hostMillis;
+  // What every release before this one did, and what a system that really does
+  // switch at once still needs: the debounce alone gates the decision.
+  const uint32_t flip = r.timeToActive(LOW, 40000);
+  CHECK(flip == t0 + 50 + r.config.lpgDebounceMs);
+}
+
+void testChatterRestartsTheSettleSoTheDelayRunsFromTheLastEdge() {
+  LpgRig r;
+  // A second of contact bounce on a wire that runs the length of the engine
+  // bay. The level never sits still long enough to settle.
+  for (uint32_t t = 0; t < 1000; t += 50) {
+    hostMillis += 50;
+    hostButton = (t / 50) % 2 ? HIGH : LOW;
+    r.input.update(hostMillis, r.config);
+  }
+  CHECK(!r.input.active());
+  const uint32_t t0 = hostMillis;
+  const uint32_t flip = r.timeToActive(LOW, 40000);
+  // Measured from the last edge, not the first: a delay that started at the
+  // first one would let a bouncing contact shorten the wait.
+  CHECK(flip == t0 + 50 + r.config.lpgDebounceMs + r.config.lpgOnDelayMs);
+}
+
+void testSwitchingOffWaitsTheOffDelayAndNotTheOnOne() {
+  LpgRig r;
+  CHECK(r.timeToActive(LOW, 40000) != 0);
+  const uint32_t t0 = hostMillis;
+  // Petrol again. The switch-on delay must not appear on this side: the two
+  // are delays on the same settled level, and adding them would hold the
+  // counter on gas for ten seconds the engine spent burning petrol.
+  const uint32_t flip = r.timeToInactive(HIGH, 40000);
+  CHECK(flip == t0 + 50 + r.config.lpgDebounceMs + r.config.lpgOffDelayMs);
+}
+
+void testDisablingLpgDropsTheDecisionAtOnce() {
+  LpgRig r;
+  CHECK(r.timeToActive(LOW, 40000) != 0);
+  r.config.lpgEnabled = false;
+  hostMillis += 50;
+  CHECK(!r.input.update(hostMillis, r.config));
+  // And it stays dropped while the pin is still calling for gas.
+  hostMillis += 5000;
+  CHECK(!r.input.update(hostMillis, r.config));
+}
 
 int main() {
   test("settings constraints and safe default", [] {
@@ -526,6 +684,40 @@ int main() {
     BrightnessManager missing; CHECK(!missing.begin(hostMillis, c));
     CHECK(!missing.storageHealthy()); CHECK(!missing.checkpoint());
     managerRun(missing, c, 1000, 100); CHECK(near(missing.state().currentPercent(), 82));
+  });
+  test("a schema-8 record keeps its settings and takes the factory switch-on delay", [] {
+    testSchema8RecordKeepsSettingsAndTakesFactorySwitchOnDelay();
+  });
+  test("a schema-8 record whose checksum does not match falls back to factory", [] {
+    testSchema8RecordWithBrokenChecksumFallsBackToFactory();
+  });
+  test("the switch-on delay survives a save and reload, and the range is enforced", [] {
+    ConfigStore store; CHECK(store.begin());
+    store.data().lpgEnabled = true;
+    store.data().lpgOnDelayMs = 10000;
+    CHECK(store.save());
+    ConfigStore reloaded; CHECK(reloaded.begin());
+    CHECK(reloaded.data().lpgOnDelayMs == 10000);
+    // The form offers at most 30000, and a value outside the range must be
+    // refused rather than stored: an unclamped delay would silently hold the
+    // counter on petrol for as long as the number happened to say.
+    reloaded.data().lpgOnDelayMs = 30001;
+    CHECK(!reloaded.save());
+  });
+  test("the switch-on delay holds the decision until the injectors follow", [] {
+    testOnDelayHoldsTheDecisionUntilTheInjectorsFollow();
+  });
+  test("a zero switch-on delay switches as soon as the contact settles", [] {
+    testZeroOnDelaySwitchesAsSoonAsTheContactSettles();
+  });
+  test("contact chatter restarts the settle, so the delay runs from the last edge", [] {
+    testChatterRestartsTheSettleSoTheDelayRunsFromTheLastEdge();
+  });
+  test("switching off waits the off delay and never the on one", [] {
+    testSwitchingOffWaitsTheOffDelayAndNotTheOnOne();
+  });
+  test("disabling LPG drops the decision at once and keeps it dropped", [] {
+    testDisablingLpgDropsTheDecisionAtOnce();
   });
   std::printf("\n%d host regression groups passed. Hardware behavior is not simulated.\n", passed);
 }

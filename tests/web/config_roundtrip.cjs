@@ -32,7 +32,10 @@ const DEVICE = {
     switchSpeedKph: 5, petrolCorrection: 1, lpgCorrection: 1.2,
     petrolAfr: 14.7, petrolDensity: 740, lpgAfr: 15.5, lpgDensity: 540,
   },
-  lpg: { lpgEnabled: true, lpgActiveLow: true, lpgDebounceMs: 800, lpgOffDelayMs: 1000 },
+  lpg: {
+    lpgEnabled: true, lpgActiveLow: true, lpgDebounceMs: 800,
+    lpgOffDelayMs: 1000, lpgOnDelayMs: 10000,
+  },
   controls: {
     longPressMs: 1800, serviceHoldMs: 5000, serviceTimeoutMin: 15,
     lockLongWhenMoving: true, screenOffDelaySec: 60,

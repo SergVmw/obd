@@ -625,6 +625,7 @@ void ServicePortal::sendConfig() {
   lpg["lpgActiveLow"] = c.lpgActiveLow;
   lpg["lpgDebounceMs"] = c.lpgDebounceMs;
   lpg["lpgOffDelayMs"] = c.lpgOffDelayMs;
+  lpg["lpgOnDelayMs"] = c.lpgOnDelayMs;
 
   JsonObject controls = doc["controls"].to<JsonObject>();
   controls["longPressMs"] = c.longPressMs;
@@ -814,7 +815,8 @@ void ServicePortal::receiveConfig() {
   JsonObjectConst l = doc["lpg"];
   if (!l.isNull()) {
     const IntegerField integerFields[] = {{"lpgDebounceMs", 100, 3000},
-                                          {"lpgOffDelayMs", 0, 5000}};
+                                          {"lpgOffDelayMs", 0, 5000},
+                                          {"lpgOnDelayMs", 0, 30000}};
     const char* invalid = invalidIntegerField(
         l, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
     if (invalid) {
@@ -833,6 +835,7 @@ void ServicePortal::receiveConfig() {
     c.lpgActiveLow = l["lpgActiveLow"] | c.lpgActiveLow;
     c.lpgDebounceMs = clampValue<int>(l["lpgDebounceMs"] | c.lpgDebounceMs, 100, 3000);
     c.lpgOffDelayMs = clampValue<int>(l["lpgOffDelayMs"] | c.lpgOffDelayMs, 0, 5000);
+    c.lpgOnDelayMs = clampValue<int>(l["lpgOnDelayMs"] | c.lpgOnDelayMs, 0, 30000);
   }
 
   if (!c.lpgEnabled && c.fuelSource == FuelSource::BrcKLine) {
