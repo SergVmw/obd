@@ -135,6 +135,19 @@ struct TelemetryData {
   uint32_t obdTimeoutCount = 0;
   uint32_t canErrorCount = 0;
   uint16_t ecuResponseId = 0;
+  // Which block answered each of the three signals a volumetric-efficiency fit
+  // is built on, for the same reason and under the same limitation as PID 04
+  // below. Mode 01 goes out to the functional address, so any block may answer
+  // and nothing on the bus filters by identity; ecuResponseId is whoever answered
+  // last and says nothing about any particular reading. A fit that cannot tell
+  // which block supplied MAP has no way to separate a bad curve from a good
+  // curve measured against the wrong block, and the gearbox's mask claims none
+  // of these three, so in practice they should always read the engine. That is
+  // exactly the claim worth making checkable rather than assumed.
+  uint16_t mapEcuId = 0;
+  uint16_t rpmEcuId = 0;
+  uint16_t intakeAirEcuId = 0;
+
   // Which block answered PID 04, recorded separately from ecuResponseId because
   // that one is overwritten by whatever answered last. A volumetric-efficiency
   // calibration is measured against PID 04, and the J1979 denominator in that

@@ -135,6 +135,9 @@ void captureDiagnosticTrace(uint32_t now) {
   sample.engineLoadPct = telemetry.engineLoadPct.value;
   sample.intakeAirC = telemetry.intakeAirC.value;
   sample.engineLoadEcuId = telemetry.engineLoadEcuId;
+  sample.mapEcuId = telemetry.mapEcuId;
+  sample.rpmEcuId = telemetry.rpmEcuId;
+  sample.intakeAirEcuId = telemetry.intakeAirEcuId;
   sample.fuelRawLph = telemetry.currentFuelRawLph;
   sample.fuelCorrectedLph = telemetry.currentFuelLph;
   sample.consumption = telemetry.currentConsumption;

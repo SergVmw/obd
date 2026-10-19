@@ -727,6 +727,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       telemetry_.engineLoadPct.set(static_cast<float>(a) * (100.0f / 255.0f), now);
       break;
     case 0x0B:
+      // Recorded from this frame, not from ecuResponseId: that one is
+      // overwritten by whatever answered last, so it cannot say who supplied
+      // this particular reading.
+      telemetry_.mapEcuId = message.identifier;
       telemetry_.mapKpa.set(static_cast<float>(a), now);
       if (mapPidRequestPending()) {
         ++mapPidStats_.responseCount;
@@ -735,12 +739,14 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       }
       break;
     case 0x0C:
+      telemetry_.rpmEcuId = message.identifier;
       telemetry_.rpm.set(((static_cast<uint16_t>(a) << 8) | b) / 4.0f, now);
       break;
     case 0x0D:
       telemetry_.rawSpeedKph.set(static_cast<float>(a), now);
       break;
     case 0x0F:
+      telemetry_.intakeAirEcuId = message.identifier;
       telemetry_.intakeAirC.set(static_cast<float>(a) - 40.0f, now);
       break;
     case 0x03:

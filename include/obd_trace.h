@@ -100,6 +100,12 @@ struct ObdTraceSample {
   // signals, because it is an identifier and the signals group is floats: an ID
   // there would print as 2024.000 and read as a measurement.
   uint16_t engineLoadEcuId = 0;
+  // Same reasoning for the three signals the fit is built on. Appended to the
+  // obd group with engineLoadEcuId rather than to signals, for the same reason:
+  // identifiers there would print as 2024.000.
+  uint16_t mapEcuId = 0;
+  uint16_t rpmEcuId = 0;
+  uint16_t intakeAirEcuId = 0;
   uint16_t validityFlags = 0;
   uint32_t eventFlags = 0;
   uint8_t fuelMode = 0;

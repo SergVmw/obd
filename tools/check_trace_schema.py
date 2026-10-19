@@ -127,6 +127,60 @@ if mismatch:
 else:
     print(f"  ok  {'signals':12s} имена совпадают с полями по позициям")
 
+# A length check cannot see two names trading places: every column still exists
+# and still holds a number, and each one just reports the wrong reading. In the
+# signals group that is caught above, because there the published name is the
+# field name. The obd group deliberately publishes short names instead, so a table
+# of all of them would be a second place to forget an update - but where a
+# declared name IS spelled exactly as the field written under it, the two must
+# land on the same index, and that can be demanded without a table.
+# The obd group is the fourth run of separators, between the fifth-from-last
+# marker and the last one; the gate above unpacks the same five.
+_b_obd = opens[3]
+# One entry per append, in order, so the indices line up with the declared names.
+# An append that does not name a field - connected is a bit test, not a member -
+# is kept as None so it still occupies its column rather than shifting the rest.
+obd_fields = []
+for m in re.finditer(
+        r"appendTrace(?:UInt|Float|Bool|Age)\s*\(\s*output\s*,(.*?)\);",
+        body[_b_obd:opens[4]], re.S):
+    field = re.search(r"sample\.([A-Za-z0-9_]+)", m.group(1))
+    obd_fields.append(field.group(1) if field else None)
+# The obd group has always published short names for the counters, and that is
+# fine, but it makes "not a field name" ambiguous: a column renamed to something
+# no field answers to would otherwise pass as a legitimate short name, and a
+# reader resolving names would simply never find it. So the short names are
+# listed here. Anything new in this group has to be spelled as its field, which
+# costs a reader nothing and is what makes the positional check above cover every
+# column rather than the four identifiers.
+_obd_short_names = {
+    "connected", "responses", "timeouts", "canErrors", "busErrors",
+    "tec", "rec", "rxMissed", "alternateEcuResponses",
+}
+_written = [f for f in obd_fields if f]
+for index, name in enumerate(d_obd):
+    if name not in _written:
+        if name not in _obd_short_names:
+            problems.append(f"obd: {name} на позиции {index} не имя поля и "
+                            f"не заявленное короткое имя")
+            print(f"  СБОЙ obd            {name} на позиции {index}: не имя "
+                  f"поля и не короткое имя из списка")
+        continue
+    if index >= len(obd_fields):
+        problems.append(f"obd: {name} объявлен на позиции {index}, "
+                        f"но записано всего {len(obd_fields)} значений")
+        print(f"  СБОЙ obd            {name} на позиции {index} некуда писать")
+    elif obd_fields[index] != name:
+        problems.append(f"obd: позиция {index} пишет {obd_fields[index]} "
+                        f"под именем {name}")
+        print(f"  СБОЙ obd            позиция {index}: пишется "
+              f"{obd_fields[index]}, объявлено {name}")
+n_exact = sum(1 for i, n in enumerate(d_obd)
+              if n in [f for f in obd_fields if f]
+              and i < len(obd_fields) and obd_fields[i] == n)
+if n_exact:
+    print(f"  ok  {'obd':12s} {n_exact} имён совпадают с полями по позициям")
+
 if problems:
     for p in problems:
         print("  " + p)

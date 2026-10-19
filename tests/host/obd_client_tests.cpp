@@ -293,6 +293,91 @@ PidSupportTable permissiveSupportTable() {
   return table;
 }
 
+// Mode 01 goes out to the functional address, so any block may answer, and the
+// parser does not filter by identity: a frame from a block that never took the
+// engine lock still reaches telemetry for every engine-data PID. That is
+// deliberate, because the support masks are per-responder and one block's silence
+// must not silence another's signal - but it means a reading carries no record of
+// who produced it, and ecuResponseId cannot serve, being overwritten by whatever
+// answered last.
+//
+// These are the labels that close that gap. The test pins down which readings can
+// actually be contaminated, because isEngineDataPid splits them: MAP, IAT and the
+// rest are taken from any block and can be, while RPM and PID 04 are not
+// engine-data and are dropped from a foreign block outright. Two of the four
+// labels therefore have something to catch and two are defensive - which decides
+// how carefully a fit has to read them.
+void testEveryReadingSaysWhichBlockProducedIt() {
+  Rig rig;
+  rig.identifyEngine();
+  CHECK(rig.telemetry.engineEcuLocked);
+
+  // The client has to be waiting for this PID before the answer arrives, or a
+  // diagnostic scan that owns the bus takes the frame instead and the test would
+  // be measuring that rather than the provenance of a reading.
+  auto answer = [&](uint16_t from, uint8_t pid, const uint8_t* data, size_t size) {
+    rig.pumpUntilPidPending(0x01, pid);
+    h2g_twai_stub::queueRx(fromEcu(from, data, size));
+    rig.pump();
+  };
+
+  // The engine's own answers label themselves.
+  const uint8_t map[] = {0x03, 0x41, 0x0B, 0x2A};
+  answer(0x7E8, 0x0B, map, sizeof(map));
+  const uint8_t iat[] = {0x03, 0x41, 0x0F, 0x5A};
+  answer(0x7E8, 0x0F, iat, sizeof(iat));
+  const uint8_t load[] = {0x03, 0x41, 0x04, 0x80};
+  answer(0x7E8, 0x04, load, sizeof(load));
+  CHECK(rig.telemetry.mapKpa.value == 42.0f);
+  CHECK(rig.telemetry.intakeAirC.value == 50.0f);
+  CHECK(rig.telemetry.mapEcuId == 0x7E8);
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+
+  // The gearbox answering a manifold reading is the case the labels exist for.
+  // MAP is engine-data, so the frame is taken, and the label has to say where the
+  // number came from - otherwise a fit cannot tell a bad curve from a good curve
+  // measured against the wrong block.
+  const uint8_t foreignMap[] = {0x03, 0x41, 0x0B, 0x63};
+  answer(0x7E9, 0x0B, foreignMap, sizeof(foreignMap));
+  CHECK(rig.telemetry.mapKpa.value == 99.0f);
+  CHECK(rig.telemetry.mapEcuId == 0x7E9);
+
+  // ecuResponseId cannot be used for this, and the test says so: it has followed
+  // the gearbox, so it now describes a different reading from the one the IAT
+  // label still names correctly.
+  CHECK(rig.telemetry.ecuResponseId == 0x7E9);
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+
+  // The engine answering again afterwards is what makes the labels independent
+  // rather than one shared counter. Each has to move on its own frame: a single
+  // value copied to all three would leave mapEcuId and intakeAirEcuId disagreeing
+  // here only by accident of ordering, and would agree again the moment two of
+  // them were ever answered by different blocks in the other order.
+  const uint8_t iatAgain[] = {0x03, 0x41, 0x0F, 0x64};
+  answer(0x7E8, 0x0F, iatAgain, sizeof(iatAgain));
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.mapEcuId == 0x7E9);
+  CHECK(rig.telemetry.intakeAirC.value == 60.0f);
+
+  // RPM is not engine-data, so a foreign answer is discarded before telemetry.
+  // The label must not move either: naming 0x7E9 here would put a provenance
+  // record on a reading that was never taken.
+  const float rpmBefore = rig.telemetry.rpm.value;
+  const uint8_t foreignRpm[] = {0x04, 0x41, 0x0C, 0x1E, 0x8C};
+  answer(0x7E9, 0x0C, foreignRpm, sizeof(foreignRpm));
+  CHECK(rig.telemetry.rpm.value == rpmBefore);
+  CHECK(rig.telemetry.rpmEcuId != 0x7E9);
+
+  // And the same for PID 04, which is the other way engineLoadEcuId could ever
+  // have named the gearbox: the gearbox holding the engine lock, which is the
+  // fault the fixed address exists to prevent.
+  const uint8_t foreignLoad[] = {0x03, 0x41, 0x04, 0xFF};
+  answer(0x7E9, 0x04, foreignLoad, sizeof(foreignLoad));
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+}
+
 void testPolledPidMaskFollowsThePollProfile() {
   // The configuration this vehicle actually runs: Speed-Density, LPG with fuel
   // trim warnings, DFCO. It is the interesting one because Speed-Density is the
@@ -1012,6 +1097,8 @@ int main() {
        testOdometerSegmentAdvancesOnlyOnADownwardStep);
   test("driver error counters reach telemetry",
        testDriverCountersReachTelemetry);
+  test("every reading records which block produced it",
+       testEveryReadingSaysWhichBlockProducedIt);
   test("a cancelled transmission releases the request slot",
        testACancelledTransmissionReleasesTheRequestSlot);
   test("counters keep updating while the bus is recovering",
