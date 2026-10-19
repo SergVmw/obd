@@ -1,9 +1,0 @@
-Эти два файла надо удалить из releases/ — гейт check_packaged_artifacts.py
-требует, чтобы в дереве лежали артефакты только одной, текущей версии:
-
-  releases/h2-gauge-v0.4.22-esp32s3-n16r8.bin
-  releases/h2-gauge-v0.4.22-esp32s3-n16r8-factory.bin
-  releases/SHA256SUMS-v0.4.22.txt
-
-Отчёт releases/README-v0.4.22.md остаётся: отчёты прежних релизов (0.4.20, 0.4.21)
-в дереве живут, снимаются только бинарники.
