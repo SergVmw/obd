@@ -291,6 +291,13 @@ void ObdDiagnostics::noteRpmAnswer(uint32_t responseId, bool identityEvidence) {
   // failure, and it is not the case that went wrong: the gearbox won when both
   // blocks reported.
   if (!identityEvidence) {
+    // The fallback that binds on RPM alone exists for a vehicle where nothing
+    // else will ever separate the blocks. Where the engine is fixed, that
+    // fallback must not be free to bind the transmission: it is the exact case
+    // where the transmission also answers RPM.
+    if (kEngineResponseIdFixed != 0 && state_.engineEcuRpmId != kEngineResponseIdFixed) {
+      return;
+    }
     state_.engineEcuCandidateId = state_.engineEcuRpmId;
     state_.engineEcuCandidateEnginePid = true;
   }
@@ -301,9 +308,18 @@ void ObdDiagnostics::noteRpmAnswer(uint32_t responseId, bool identityEvidence) {
 // that checkable; a single id plus two flags would let a gearbox that answered
 // RPM bind an engine that answered a manifold reading.
 void ObdDiagnostics::tryBindEngine() {
+  // With the engine fixed, discovery decides only whether the fixed block really
+  // behaves like an engine. It can never move the identity elsewhere: a candidate
+  // from any other address is refused rather than bound, which is the one way a
+  // transmission could otherwise take the address if its mask ever claimed two of
+  // the engine-only PIDs.
   if (state_.engineEcuLocked) return;
   if (!state_.engineEcuCandidateEnginePid || !state_.engineEcuCandidateRpm) return;
   if (state_.engineEcuCandidateId != state_.engineEcuRpmId) return;
+  if (kEngineResponseIdFixed != 0 &&
+      state_.engineEcuCandidateId != kEngineResponseIdFixed) {
+    return;
+  }
   state_.engineResponseId = state_.engineEcuCandidateId;
   state_.engineEcuLocked = true;
   telemetry_.ecuResponseId = state_.engineResponseId;

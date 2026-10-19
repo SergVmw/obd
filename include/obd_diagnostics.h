@@ -125,12 +125,41 @@ struct ObdDiagnosticsState {
   char lastError[64]{};
 };
 
+// Which block is the engine on this vehicle. 0x7E8 answers as the engine and
+// 0x7E9 as the transmission; both declare PID 04 in their support mask, so the
+// mask cannot separate them, and the discovery rule that reads the masks is
+// there for vehicles where that doubt exists. On this one the answer is not in
+// doubt, so it is stated rather than re-derived at every boot.
+//
+// Seeding identity from here is not the same as bypassing the gate. Discovery
+// still runs and the support report still describes both blocks; what changes
+// is that nothing discovered later can move the engine off this address. A
+// vehicle whose engine lives elsewhere needs this constant changed, and nothing
+// else.
+// Overridable so the discovery path stays tested on a host build. Zero means
+// "work the blocks out from their masks", which is what a vehicle whose engine
+// address is not known needs and what every build before this one did.
+#ifndef H2G_ENGINE_ECU_ID
+#define H2G_ENGINE_ECU_ID 0x7E8
+#endif
+constexpr uint32_t kEngineResponseIdFixed = H2G_ENGINE_ECU_ID;
+
 // Bounded, non-blocking SAE OBD diagnostics for the primary engine ECU.
 // Automatic work reads only Mode 01 PID 01 and services 03/07/0A. Service 04
 // is never automatic and is gated by fresh physical speed/RPM/voltage reads.
 class ObdDiagnostics {
  public:
-  explicit ObdDiagnostics(TelemetryData& telemetry) : telemetry_(telemetry) {}
+  explicit ObdDiagnostics(TelemetryData& telemetry) : telemetry_(telemetry) {
+    if (kEngineResponseIdFixed != 0) {
+      state_.engineResponseId = static_cast<uint16_t>(kEngineResponseIdFixed);
+      state_.engineEcuLocked = true;
+      // Mirrored at construction, not only when a frame is parsed. Otherwise the
+      // dashboard would report no engine until the first answer arrived, on a
+      // gauge that has known the address since the moment it was created.
+      telemetry_.engineEcuResponseId = state_.engineResponseId;
+      telemetry_.engineEcuLocked = true;
+    }
+  }
 
   const ObdDiagnosticsState& state() const { return state_; }
   const DtcHistoryData& history() const { return history_; }

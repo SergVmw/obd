@@ -30,6 +30,7 @@ jobs:
         run: |
           python tools/test_brightness.py
           python tools/test_obd_diagnostics.py
+          python tools/test_obd_fixed_identity.py
           python tools/test_obd_client.py
           python tools/test_ota_diagnostics.py
           python tools/test_persistence.py

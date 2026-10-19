@@ -11,6 +11,11 @@ with tempfile.TemporaryDirectory(prefix="h2g-dtc-tests-") as tmp:
     command = [
         "g++", "-std=c++14", "-O1", "-U_FORTIFY_SOURCE",
         "-D_FORTIFY_SOURCE=3", "-g",
+        # This suite describes the discovery state machine, so it runs with the
+        # engine address unknown. The fixed address this instrument ships has its
+        # own suite in test_obd_fixed_identity.py, which is where the question
+        # that the fixed build actually raises is asked.
+        "-D", "H2G_ENGINE_ECU_ID=0",
         "-Wall", "-Wextra", "-Werror",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
         "-fno-pie", "-no-pie",
