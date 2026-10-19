@@ -81,12 +81,25 @@ struct ObdTraceSample {
   float speedKph = 0.0f;
   float boostRawBar = 0.0f;
   float boostFilteredBar = 0.0f;
+  // PID 04 and PID 0F. Neither fed a calculation, and both are what a
+  // volumetric-efficiency calibration is measured against: PID 04 is the block's
+  // own estimate of the air it is breathing, and IAT is the charge temperature
+  // that density is computed from. IAT is not the optional one of the pair. A
+  // 20 K error is 7 % on air mass, the same order as the effect being measured,
+  // and the charge runs 30 C at idle against 40-60 C warm under load, so taking
+  // it as a constant bakes a load-dependent tilt into the curve being measured.
+  float engineLoadPct = 0.0f;
+  float intakeAirC = 0.0f;
   float fuelRawLph = 0.0f;
   float fuelCorrectedLph = 0.0f;
   float consumption = 0.0f;
   float fuelTrimPercent = 0.0f;
 
   uint16_t ecuResponseId = 0;
+  // Which block answered PID 04. Appended to the obd group rather than to
+  // signals, because it is an identifier and the signals group is floats: an ID
+  // there would print as 2024.000 and read as a measurement.
+  uint16_t engineLoadEcuId = 0;
   uint16_t validityFlags = 0;
   uint32_t eventFlags = 0;
   uint8_t fuelMode = 0;

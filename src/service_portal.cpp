@@ -1727,10 +1727,13 @@ void appendTraceSample(String& output, const ObdTraceSample& sample) {
   appendTraceUInt(output, sample.eventFlags);
 
   output += ",[";
+  // Appended, never inserted: the order is published as signalsOrder, and a
+  // reader that resolves names is unaffected while one that indexes the first
+  // eight still reads the same eight.
   const float signals[] = {
       sample.rpm, sample.mapKpa, sample.baroKpa, sample.mafGps,
       sample.fuelRateLph, sample.speedKph, sample.boostRawBar,
-      sample.boostFilteredBar};
+      sample.boostFilteredBar, sample.engineLoadPct, sample.intakeAirC};
   for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) {
     if (i != 0) output += ',';
     appendTraceFloat(output, signals[i]);
@@ -1790,6 +1793,8 @@ void appendTraceSample(String& output, const ObdTraceSample& sample) {
   appendTraceUInt(output, sample.canRxMissedCount);
   output += ',';
   appendTraceUInt(output, sample.alternateEcuResponseCount);
+  output += ',';
+  appendTraceUInt(output, sample.engineLoadEcuId);
 
   output += "],[";
   for (size_t i = 0; i < ObdTraceSample::kPidCount; ++i) {
@@ -1853,10 +1858,10 @@ void ServicePortal::sendDiagnosticTrace() {
   output += ",\"ecuIdEncoding\":\"decimal CAN response ID\"";
   output += ",\"pidOrder\":[11,12,16,51,94]";
   output += ",\"sampleColumns\":[\"uptimeMs\",\"ecuResponseId\",\"validityFlags\",\"eventFlags\",\"signals\",\"signalAgesMs\",\"fuel\",\"obd\",\"pids\"]";
-  output += ",\"signalsOrder\":[\"rpm\",\"mapKpa\",\"baroKpa\",\"mafGps\",\"fuelRateLph\",\"speedKph\",\"boostRawBar\",\"boostFilteredBar\"]";
+  output += ",\"signalsOrder\":[\"rpm\",\"mapKpa\",\"baroKpa\",\"mafGps\",\"fuelRateLph\",\"speedKph\",\"boostRawBar\",\"boostFilteredBar\",\"engineLoadPct\",\"intakeAirC\"]";
   output += ",\"signalAgesOrder\":[\"rpm\",\"map\",\"baro\",\"maf\",\"fuelRate\",\"speed\",\"lastObdResponse\"]";
   output += ",\"fuelOrder\":[\"rawLph\",\"correctedLph\",\"valid\",\"consumption\",\"consumptionIsPerHour\",\"fuelModeCode\",\"fuelSourceCode\",\"lpgInputActive\",\"dfcoActive\",\"fuelTrimPercent\"]";
-  output += ",\"obdOrder\":[\"connected\",\"responses\",\"timeouts\",\"canErrors\",\"busErrors\",\"tec\",\"rec\",\"rxMissed\",\"alternateEcuResponses\"]";
+  output += ",\"obdOrder\":[\"connected\",\"responses\",\"timeouts\",\"canErrors\",\"busErrors\",\"tec\",\"rec\",\"rxMissed\",\"alternateEcuResponses\",\"engineLoadEcuId\"]";
   output += ",\"pidColumns\":[\"requests\",\"responses\",\"timeouts\",\"consecutiveTimeouts\",\"lastResponseLatencyMs\",\"lastRequestAgeMs\",\"lastResponseAgeMs\",\"unsolicitedResponses\"]";
   output += ",\"validityFlags\":{\"rpmFresh\":1,\"mapFresh\":2,\"baroFresh\":4,\"mafFresh\":8,\"fuelRateFresh\":16,\"speedFresh\":32,\"obdConnected\":64,\"fuelValueValid\":128,\"engineRunning\":256,\"lpgInputActive\":512,\"dfcoActive\":1024,\"consumptionPerHour\":2048}";
   output += ",\"eventFlags\":{\"rpmStale\":1,\"obdDisconnected\":2,\"fuelCalculationInvalid\":4,\"lpgInputChanged\":8,\"mapTimeoutBurst\":16,\"rpmTimeoutBurst\":32,\"mafTimeoutBurst\":64,\"baroTimeoutBurst\":128,\"fuelRateTimeoutBurst\":256,\"unsolicitedMode01Response\":512,\"alternateEcuResponse\":1024}";

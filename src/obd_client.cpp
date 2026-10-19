@@ -720,6 +720,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       // hard it is working, derived from MAP and speed on a vehicle with no
       // mass air flow sensor, which makes it the reference our Speed-Density
       // airflow is checked against rather than a fill-to-fill guess.
+      //
+      // ecuResponseId was set from this very frame a few lines above, so it is
+      // the responder for this PID rather than "whoever answered most recently".
+      telemetry_.engineLoadEcuId = message.identifier;
       telemetry_.engineLoadPct.set(static_cast<float>(a) * (100.0f / 255.0f), now);
       break;
     case 0x0B:

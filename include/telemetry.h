@@ -135,6 +135,14 @@ struct TelemetryData {
   uint32_t obdTimeoutCount = 0;
   uint32_t canErrorCount = 0;
   uint16_t ecuResponseId = 0;
+  // Which block answered PID 04, recorded separately from ecuResponseId because
+  // that one is overwritten by whatever answered last. A volumetric-efficiency
+  // calibration is measured against PID 04, and the J1979 denominator in that
+  // formula is a property of the block that computed the number. Both blocks on
+  // this vehicle claim 0x04, so the value alone cannot say which peak it is
+  // measured against, and a VE curve fitted on a gearbox's estimate would carry
+  // an unknown constant for the whole of its level.
+  uint16_t engineLoadEcuId = 0;
 
   // Standard emissions diagnostics summary. Full categorized DTC data remains
   // in ObdDiagnostics; these bounded fields are enough for the dashboard.

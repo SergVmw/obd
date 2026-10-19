@@ -129,6 +129,12 @@ void captureDiagnosticTrace(uint32_t now) {
   sample.speedKph = telemetry.speedKph.value;
   sample.boostRawBar = telemetry.boostBar;
   sample.boostFilteredBar = telemetry.filteredBoostBar;
+  // A signal never received stays NAN and serialises as null, which the reader
+  // can tell apart from a real zero. That matters here: a null is a sample to
+  // skip, a zero would be a sample that fits to VE = 0.
+  sample.engineLoadPct = telemetry.engineLoadPct.value;
+  sample.intakeAirC = telemetry.intakeAirC.value;
+  sample.engineLoadEcuId = telemetry.engineLoadEcuId;
   sample.fuelRawLph = telemetry.currentFuelRawLph;
   sample.fuelCorrectedLph = telemetry.currentFuelLph;
   sample.consumption = telemetry.currentConsumption;
