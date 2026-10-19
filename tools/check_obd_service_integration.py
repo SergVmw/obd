@@ -67,4 +67,60 @@ for path in listed:
         f"diagnostics tab offers a source the portal does not serve: {path}"
     )
 assert 'data-tab="diag"' in html and 'id="diagRows"' in html
-print(f"OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode, non-fabricated MAP status and {len(listed)} diagnostics download sources OK")
+
+# PID 03 and PID 14 are polled for one reason: to find out what the block is
+# already doing before anything is built on the trims. The invariant worth
+# holding is that they are read and published, and that nothing has yet given a
+# bit of 03 a name. J1979 revised what its low bits mean between revisions and
+# which one a block implements is not visible on the wire, so a field called
+# closedLoop written today would be this project's guess printed as a
+# measurement. Checking the absence is the only way to keep it absent.
+for pid, interval in ((r'0x03', 500), (r'0x14', 500)):
+    assert len(re.findall(r'\{\s*' + pid + r'\s*,\s*' + str(interval) + r'\s*\}',
+                          header)) == 2, (
+        f"PID {pid} at {interval} ms must be in both poll profiles, not one"
+    )
+assert 'case 0x03:' in obd
+assert 'telemetry_.fuelSystemStatus.set(static_cast<float>(a), now);' in obd
+assert 'case 0x14:' in obd
+assert 'telemetry_.o2Sensor1Raw.set(static_cast<float>(a), now);' in obd
+assert 'telemetry_.o2Sensor1TrimPct.set(static_cast<float>(b), now);' in obd
+
+production = "".join(
+    (ROOT / name).read_text(encoding="utf-8")
+    for name in ("src/obd_client.cpp", "src/telemetry.cpp",
+                 "src/service_portal.cpp", "include/telemetry.h"))
+for named in ("closedLoop", "closed_loop", "loopClosed", "loop_closed",
+              "fuelSystemClosed", "openLoop", "open_loop"):
+    assert named not in production, (
+        f"{named!r} names a meaning for a PID 03 bit that has not been "
+        "measured on the car yet"
+    )
+assert 'fuelSystem["raw"]' in portal and 'fuelSystem["bits"]' in portal
+assert 'o2["raw"]' in portal and '* 0.00495f' in portal
+
+# The driver counter read must sit above the bail-out. Below it, the counters
+# freeze for exactly as long as the bus is unhealthy, which is the whole reason
+# they are read.
+#
+# Only the waiting half needs checking here. A run long enough to reach a poll
+# has already let the pending request expire - 120 ms against a one-second
+# interval - so the waiting placement stops being observable. Recovering is not
+# bounded that way and is covered by testCountersKeepUpdatingWhileTheBusIsRecovering
+# instead. This half stays a property of the source, asserted rather than run.
+counter_read = obd.find("if (now - lastStatusPollAt_ >= 1000)")
+assert counter_read != -1, (
+    "the once-a-second driver counter read is gone from ObdClient::loop"
+)
+bail_out = obd.find("if (waiting_ || recovering_) return;")
+assert bail_out != -1, (
+    "the waiting/recovering bail-out is gone from ObdClient::loop, so the "
+    "placement of the counter read can no longer be judged"
+)
+assert counter_read < bail_out, (
+    f"the CAN counter read sits at offset {counter_read} and the waiting "
+    f"bail-out at {bail_out}: below it, the counters stop updating while a "
+    "request is in flight"
+)
+
+print(f"OBD service integration: standard PID 0B polling, support/response telemetry, live fuel mode, non-fabricated MAP status, {len(listed)} diagnostics download sources, and PID 03/14 read but unnamed OK")

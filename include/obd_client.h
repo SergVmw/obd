@@ -52,8 +52,12 @@ class ObdClient {
   // J1979 support-mask bits: one 32-bit word per group, where 0x00 covers
   // 0x01..0x20, 0x20 covers 0x21..0x40 and 0x40 covers 0x41..0x60. Read from
   // the same profile the poller walks and filtered by the same conditions, so
-  // the portal cannot report a PID the scheduler would skip.
-  static uint32_t polledPidMask(uint8_t group, const ConfigData& config);
+  // the portal cannot report a PID the scheduler would skip - including the
+  // support mask, which runPolling applies and which this takes as an argument.
+  // Reporting a PID the scheduler never asks for is what made this page claim
+  // three signals this car does not offer.
+  static uint32_t polledPidMask(uint8_t group, const ConfigData& config,
+                                const PidSupportTable& support);
 
   ObdClient(TelemetryData& telemetry, const ConfigData& config,
             CanMonitor& monitor)
@@ -75,6 +79,11 @@ class ObdClient {
   }
   bool isSupported(uint8_t pid) const;
   bool pidSupportKnown(uint8_t pid) const;
+  // Whether this block's answer is allowed to decide which block is the engine,
+  // and how many of the engine-only parameters its own mask claims.
+  bool engineIdentityDecides(uint16_t responseId, uint8_t pid) const;
+bool identityDiscriminates() const;
+  uint8_t engineClaimCount(uint16_t responseId) const;
   // The portal reports this to the user. Without it the masks are collected and
   // discarded, and which blocks a vehicle exposes can only be guessed.
   const PidSupportTable& pidSupport() const { return supportTable_; }
@@ -189,6 +198,36 @@ class ObdClient {
   bool recovering_ = false;
   uint32_t recoveryRequestedAt_ = 0;
 
+  // A frame sent onto a bus with nobody else on it is never acknowledged, and
+  // the controller retransmits it until it is told to stop: the bus-error
+  // interrupt fires once per attempt, which measured 3795 times in one second
+  // at 500 kbit/s. Nothing in the request path can end that, because the frame
+  // is already in the controller's transmit buffer - twai_transmit() returned
+  // as soon as the frame was copied there, and only twai_stop() clears it (it
+  // resets the TX queue and the driver's transmit count; twai_start() clears
+  // both queues on the way back up). So the loop reads the controller's own
+  // error count once a second and, past a rate no bus that answers can reach,
+  // stops the controller, restarts it, and holds the poller off for a period
+  // that doubles while the bus stays that way.
+  //
+  // The hold-off doubles while the bus keeps failing and is released by the
+  // bus rather than by the clock: an answered request, or any frame heard from
+  // somebody else, both prove there is a vehicle on the other end. A gauge
+  // wired to a parked car therefore ends up probing once every thirty seconds
+  // instead of holding its modules awake, and one on a running car comes back
+  // within a frame of the bus waking up.
+  uint32_t lastBusErrorSample_ = 0;
+  uint32_t busQuietUntil_ = 0;
+  uint32_t busQuietMs_ = 0;
+  // One error per session is what a healthy bus costs; the storm this guards
+  // against ran at 3795 a second. Two hundred is two orders of magnitude from
+  // both, so neither a quiet bus nor a merely busy one reaches it.
+  static constexpr uint32_t kBusErrorStormPerSecond = 200;
+  static constexpr uint32_t kBusQuietFirstMs = 1000;
+  static constexpr uint32_t kBusQuietMaxMs = 30000;
+  void updateBusQuiet(uint32_t now, const twai_status_info_t& status);
+  void releaseBusQuiet();
+
   bool waiting_ = false;
   PendingRequest pendingRequest_ = PendingRequest::None;
   uint8_t pendingPid_ = 0;
@@ -241,11 +280,22 @@ class ObdClient {
 
   // RPM is discovered first so the first valid PID 0C response binds the
   // engine ECU before support masks or normal telemetry are accepted.
-  static constexpr uint8_t kDiscoveryPids_[4] = {0x0C, 0x00, 0x20, 0x40};
+  // Masks first, then the manifold, then RPM. RPM used to lead, and since a
+  // transmission answers it too, whichever block replied first took the engine
+  // lock for the session; on this vehicle it went the other way between two
+  // boots and pointed the DTC scan and the clear at the gearbox. Asking the
+  // masks first means the choice is made from what each block claims, not from
+  // who spoke first.
+  static constexpr uint8_t kDiscoveryPids_[5] = {0x00, 0x20, 0x40, 0x0B, 0x0C};
 #ifdef H2G_SPEED_DENSITY_BUILD
+  // The count comes before the table so the table can be sized by it. Spelling
+  // both lengths out let them disagree, and they did: adding one PID to the
+  // ordinary profile produced a definition of kPollProfile[15] against a
+  // declaration of [14], which is a build failure rather than a wrong mask.
+  static constexpr uint8_t kPollCount = 14;
   // The Speed-Density test image never requests unsupported PID 10 (MAF) or
   // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).
-  static constexpr PollItem kPollProfile[12] = {
+  static constexpr PollItem kPollProfile[kPollCount] = {
       {0x01, 500},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
@@ -257,11 +307,25 @@ class ObdClient {
       {0x07, 500},   // long-term fuel trim bank 1
       {0x42, 1000},  // ECU voltage
       {0x05, 1000},  // coolant
+      // PID 03 fuel system status and PID 14 O2 sensor 1 are here to be read,
+      // not to be acted on. They feed no calculation and change no warning;
+      // they exist because applying the fuel trims to the petrol branch needs
+      // to know what the block is already doing on its own, and which bit of
+      // 03 means the loop is closed is not knowable from here. See
+      // include/telemetry.h for why the bits are stored raw.
+      //
+      // Both at 500 ms, which is slow on purpose. The closed-loop state persists
+      // for seconds, so a faster sample buys nothing, and this bus already
+      // times out in about a sixth of its requests. runPolling degrades every
+      // PID proportionally when the rate cap binds, so two more entries are a
+      // share taken from all of them and not from MAP and RPM in particular.
+      {0x03, 500},   // fuel system status, raw bits
+      {0x14, 500},   // O2 sensor 1 voltage and trim
       {0x33, 10000}  // barometric pressure
   };
-  static constexpr uint8_t kPollCount = 12;
 #else
-  static constexpr PollItem kPollProfile[14] = {
+  static constexpr uint8_t kPollCount = 17;
+  static constexpr PollItem kPollProfile[kPollCount] = {
       {0x01, 500},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
@@ -282,11 +346,31 @@ class ObdClient {
       {0x07, 500},   // long-term fuel trim bank 1, LPG + trims only
       {0x42, 1000},  // ECU voltage
       {0x05, 1000},  // coolant
-      {0x33, 10000}  // barometric pressure
+      // PID 03 and PID 14, for the reasons given in the Speed-Density profile
+      // above. They are diagnostics here for the same reason they are there:
+      // reading only, so the closed-loop question can be answered before
+      // anything is built on the answer.
+      {0x03, 500},   // fuel system status, raw bits
+      {0x14, 500},   // O2 sensor 1 voltage and trim
+      {0x33, 10000}, // barometric pressure, inert unless a block claims it
+      // PID 0x31, distance since codes cleared. Slow and quantised to whole
+      // kilometres, so at ten seconds it costs nothing and never competes with
+      // MAP or RPM for bandwidth. It exists to be compared against PID 0D, not
+      // to drive anything.
+      {0x31, 10000}  // distance since DTCs cleared, whole km
   };
-  static constexpr uint8_t kPollCount = 14;
 #endif
   // Mutable half of the schedule, split out so the profile above can stay
   // constant and be read by polledPidMask() without an instance.
   uint32_t pollLastSentAt_[kPollCount]{};
+
+  // PID 0x31 is the one entry in the profile whose traps are its own jumps, so
+  // it needs the previous reading and not just a timestamp: a DTC clear zeroes
+  // it and the two-byte counter wraps at 65535, and both arrive as a downward
+  // step. A delta taken across one of those is meaningless, so each jump opens
+  // a new segment and the consumer compares segments at the two ends instead of
+  // reading a flag that cannot say which deltas it broke.
+  float odometerLastKm_ = 0.0f;
+  bool odometerSeen_ = false;
+  uint32_t lastStatusPollAt_ = 0;  // Periodic twai_get_status_info() polling
 };

@@ -47,6 +47,17 @@ void build(ObdDiagnostics& diagnostics, uint32_t now, uint32_t id,
   if (pid >= 0) CHECK(request.data[2] == static_cast<uint8_t>(pid));
 }
 
+// Identity takes two observed answers, not one: an engine-only parameter and
+  // RPM. Until both arrive, buildRequest refuses anything that is not discovery,
+  // so a test that needs a bound engine establishes it here rather than
+  // repeating the pair.
+void identifyEngine(ObdDiagnostics& diagnostics, uint16_t id = 0x7E8) {
+  CHECK(diagnostics.observeEngineResponse(id, 0x0C, true));
+  CHECK(diagnostics.observeEngineResponse(id, 0x0B, true));
+  CHECK(diagnostics.state().engineEcuLocked);
+  CHECK(diagnostics.state().engineResponseId == id);
+}
+
 void finishEmptyScan(ObdDiagnostics& diagnostics, uint32_t now) {
   build(diagnostics, now, 0x7E0, 1, 0x03);
   accept(diagnostics, frame(0x7E8, {0x01, 0x43}), now + 1);
@@ -127,7 +138,42 @@ void testCodeFormatting() {
 void testAutomaticSingleFrameScanAndMilLatch() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  // Identity takes two observed answers, not one: an engine-only parameter and
+  // RPM. Each on its own must leave the engine unbound - RPM because a gearbox
+  // knows engine speed, an engine-only parameter because the mask already
+  // vouched for those. This is what the test exists to hold down.
+  TelemetryData rpmOnlyTelemetry;
+  ObdDiagnostics rpmOnly(rpmOnlyTelemetry);
+  CHECK(rpmOnly.observeEngineResponse(0x7E8, 0x0C, true));
+  CHECK(!rpmOnly.state().engineEcuLocked);
+
+  TelemetryData enginePidOnlyTelemetry;
+  ObdDiagnostics enginePidOnly(enginePidOnlyTelemetry);
+  CHECK(enginePidOnly.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(!enginePidOnly.state().engineEcuLocked);
+
+  // Crossed signs bind nothing: the engine-only parameter from 0x7E8 and the RPM
+  // from 0x7E9 are both true, and they came from different blocks. This is the
+  // invariant that keeps the gearbox from being mistaken for the engine, and it
+  // fails the moment the two ids are collapsed into one field again.
+  TelemetryData crossedTelemetry;
+  ObdDiagnostics crossed(crossedTelemetry);
+  CHECK(crossed.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(!crossed.state().engineEcuLocked);
+  crossed.noteRpmAnswer(0x7E9, true);
+  CHECK(!crossed.state().engineEcuLocked);
+  CHECK(crossed.state().engineEcuCandidateId == 0x7E8);
+  CHECK(crossed.state().engineEcuRpmId == 0x7E9);
+
+  // In the order the car produces them: RPM is seen first, and on its own binds
+  // nothing, so the monitor status it would unlock is still refused.
+  CHECK(diagnostics.observeEngineResponse(0x7E8, 0x0C, true));
+  CHECK(!diagnostics.state().engineEcuLocked);
+  CHECK(!diagnostics.observeMonitorStatus(0x81, 100, 0x7E8));
+
+  // The engine-only parameter is the second sign, and only now does it bind.
+  CHECK(diagnostics.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(diagnostics.state().engineEcuLocked);
   CHECK(diagnostics.observeMonitorStatus(0x81, 100, 0x7E8));
   CHECK(telemetry.milStatusKnown && telemetry.milCommandedOn);
   CHECK(telemetry.milAlertLatched && telemetry.ecuReportedDtcCount == 1);
@@ -178,9 +224,14 @@ void testManualDiscoveryAndMultiframe() {
 
   accept(diagnostics,
          frame(0x7E8, {0x04, 0x41, 0x0C, 0x00, 0x00}), 11);
+  // An RPM answer no longer binds on its own. A gearbox knows engine speed, so
+  // this is the one signal the transmission can give; binding on it is exactly
+  // how the wrong ECU used to win. An engine-only parameter is the second,
+  // unambiguous sign.
+  CHECK(!diagnostics.state().engineEcuLocked);
+  identifyEngine(diagnostics);
   CHECK(diagnostics.state().engineResponseId == 0x7E8);
-  CHECK(diagnostics.state().engineEcuLocked);
-  CHECK(!diagnostics.observeEngineResponse(0x7E9));
+  CHECK(!diagnostics.observeEngineResponse(0x7E9, 0x0B, true));
 
   build(diagnostics, 12, 0x7E0, 2, 0x01, 0x01);
   CHECK(!diagnostics.handleFrame(
@@ -210,7 +261,7 @@ void testManualDiscoveryAndMultiframe() {
 void testCompleteFirstFrameNeedsNoFlowControl() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.requestScan(1));
   build(diagnostics, 1, 0x7E0, 1, 0x03);
   // Although a five-byte payload should normally use a Single Frame, a peer
@@ -227,7 +278,7 @@ void testCompleteFirstFrameNeedsNoFlowControl() {
 void testUnsupportedAndTimeoutAreBounded() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -247,7 +298,7 @@ void testResponsePendingAndFinalNrcClassification() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.requestScan(10));
     build(diagnostics, 10, 0x7E0, 1, 0x03);
 
@@ -273,7 +324,7 @@ void testResponsePendingAndFinalNrcClassification() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.requestScan(1));
     build(diagnostics, 1, 0x7E0, 1, 0x03);
     accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x22}), 2);
@@ -289,7 +340,7 @@ void testResponsePendingAndFinalNrcClassification() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.requestScan(1));
     build(diagnostics, 1, 0x7E0, 1, 0x03);
     for (uint8_t count = 1; count <= ObdDiagnostics::kMaxResponsePending;
@@ -309,7 +360,7 @@ void testResponsePendingAndFinalNrcClassification() {
 void testTransientHistorySurvivesARescanAndRestore() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -346,7 +397,7 @@ void testTransientHistorySurvivesARescanAndRestore() {
 void testOversizeResponseIsTruncatedWithoutOverflow() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -402,7 +453,7 @@ void testOversizeResponseIsTruncatedWithoutOverflow() {
 void testRawCategoryResponseSurvivesTheVerdictThatRejectedIt() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -431,7 +482,7 @@ void testConformingCategoryLayoutsParseWithAndWithoutACountByte() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
     CHECK(diagnostics.requestScan(2));
     build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -446,7 +497,7 @@ void testConformingCategoryLayoutsParseWithAndWithoutACountByte() {
     // priority. The count byte must not survive as the first half of a pair.
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
     CHECK(diagnostics.requestScan(2));
     build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -462,7 +513,7 @@ void testConformingCategoryLayoutsParseWithAndWithoutACountByte() {
     // bytes behind it and only one is present.
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    CHECK(diagnostics.observeEngineResponse(0x7E8));
+    identifyEngine(diagnostics);
     CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
     CHECK(diagnostics.requestScan(2));
     build(diagnostics, 2, 0x7E0, 1, 0x03);
@@ -477,7 +528,7 @@ void testConformingCategoryLayoutsParseWithAndWithoutACountByte() {
 void testRawCategoryResponseBelongsToOneScan() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
   CHECK(diagnostics.requestScan(2));
   finishEmptyScan(diagnostics, 2);
@@ -502,7 +553,7 @@ void testRawCategoryResponseBelongsToOneScan() {
 void testTruncatedTailCannotClearHistoryPresence() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0, 1, 0x7E8));
 
   CHECK(diagnostics.requestScan(2));
@@ -568,7 +619,7 @@ void testTruncatedTailCannotClearHistoryPresence() {
 void testClearSafetyAndSuccessfulMode04() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.observeMonitorStatus(0x81, 10, 0x7E8));
   diagnostics.tick(11, true);
   build(diagnostics, 11, 0x7E0, 1, 0x03);
@@ -643,7 +694,7 @@ void testClearSafetyAndSuccessfulMode04() {
 void testPostClearScheduleSurvivesZeroRollover() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  CHECK(diagnostics.observeEngineResponse(0x7E8));
+  identifyEngine(diagnostics);
   CHECK(diagnostics.requestClear(1));
   finishEmptyPreclear(diagnostics, 1);
 
@@ -671,7 +722,8 @@ void testClearRejectsMovingEngineAndUnsafeVoltage() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1));
     finishEmptyPreclear(diagnostics, 1);
     build(diagnostics, 8, 0x7E0, 2, 0x01, 0x0D);
@@ -682,7 +734,8 @@ void testClearRejectsMovingEngineAndUnsafeVoltage() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1));
     finishEmptyPreclear(diagnostics, 1);
     build(diagnostics, 8, 0x7E0, 2, 0x01, 0x0D);
@@ -695,7 +748,8 @@ void testClearRejectsMovingEngineAndUnsafeVoltage() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1));
     finishEmptyPreclear(diagnostics, 1);
     build(diagnostics, 8, 0x7E0, 2, 0x01, 0x0D);
@@ -711,7 +765,8 @@ void testClearRejectsMovingEngineAndUnsafeVoltage() {
 void testClearNegativeResponseAndBusyGate() {
   TelemetryData telemetry;
   ObdDiagnostics diagnostics(telemetry);
-  diagnostics.observeEngineResponse(0x7E8);
+  diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
   CHECK(diagnostics.requestClear(1));
   CHECK(!diagnostics.requestScan(2));
   finishEmptyPreclear(diagnostics, 2);
@@ -729,17 +784,22 @@ void testClearNegativeResponseAndBusyGate() {
 
 void testClearRefusesIncompleteScanAndFailedPreservation() {
   {
+    // Nothing answered at all: a dead bus, not a block declining a service.
+    // Selective silence is judged separately, because one service answering
+    // while another does not is the block not implementing the silent one.
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1));
     build(diagnostics, 1, 0x7E0, 1, 0x03);
-    accept(diagnostics, frame(0x7E8, {0x03, 0x43, 0x03, 0x01}), 2);
-    build(diagnostics, 3, 0x7E0, 1, 0x07);
     diagnostics.timeout(754);
-    build(diagnostics, 755, 0x7E0, 1, 0x0A);
-    accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), 756);
+    build(diagnostics, 755, 0x7E0, 1, 0x07);
+    diagnostics.timeout(1508);
+    build(diagnostics, 1509, 0x7E0, 1, 0x0A);
+    diagnostics.timeout(2262);
     CHECK(diagnostics.state().pendingStatus == DtcCategoryStatus::Timeout);
+    CHECK(diagnostics.state().permanentStatus == DtcCategoryStatus::Timeout);
     CHECK(diagnostics.state().operation == DtcOperation::Idle);
     CHECK(diagnostics.state().clearResult ==
           DtcClearResult::PreclearScanFailed);
@@ -750,7 +810,8 @@ void testClearRefusesIncompleteScanAndFailedPreservation() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1));
     build(diagnostics, 1, 0x7E0, 1, 0x03);
     diagnostics.transportFailed(2);
@@ -768,7 +829,8 @@ void testClearRefusesIncompleteScanAndFailedPreservation() {
   {
     TelemetryData telemetry;
     ObdDiagnostics diagnostics(telemetry);
-    diagnostics.observeEngineResponse(0x7E8);
+    diagnostics.observeEngineResponse(0x7E8, 0x0B, true);
+  identifyEngine(diagnostics);
     CHECK(diagnostics.requestClear(1000));
     finishEmptyScan(diagnostics, 1000);
     CHECK(diagnostics.state().operation ==
@@ -783,6 +845,53 @@ void testClearRefusesIncompleteScanAndFailedPreservation() {
 
 }  // namespace
 
+// What the Haval actually does: it answers Mode 03 and Mode 07 and says
+// nothing at all to Mode 0A. That silence is the block not implementing the
+// service, the same condition as the refusal it sent on another boot, and the
+// two used to land on opposite verdicts. Since the clear gate accepts Complete
+// and Unsupported only, whether clearing was reachable came down to whether the
+// block bothered to refuse.
+void testSilenceAfterAnsweringServicesIsNotABrokenBus() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  identifyEngine(diagnostics);
+  CHECK(diagnostics.requestClear(1));
+  build(diagnostics, 1, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x43, 0x00}), 2);
+  build(diagnostics, 3, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x47, 0x00}), 4);
+  build(diagnostics, 5, 0x7E0, 1, 0x0A);
+  diagnostics.timeout(900);
+  const ObdDiagnosticsState& state = diagnostics.state();
+  CHECK(state.storedStatus == DtcCategoryStatus::Complete);
+  CHECK(state.pendingStatus == DtcCategoryStatus::Complete);
+  CHECK(state.permanentStatus == DtcCategoryStatus::Unsupported);
+  CHECK(state.clearResult != DtcClearResult::PreclearScanFailed);
+}
+
+// Mode 03 is requested first, so a rescue applied at the moment of failure
+// could only look backwards and this case had nothing ahead of it: stored kept
+// Timeout while pending and permanent went on to prove the bus was fine, and the
+// clear gate refused. Re-read at the end of the scan, the first category is
+// covered like any other.
+void testTheFirstCategoryIsRescuedTooWhenOthersAnswer() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  identifyEngine(diagnostics);
+  CHECK(diagnostics.requestScan(2));
+  build(diagnostics, 2, 0x7E0, 1, 0x03);
+  diagnostics.timeout(760);
+  build(diagnostics, 761, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x47, 0x00}), 762);
+  build(diagnostics, 763, 0x7E0, 1, 0x0A);
+  accept(diagnostics, frame(0x7E8, {0x02, 0x4A, 0x00}), 764);
+  const ObdDiagnosticsState& state = diagnostics.state();
+  CHECK(state.storedStatus == DtcCategoryStatus::Unsupported);
+  CHECK(state.pendingStatus == DtcCategoryStatus::Complete);
+  CHECK(state.permanentStatus == DtcCategoryStatus::Complete);
+  CHECK(state.entryCount == 0);
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -796,12 +905,14 @@ int main() {
   testTruncatedTailCannotClearHistoryPresence();
   testRawCategoryResponseSurvivesTheVerdictThatRejectedIt();
   testConformingCategoryLayoutsParseWithAndWithoutACountByte();
+  testSilenceAfterAnsweringServicesIsNotABrokenBus();
+  testTheFirstCategoryIsRescuedTooWhenOthersAnswer();
   testRawCategoryResponseBelongsToOneScan();
   testClearSafetyAndSuccessfulMode04();
   testPostClearScheduleSurvivesZeroRollover();
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::puts("OBD diagnostics tests: 17 groups passed");
+  std::printf("OBD diagnostics tests: %d groups passed\n", 19);
   return 0;
 }

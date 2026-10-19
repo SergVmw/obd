@@ -72,6 +72,16 @@ void test(const char* name, void (*body)()) {
 constexpr char kVin[] = "LGWEEA195HJ012345";
 static_assert(sizeof(kVin) - 1 == 17, "a VIN is 17 characters");
 
+// One frame as an ECU sends it. Declared before Rig because the fixture builds
+// its frames through it.
+twai_message_t fromEcu(uint16_t identifier, const uint8_t* data, uint8_t length) {
+  twai_message_t message{};
+  message.identifier = identifier;
+  message.data_length_code = length;
+  for (uint8_t i = 0; i < length && i < 8; ++i) message.data[i] = data[i];
+  return message;
+}
+
 struct Rig {
   ConfigData config = ConfigStore::defaults();
   TelemetryData telemetry{};
@@ -156,15 +166,64 @@ struct Rig {
     }
     return nullptr;
   }
-};
 
-twai_message_t fromEcu(uint16_t identifier, const uint8_t* data, uint8_t length) {
-  twai_message_t message{};
-  message.identifier = identifier;
-  message.data_length_code = length;
-  for (uint8_t i = 0; i < length && i < 8; ++i) message.data[i] = data[i];
-  return message;
-}
+  // True when the most recent frame on the wire is this request, which is what
+  // "the client is waiting for this PID" means. Checking the whole transmit
+  // history instead is not enough: a request that went out earlier and has
+  // already timed out is still in the log, so an answer queued against it
+  // arrives while a different PID is pending and is correctly discarded.
+  bool awaitingPid(uint8_t service, uint8_t pid) const {
+    const std::vector<twai_message_t>& frames = h2g_twai_stub::transmitted();
+    if (frames.empty()) return false;
+    const twai_message_t& last = frames.back();
+    return !last.rtr && last.data_length_code >= 3 &&
+           last.data[0] == 0x02 && last.data[1] == service &&
+           last.data[2] == pid;
+  }
+
+  // Pump until the client is actually waiting for this PID, so the answer below
+  // answers it rather than arriving while something else is pending.
+  void pumpUntilPidPending(uint8_t service, uint8_t pid,
+                           uint32_t maxSteps = 600) {
+    for (uint32_t i = 0; i < maxSteps && !awaitingPid(service, pid); ++i) {
+      hostMillis += 25;
+      client.loop(hostMillis);
+    }
+  }
+
+  // Identity needs two observed answers, and the order is not free: each frame is
+    // queued one step ahead of the request it answers, which is how the client
+    // consumes them. The first mask claims a single engine-only parameter, so
+    // 0x0C still decides and the RPM answer is recorded; the second mask reaches
+    // two claims, after which the manifold decides and the pair binds. This is
+    // what the car does within a second of booting, and every Mode 01 answer
+    // from 0x7E8 depends on it - an answer from a block that has not been
+    // identified is discarded before the parser sees it, which would make a test
+    // about parsing report on that guard instead.
+  void identifyEngine() {
+    const uint8_t oneClaim[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, oneClaim, sizeof(oneClaim)));
+    pump();
+
+    const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+    pump();
+
+    const uint8_t mask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, mask, sizeof(mask)));
+    pump();
+
+    const uint8_t map[] = {0x03, 0x41, 0x0B, 0x21};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, map, sizeof(map)));
+    pump();
+    CHECK(telemetry.engineEcuLocked);
+    CHECK(telemetry.engineEcuResponseId == 0x7E8);
+  }
+
+  // Hand the queued frames over before the clock moves far enough to time the
+  // pending request out and send the next one.
+  void deliver(uint32_t steps = 2) { pump(steps); }
+};
 
 // The reply every ECU gives to "give me the VIN", as it really goes out:
 // First Frame declaring 0x14 bytes, service 09 + 0x40, the PID echoed back
@@ -203,6 +262,122 @@ bool pollsPid(uint32_t mask, uint8_t first, uint8_t pid) {
 // The portal marks the PIDs this image actually requests. The set is derived
 // from the poll profile rather than restated, so a PID added to the profile and
 // not to the list — the failure the standing counters had — shows up here.
+// The masks this vehicle actually answered with, taken from the support report
+// of 2026-10-16. Used as the union of both responders, because polledPidMask
+// answers about what the scheduler would request, and the scheduler consults the
+// union. This car has neither MAF (0x10), nor injector flow (0x5E), nor
+// barometric pressure (0x33) - which is exactly what made those three look alive
+// in the report while none of them was ever requested.
+PidSupportTable vehicleSupportTable() {
+  PidSupportTable table;
+  const uint8_t group00[4] = {0xBE, 0x3E, 0xB8, 0x11};
+  const uint8_t group20[4] = {0x80, 0x05, 0x80, 0x01};
+  const uint8_t group40[4] = {0x4A, 0x90, 0x00, 0x00};
+  table.recordMask(0x7E8, 0x00, group00);
+  table.recordMask(0x7E8, 0x20, group20);
+  table.recordMask(0x7E8, 0x40, group40);
+  return table;
+}
+
+// A block that claims to support everything. The profile-condition assertions
+// need this rather than the real masks: whether MAF is requested is decided by
+// the fuel mode, and this car has no MAF, so testing the mode against its own
+// table would pass for the wrong reason - the support filter would remove the
+// PID and the assertion would never reach the condition it is about.
+PidSupportTable permissiveSupportTable() {
+  PidSupportTable table;
+  const uint8_t everything[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  table.recordMask(0x7E8, 0x00, everything);
+  table.recordMask(0x7E8, 0x20, everything);
+  table.recordMask(0x7E8, 0x40, everything);
+  return table;
+}
+
+// Mode 01 goes out to the functional address, so any block may answer, and the
+// parser does not filter by identity: a frame from a block that never took the
+// engine lock still reaches telemetry for every engine-data PID. That is
+// deliberate, because the support masks are per-responder and one block's silence
+// must not silence another's signal - but it means a reading carries no record of
+// who produced it, and ecuResponseId cannot serve, being overwritten by whatever
+// answered last.
+//
+// These are the labels that close that gap. The test pins down which readings can
+// actually be contaminated, because isEngineDataPid splits them: MAP, IAT and the
+// rest are taken from any block and can be, while RPM and PID 04 are not
+// engine-data and are dropped from a foreign block outright. Two of the four
+// labels therefore have something to catch and two are defensive - which decides
+// how carefully a fit has to read them.
+void testEveryReadingSaysWhichBlockProducedIt() {
+  Rig rig;
+  rig.identifyEngine();
+  CHECK(rig.telemetry.engineEcuLocked);
+
+  // The client has to be waiting for this PID before the answer arrives, or a
+  // diagnostic scan that owns the bus takes the frame instead and the test would
+  // be measuring that rather than the provenance of a reading.
+  auto answer = [&](uint16_t from, uint8_t pid, const uint8_t* data, size_t size) {
+    rig.pumpUntilPidPending(0x01, pid);
+    h2g_twai_stub::queueRx(fromEcu(from, data, size));
+    rig.pump();
+  };
+
+  // The engine's own answers label themselves.
+  const uint8_t map[] = {0x03, 0x41, 0x0B, 0x2A};
+  answer(0x7E8, 0x0B, map, sizeof(map));
+  const uint8_t iat[] = {0x03, 0x41, 0x0F, 0x5A};
+  answer(0x7E8, 0x0F, iat, sizeof(iat));
+  const uint8_t load[] = {0x03, 0x41, 0x04, 0x80};
+  answer(0x7E8, 0x04, load, sizeof(load));
+  CHECK(rig.telemetry.mapKpa.value == 42.0f);
+  CHECK(rig.telemetry.intakeAirC.value == 50.0f);
+  CHECK(rig.telemetry.mapEcuId == 0x7E8);
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+
+  // The gearbox answering a manifold reading is the case the labels exist for.
+  // MAP is engine-data, so the frame is taken, and the label has to say where the
+  // number came from - otherwise a fit cannot tell a bad curve from a good curve
+  // measured against the wrong block.
+  const uint8_t foreignMap[] = {0x03, 0x41, 0x0B, 0x63};
+  answer(0x7E9, 0x0B, foreignMap, sizeof(foreignMap));
+  CHECK(rig.telemetry.mapKpa.value == 99.0f);
+  CHECK(rig.telemetry.mapEcuId == 0x7E9);
+
+  // ecuResponseId cannot be used for this, and the test says so: it has followed
+  // the gearbox, so it now describes a different reading from the one the IAT
+  // label still names correctly.
+  CHECK(rig.telemetry.ecuResponseId == 0x7E9);
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+
+  // The engine answering again afterwards is what makes the labels independent
+  // rather than one shared counter. Each has to move on its own frame: a single
+  // value copied to all three would leave mapEcuId and intakeAirEcuId disagreeing
+  // here only by accident of ordering, and would agree again the moment two of
+  // them were ever answered by different blocks in the other order.
+  const uint8_t iatAgain[] = {0x03, 0x41, 0x0F, 0x64};
+  answer(0x7E8, 0x0F, iatAgain, sizeof(iatAgain));
+  CHECK(rig.telemetry.intakeAirEcuId == 0x7E8);
+  CHECK(rig.telemetry.mapEcuId == 0x7E9);
+  CHECK(rig.telemetry.intakeAirC.value == 60.0f);
+
+  // RPM is not engine-data, so a foreign answer is discarded before telemetry.
+  // The label must not move either: naming 0x7E9 here would put a provenance
+  // record on a reading that was never taken.
+  const float rpmBefore = rig.telemetry.rpm.value;
+  const uint8_t foreignRpm[] = {0x04, 0x41, 0x0C, 0x1E, 0x8C};
+  answer(0x7E9, 0x0C, foreignRpm, sizeof(foreignRpm));
+  CHECK(rig.telemetry.rpm.value == rpmBefore);
+  CHECK(rig.telemetry.rpmEcuId != 0x7E9);
+
+  // And the same for PID 04, which is the other way engineLoadEcuId could ever
+  // have named the gearbox: the gearbox holding the engine lock, which is the
+  // fault the fixed address exists to prevent.
+  const uint8_t foreignLoad[] = {0x03, 0x41, 0x04, 0xFF};
+  answer(0x7E9, 0x04, foreignLoad, sizeof(foreignLoad));
+  CHECK(rig.telemetry.engineLoadEcuId == 0x7E8);
+}
+
 void testPolledPidMaskFollowsThePollProfile() {
   // The configuration this vehicle actually runs: Speed-Density, LPG with fuel
   // trim warnings, DFCO. It is the interesting one because Speed-Density is the
@@ -213,8 +388,12 @@ void testPolledPidMaskFollowsThePollProfile() {
   config.lpgEnabled = true;
   config.setFuelTrimEnabled(true);
   config.setDfcoEnabled(true);
+  const PidSupportTable support = permissiveSupportTable();
+  const auto polled = [&config, &support](uint8_t group) {
+    return ObdClient::polledPidMask(group, config, support);
+  };
 
-  const uint32_t group00 = ObdClient::polledPidMask(0, config);
+  const uint32_t group00 = polled(0);
   CHECK(pollsPid(group00, 0x01, 0x01));   // monitor status / MIL / DTC count
   CHECK(pollsPid(group00, 0x01, 0x0B));   // MAP
   CHECK(pollsPid(group00, 0x01, 0x0C));   // RPM
@@ -225,15 +404,17 @@ void testPolledPidMaskFollowsThePollProfile() {
   CHECK(pollsPid(group00, 0x01, 0x07));   // long-term fuel trim
   // Speed-Density never asks for the two fuel-flow inputs.
   CHECK(!pollsPid(group00, 0x01, 0x10));  // MAF
-  // Supported by most engines and never requested at all. 0x03 is the fuel
-  // system status bitfield, not an engine load reading.
-  CHECK(!pollsPid(group00, 0x01, 0x03));  // fuel system status
+  // 0x03 and 0x14 are read now, and deliberately. They were negative
+  // assertions here until the closed-loop question made them worth the two
+  // requests: the trims cannot be applied to the petrol branch without knowing
+  // what the block is already doing, and 0x03's bits stay unnamed until the car
+  // says which one it is. 0x08 remains unrequested.
+  CHECK(pollsPid(group00, 0x01, 0x03));   // fuel system status, raw bits
+  CHECK(pollsPid(group00, 0x01, 0x14));   // O2 sensor 1 voltage and trim
   CHECK(!pollsPid(group00, 0x01, 0x08));  // intake manifold pressure
   CHECK(pollsPid(group00, 0x01, 0x04));   // calculated engine load
 
-  CHECK(pollsPid(ObdClient::polledPidMask(1, config), 0x21, 0x33));  // BARO
-
-  const uint32_t group40 = ObdClient::polledPidMask(2, config);
+  const uint32_t group40 = polled(2);
   CHECK(pollsPid(group40, 0x41, 0x42));   // control module voltage
   CHECK(!pollsPid(group40, 0x41, 0x44));  // commanded equivalence ratio
   CHECK(!pollsPid(group40, 0x41, 0x5E));  // fuel rate, SD only
@@ -241,26 +422,60 @@ void testPolledPidMaskFollowsThePollProfile() {
   // MAF-based mode puts the two fuel-flow inputs back and takes IAT away.
   ConfigData maf = config;
   maf.fuelSource = FuelSource::Maf;
-  CHECK(pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x10));
-  CHECK(pollsPid(ObdClient::polledPidMask(2, maf), 0x41, 0x5E));
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, maf), 0x01, 0x0F));
+  CHECK(pollsPid(ObdClient::polledPidMask(0, maf, support), 0x01, 0x10));
+  CHECK(pollsPid(ObdClient::polledPidMask(2, maf, support), 0x41, 0x5E));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, maf, support), 0x01, 0x0F));
 
   // Each remaining condition has to take its PID out too, or the page answers
   // "we read this" about a signal that never arrives.
   ConfigData noTrims = config;
   noTrims.setFuelTrimEnabled(false);
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x06));
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims), 0x01, 0x07));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims, support), 0x01, 0x06));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noTrims, support), 0x01, 0x07));
 
   ConfigData noLpg = config;
   noLpg.lpgEnabled = false;
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noLpg), 0x01, 0x07));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noLpg, support), 0x01, 0x07));
 
   ConfigData noDfco = config;
   noDfco.setDfcoEnabled(false);
-  CHECK(!pollsPid(ObdClient::polledPidMask(0, noDfco), 0x01, 0x11));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, noDfco, support), 0x01, 0x11));
 
-  CHECK(ObdClient::polledPidMask(3, config) == 0);  // no fourth group exists
+  CHECK(ObdClient::polledPidMask(3, config, support) == 0);  // no fourth group
+}
+
+// The report used to claim three PIDs this car never offers. runPolling has
+// always skipped an unsupported PID, so the requests were never made - the
+// report was the only thing lying, which is worse, because it is what the owner
+// reads when a signal goes missing.
+void testPolledPidMaskIntersectsTheSupportMask() {
+  ConfigData config = ConfigStore::defaults();
+  config.fuelSource = FuelSource::SpeedDensity;
+  config.lpgEnabled = true;
+  config.setFuelTrimEnabled(true);
+  config.setDfcoEnabled(true);
+  const PidSupportTable support = vehicleSupportTable();
+
+  // All three are in the poll profile. None is in any mask this car answered
+  // with, so none may be reported as polled. 0x5E needs a mode that would
+  // otherwise keep it: in Speed-Density the mode drops it anyway, so asserting
+  // it here would prove the mode works, not the filter.
+  CHECK(!pollsPid(ObdClient::polledPidMask(1, config, support), 0x21, 0x33));
+  CHECK(!pollsPid(ObdClient::polledPidMask(0, config, support), 0x01, 0x10));
+  ConfigData mafMode = config;
+  mafMode.fuelSource = FuelSource::Maf;
+  CHECK(!pollsPid(ObdClient::polledPidMask(2, mafMode, support), 0x41, 0x5E));
+
+  // Distance since codes cleared is offered by both blocks on this car, so it
+  // must survive the intersection - otherwise the new PID 0x31 would be added
+  // to the profile and immediately hidden by the very fix meant to expose it.
+  CHECK(support.isSupported(0x31));
+
+  // A car that does offer them keeps them: the filter is per vehicle, not a
+  // deletion from the profile.
+  const PidSupportTable generous = permissiveSupportTable();
+  CHECK(pollsPid(ObdClient::polledPidMask(1, mafMode, generous), 0x21, 0x33));
+  CHECK(pollsPid(ObdClient::polledPidMask(2, mafMode, generous), 0x41, 0x5E));
 }
 
 // VIN is Service 09, PID 02. Mode 01 PID 09 is the long-term fuel trim for
@@ -499,11 +714,462 @@ void testTheRetryCanStillSucceed() {
   CHECK(std::string(rig.client.vin()) == std::string(kVin));
 }
 
+// PID 03 is stored as the byte arrived. The reasons for that are long and live
+// in telemetry.h; what is testable here is that nothing is lost on the way in.
+// The whole byte survives, the high bits included, and no bit is named on the
+// way through - a field called "closedLoop" would be this test's assertion
+// encoding the standard's answer as if it had been measured.
+void testFuelSystemStatusKeepsTheWholeByte() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x03);
+  CHECK(rig.awaitingPid(0x01, 0x03));
+
+  const uint8_t answer[] = {0x03, 0x41, 0x03, 0xA6};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.fuelSystemStatus.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.fuelSystemStatus.value) == 0xA6);
+}
+
+// Every bit pattern has to survive, because the open question is precisely which
+// bit means what and the whole search is over these bytes. A conversion, a mask
+// or a clamp applied on the way in would each of them quietly pick an answer.
+void testFuelSystemStatusSurvivesEveryBitPattern() {
+  const uint8_t patterns[] = {0x00, 0x55, 0xAA, 0xFF};
+  for (uint8_t pattern : patterns) {
+    Rig rig;
+    rig.identifyEngine();
+    rig.pumpUntilPidPending(0x01, 0x03);
+    CHECK(rig.awaitingPid(0x01, 0x03));
+    const uint8_t answer[] = {0x03, 0x41, 0x03, pattern};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+    rig.deliver();
+    CHECK(rig.telemetry.fuelSystemStatus.valid(hostMillis));
+    CHECK(static_cast<int>(rig.telemetry.fuelSystemStatus.value) == pattern);
+  }
+}
+
+// PID 14's two bytes are both kept raw. The voltage conversion is deliberately
+// not done here: 0.00495 V per bit is J1979's arithmetic, and doing it in the
+// telemetry layer would bury it where a wrong scaling would look like a failed
+// sensor instead of like a wrong constant.
+void testO2KeepsBothBytesRaw() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x14);
+  CHECK(rig.awaitingPid(0x01, 0x14));
+
+  // 0x7F is the top of the documented 0..1.263 V span, 0x64 the trim ceiling.
+  const uint8_t answer[] = {0x04, 0x41, 0x14, 0x7F, 0x64};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.o2Sensor1Raw.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.o2Sensor1Raw.value) == 0x7F);
+  CHECK(rig.telemetry.o2Sensor1TrimPct.valid(hostMillis));
+  CHECK(static_cast<int>(rig.telemetry.o2Sensor1TrimPct.value) == 0x64);
+}
+
+// An answer one byte short of what the PID declares must change nothing. Without
+// the length guard the missing byte would be read as zero and published as a
+// real 0 V, which on the page is indistinguishable from a failed sensor.
+void testShortO2AnswerChangesNothing() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x14);
+  CHECK(rig.awaitingPid(0x01, 0x14));
+  // Declares three bytes but PID 14 carries two, so only one is present.
+  const uint8_t answer[] = {0x03, 0x41, 0x14, 0x40};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  CHECK(!rig.telemetry.o2Sensor1Raw.valid(hostMillis));
+  CHECK(!rig.telemetry.o2Sensor1TrimPct.valid(hostMillis));
+}
+
+// PID 31 arrives in whole kilometres and both of its traps - a DTC clear, and the
+// two-byte wrap at 65535 - arrive as the same thing, a step down. The segment
+// number exists so a reader can tell a delta taken across such a step from one
+// that was not, by comparing the number at both ends. Four readings: up, up,
+// down, up. Only the third may move the number.
+//
+// PID 31 is the slowest entry in the profile at ten seconds, so waiting for it to
+// come round costs about a whole profile period; the default 600 steps of 25 ms is
+// fifteen seconds and lands just short of one cycle. The budget here is several
+// cycles, and it is spent on waiting, not on shortening the interval under test.
+static const uint32_t kOdometerBudget = 6000;
+
+void testOdometerSegmentAdvancesOnlyOnADownwardStep() {
+  Rig rig;
+  rig.identifyEngine();
+
+  // 1200 km. Nothing has been compared against yet, so there is no step down.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  CHECK(rig.awaitingPid(0x01, 0x31));
+  const uint8_t first[] = {0x04, 0x41, 0x31, 0x04, 0xB0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, first, sizeof(first)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.valid(hostMillis));
+  CHECK(rig.telemetry.odometerKm.value == 1200.0f);
+  CHECK(rig.telemetry.odometerSegment == 0);
+
+  // 1210 km. A rise is not a step down.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t second[] = {0x04, 0x41, 0x31, 0x04, 0xBA};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, second, sizeof(second)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 1210.0f);
+  CHECK(rig.telemetry.odometerSegment == 0);
+
+  // 3 km. The counter was cleared, so this delta subtracts two unrelated
+  // numbers. One new segment, and exactly one - not a flag that can no longer
+  // be turned off.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t third[] = {0x04, 0x41, 0x31, 0x00, 0x03};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, third, sizeof(third)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerSegment == 1);
+
+  // And it settles. 3 km to 8 km is a real 5 km, as good as the one before the
+  // clear, and must not open another segment. This is the whole reason the
+  // field is a number and not a sticky flag: a boolean could never express
+  // "broken, then fine again", only "broken, forever".
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t fourth[] = {0x04, 0x41, 0x31, 0x00, 0x08};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fourth, sizeof(fourth)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 8.0f);
+  CHECK(rig.telemetry.odometerSegment == 1);
+
+  // A second clear, and it must be a second segment. This is the assertion that
+  // separates a counter from a flag: a field that latches at 1 would satisfy
+  // every check above and fail exactly here, which is the defect being removed.
+  rig.pumpUntilPidPending(0x01, 0x31, kOdometerBudget);
+  const uint8_t fifth[] = {0x04, 0x41, 0x31, 0x00, 0x02};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fifth, sizeof(fifth)));
+  rig.deliver();
+  CHECK(rig.telemetry.odometerKm.value == 2.0f);
+  CHECK(rig.telemetry.odometerSegment == 2);
+}
+
+// The bus counters are copied from the driver rather than counted by the
+// firmware, so the stub has to be given a non-zero status: against a zeroed
+// struct every field could be wired to nothing and still look correct. rxMissed
+// earns its place on its own - it is the figure that separates "the bus did not
+// answer" from "the gauge dropped the answer".
+void testDriverCountersReachTelemetry() {
+  Rig rig;
+  twai_status_info_t status{};
+  status.bus_error_count = 7;
+  status.tx_error_counter = 8;
+  status.rx_error_counter = 3;
+  status.rx_missed_count = 11;
+  h2g_twai_stub::setStatus(status);
+
+  rig.pump(48);  // past the one-second poll interval
+
+  CHECK(rig.telemetry.canBusErrorCount == 7);
+  CHECK(rig.telemetry.canTec == 8);
+  CHECK(rig.telemetry.canRec == 3);
+  CHECK(rig.telemetry.canRxMissedCount == 11);
+}
+
+// A cancelled transmission leaves the request slot occupied over a frame that is
+// already gone, and the poller then waits out the full response timeout for an
+// answer to it. The observable effect of releasing it is the timeout counter
+// moving, so that is what is checked - not the internal flag.
+void testACancelledTransmissionReleasesTheRequestSlot() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.pumpUntilPidPending(0x01, 0x0B);
+  CHECK(rig.awaitingPid(0x01, 0x0B));
+
+  const uint32_t before = rig.telemetry.obdTimeoutCount;
+  h2g_twai_stub::raiseAlert(TWAI_ALERT_TX_FAILED);
+  rig.pump(1);
+  CHECK(rig.telemetry.obdTimeoutCount == before + 1);
+}
+
+// The counter read sits above the bail-out, and for the recovering half of that
+// condition this can be observed rather than asserted in the source.
+//
+// The waiting half cannot: the response timeout is 120 ms and the poll interval
+// is a second, so any run long enough to reach a poll has already let the request
+// expire and the placement stops mattering. Recovering is not bounded that way -
+// the watchdog re-requests every two seconds and the state lasts until
+// BUS_RECOVERED - so a bus that stays down for several seconds gives the poll
+// several chances to be skipped by a read placed below the return.
+void testCountersKeepUpdatingWhileTheBusIsRecovering() {
+  Rig rig;
+  rig.identifyEngine();
+
+  h2g_twai_stub::raiseAlert(TWAI_ALERT_BUS_OFF);
+  rig.pump(1);
+
+  twai_status_info_t status{};
+  status.bus_error_count = 4;
+  status.tx_error_counter = 250;
+  h2g_twai_stub::setStatus(status);
+  h2g_twai_stub::setState(TWAI_STATE_BUS_OFF);
+
+  // No BUS_RECOVERED, so the client stays in recovery across the whole run, and
+  // the poll interval elapses more than once.
+  rig.pump(120);
+  CHECK(rig.telemetry.canBusErrorCount == 4);
+  CHECK(rig.telemetry.canTec == 250);
+}
+
 }  // namespace
 
+// The two masks this vehicle actually reported: the engine claims a manifold,
+// the transmission does not but does report speed. A block without a manifold
+// still answers a manifold query, so the answer alone cannot pick the engine,
+// and RPM is answered by both, so whoever replies first used to take the lock.
+// Between two boots on the same car it went both ways, which pointed the DTC
+// scan and the clear at the gearbox.
+// Now neither answer binds on its own. The gearbox's RPM is recorded against its
+// own address, so it cannot lend the engine a sign it never gave; the engine's
+// manifold is likewise only half, and the lock waits for the same block to
+// answer RPM as well.
+void testManifoldDecidesTheEngineAndSpeedAloneCannot() {
+  Rig rig;
+  const uint8_t engineMask[] = {0x06, 0x41, 0x00, 0xBE, 0x3E, 0xB8, 0x11};
+  const uint8_t gearboxMask[] = {0x06, 0x41, 0x00, 0x98, 0x18, 0x00, 0x01};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineMask, sizeof(engineMask)));
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMask, sizeof(gearboxMask)));
+  rig.pump();
+
+  // The gearbox answers first, exactly as it did on the boot that went wrong.
+  const uint8_t gearboxRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxRpm, sizeof(gearboxRpm)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId != 0x7E9);
+
+  // The engine's manifold is one of the two signs, and on its own still binds
+  // nothing - the gearbox answers a manifold query just as readily.
+  const uint8_t engineMap[] = {0x03, 0x41, 0x0B, 0x21};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineMap, sizeof(engineMap)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+
+  // Only the second sign from the same block completes it.
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  CHECK(rig.awaitingPid(0x01, 0x0C));
+  const uint8_t engineRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineRpm, sizeof(engineRpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// With no mask heard from anybody there is nothing to decide on, and the
+// previous rule stands rather than leaving the vehicle without diagnostics.
+void testSpeedStillIdentifiesTheEngineWhenNoMaskIsKnown() {
+  Rig rig;
+  const uint8_t engineRpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engineRpm, sizeof(engineRpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// A block whose own mask says it has no manifold may not take the lock on a
+// manifold answer either, since it answers those with no data rather than
+// silence. Only the mask being positive makes the answer meaningful.
+void testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock() {
+  Rig rig;
+  const uint8_t gearboxMask[] = {0x06, 0x41, 0x00, 0x98, 0x18, 0x00, 0x01};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMask, sizeof(gearboxMask)));
+  rig.pump();
+  const uint8_t gearboxMap[] = {0x03, 0x41, 0x0B, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearboxMap, sizeof(gearboxMap)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+}
+
+// One parameter is not enough. This mask claims only throttle position, and a
+// transmission does report throttle position for torque management, so a single
+// engine-only bit cannot be the thing a safety gate is aimed at.
+void testOneClaimIsNotEnoughToTakeTheEngineLock() {
+  Rig rig;
+  const uint8_t throttleOnly[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, throttleOnly, sizeof(throttleOnly)));
+  rig.pump();
+  const uint8_t throttle[] = {0x03, 0x41, 0x11, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, throttle, sizeof(throttle)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+}
+
+// Masks that are heard but never reach two claims leave the old rule standing,
+// so a vehicle whose engine reports little of itself is not left without
+// diagnostics.
+void testSpeedDecidesWhenNoBlockClaimsEnoughParameters() {
+  Rig rig;
+  const uint8_t throttleOnly[] = {0x06, 0x41, 0x00, 0x00, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, throttleOnly, sizeof(throttleOnly)));
+  rig.pump();
+  const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+// Two of the four is enough even when the manifold is one of the missing two,
+// so identification does not depend on a vehicle having a manifold at all. The
+// second sign is RPM, which every powertrain block answers - so what separates
+// the engine here is the engine-only parameter, not the speed.
+void testTwoClaimsIdentifyWithoutAManifold() {
+  Rig rig;
+  // Claims 0x03 fuel system status and 0x11 throttle, but not 0x0B or 0x0F.
+  const uint8_t mask[] = {0x06, 0x41, 0x00, 0x20, 0x00, 0x80, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, mask, sizeof(mask)));
+  rig.pump();
+  const uint8_t fuelSystem[] = {0x03, 0x41, 0x03, 0x02};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, fuelSystem, sizeof(fuelSystem)));
+  rig.pump();
+  CHECK(!rig.telemetry.engineEcuLocked);
+
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+  rig.pump();
+  CHECK(rig.telemetry.engineEcuLocked);
+  CHECK(rig.telemetry.engineEcuResponseId == 0x7E8);
+}
+
+void testBusErrorStormTakesThePollerOffTheBus() {
+  Rig rig;
+  rig.identifyEngine();
+
+  // The VIN is asked for right after discovery and owns the request slot for
+  // the first seconds of the session, so the poller is only what is left once
+  // it has been given up on. Six seconds is past both startup attempts.
+  rig.pump(240, 25);
+  const size_t before = h2g_twai_stub::transmitted().size();
+  rig.pump(40, 25);
+  CHECK(h2g_twai_stub::transmitted().size() > before);  // the poller is running
+
+  twai_status_info_t status{};
+  h2g_twai_stub::setState(TWAI_STATE_RUNNING);
+  for (int second = 0; second < 3; ++second) {
+    status.bus_error_count += 3795;
+    h2g_twai_stub::setStatus(status);
+    rig.pump(40, 25);
+  }
+
+  CHECK(rig.telemetry.busStormCount >= 1);
+  CHECK(rig.telemetry.busQuietRemainingMs > 0);
+
+  // Nothing may go out while the hold-off is in force, however long the loop
+  // runs: a request now is one more frame to retransmit.
+  const size_t held = h2g_twai_stub::transmitted().size();
+  rig.pump(20, 25);
+  CHECK(h2g_twai_stub::transmitted().size() == held);
+
+  // The bus recovers. The hold-off doubles while the storm lasts, so the run
+  // below has to outlast the longest of them before the poller can be expected
+  // back. One frame a second is all the silence rule needs to stand down.
+  for (int second = 0; second < 12; ++second) {
+    h2g_twai_stub::setStatus(status);  // the count no longer moves
+    const uint8_t noise[] = {0x03, 0x41, 0x0C, 0x0F, 0xA0};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, noise, sizeof(noise)));
+    rig.pump(40, 25);
+  }
+
+  const size_t resumed = h2g_twai_stub::transmitted().size();
+  rig.pump(40, 25);
+  CHECK(h2g_twai_stub::transmitted().size() > resumed);
+  CHECK(rig.telemetry.busQuietRemainingMs == 0);
+}
+
+// A bus that fails every time it is asked is a bus with nobody on it, and the
+// hold-off doubles as long as it keeps failing: the gauge ends up probing it
+// once every thirty seconds rather than retransmitting into it for as long as
+// the parking lasts.
+void testAStuckBusIsProbedRatherThanHammered() {
+  Rig rig;
+  rig.identifyEngine();
+
+  twai_status_info_t status{};
+  h2g_twai_stub::setState(TWAI_STATE_RUNNING);
+  // The first ten seconds are what the gauge spends finding out.
+  for (int second = 0; second < 10; ++second) {
+    status.bus_error_count += 3795;
+    h2g_twai_stub::setStatus(status);
+    rig.pump(40, 25);
+  }
+
+  // ...and this is what it settles into: the same measurement over thirty
+  // seconds, once the hold-off has stopped growing.
+  const size_t before = h2g_twai_stub::transmitted().size();
+  for (int second = 0; second < 30; ++second) {
+    status.bus_error_count += 3795;
+    h2g_twai_stub::setStatus(status);
+    rig.pump(40, 25);
+  }
+  const size_t sent = h2g_twai_stub::transmitted().size() - before;
+  // Every request waits out its response timeout before the next one goes, so
+  // an unheld poller spends about eight a second - two hundred and forty in
+  // thirty seconds. Probing sends a handful.
+  CHECK(sent < 20);
+  CHECK(rig.telemetry.busStormCount >= 1);
+}
+
+// The hold-off has to end with the bus rather than with the clock. Waiting it
+// out would leave the gauge blind for up to thirty seconds after the vehicle
+// woke up, which is the one thing it must not be: silent while there is
+// something to measure.
+void testTrafficEndsTheHoldOffBeforeItExpires() {
+  Rig rig;
+  rig.identifyEngine();
+
+  twai_status_info_t status{};
+  h2g_twai_stub::setState(TWAI_STATE_RUNNING);
+  for (int second = 0; second < 6; ++second) {
+    status.bus_error_count += 3795;
+    h2g_twai_stub::setStatus(status);
+    rig.pump(40, 25);
+  }
+  CHECK(rig.telemetry.busQuietRemainingMs > 0);
+
+  // One frame from another node, and no storm behind it.
+  const uint8_t noise[] = {0x03, 0x41, 0x0C, 0x0F, 0xA0};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, noise, sizeof(noise)));
+  rig.pump(2);
+  CHECK(rig.telemetry.busQuietRemainingMs == 0);
+
+  // and the poller takes the slot back. A VIN retry can still be in flight from
+  // before the storm, so this gets longer than one request timeout.
+  const size_t before = h2g_twai_stub::transmitted().size();
+  rig.pump(200, 25);
+  CHECK(h2g_twai_stub::transmitted().size() > before);
+}
+
 int main() {
+  test("a manifold picks the engine and speed alone cannot",
+       testManifoldDecidesTheEngineAndSpeedAloneCannot);
+  test("speed still identifies the engine when no mask is known",
+       testSpeedStillIdentifiesTheEngineWhenNoMaskIsKnown);
+  test("one claim is not enough to take the engine lock",
+       testOneClaimIsNotEnoughToTakeTheEngineLock);
+  test("speed decides when no block claims enough parameters",
+       testSpeedDecidesWhenNoBlockClaimsEnoughParameters);
+  test("two claims identify without a manifold",
+       testTwoClaimsIdentifyWithoutAManifold);
+  test("a manifold answer from a block that has none does not take the lock",
+       testAManifoldAnswerFromABlockThatHasNoneDoesNotTakeTheLock);
   test("the polled PID set follows the poll profile",
        testPolledPidMaskFollowsThePollProfile);
+  test("polled set is intersected with the support mask",
+       testPolledPidMaskIntersectsTheSupportMask);
   test("VIN is requested as Service 09 PID 02",
        testVinIsRequestedAsService09Pid02);
   test("a real VIN answer is accepted", testRealVinAnswerIsAccepted);
@@ -528,6 +1194,36 @@ int main() {
        testVinWaitsForTheVehicleToStop);
   test("an unknown speed still retries the VIN", testUnknownSpeedStillRetries);
   test("the retry can still succeed", testTheRetryCanStillSucceed);
+  test("PID 03 is kept as the whole byte, unnamed",
+       testFuelSystemStatusKeepsTheWholeByte);
+  test("every PID 03 bit pattern survives",
+       testFuelSystemStatusSurvivesEveryBitPattern);
+  test("PID 14 keeps both bytes raw", testO2KeepsBothBytesRaw);
+  test("a short PID 14 answer changes nothing",
+       testShortO2AnswerChangesNothing);
+  test("the odometer segment moves only on a downward step",
+       testOdometerSegmentAdvancesOnlyOnADownwardStep);
+  test("driver error counters reach telemetry",
+       testDriverCountersReachTelemetry);
+  test("every reading records which block produced it",
+       testEveryReadingSaysWhichBlockProducedIt);
+  test("a cancelled transmission releases the request slot",
+       testACancelledTransmissionReleasesTheRequestSlot);
+  test("counters keep updating while the bus is recovering",
+       testCountersKeepUpdatingWhileTheBusIsRecovering);
+// A bus that fails at this rate is being retransmitted into: one error per
+// attempt, an attempt per frame time, 3795 of them in the second the trace of
+// 2026-10-19 caught. The error count on its own says nothing about how long it
+// lasted or what the gauge did about it, so what is checked here is the
+// consequence - the poller comes off the bus, and stays off until the bus is
+// quiet again.
+
+  test("a bus error storm takes the poller off the bus",
+       testBusErrorStormTakesThePollerOffTheBus);
+  test("a bus that keeps failing is probed, not hammered",
+       testAStuckBusIsProbedRatherThanHammered);
+  test("traffic ends the hold-off before it expires",
+       testTrafficEndsTheHoldOffBeforeItExpires);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

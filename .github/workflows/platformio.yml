@@ -1,4 +1,4 @@
-name: ESP32-S3 N16R8 firmware
+﻿name: ESP32-S3 N16R8 firmware
 
 on:
   push:
@@ -30,6 +30,7 @@ jobs:
         run: |
           python tools/test_brightness.py
           python tools/test_obd_diagnostics.py
+          python tools/test_obd_fixed_identity.py
           python tools/test_obd_client.py
           python tools/test_ota_diagnostics.py
           python tools/test_persistence.py
@@ -38,6 +39,7 @@ jobs:
           python tools/test_pid_support.py
           python tools/test_telemetry.py
           python tools/test_obd_trace.py
+          python tools/test_screen_gate.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
@@ -51,8 +53,12 @@ jobs:
           python tools/check_ota_transport.py
           python tools/check_speed_density_integration.py
           python tools/check_ui_fonts.py
+          python tools/check_web_ids.py
           python tools/check_diagnostic_integration.py
+          python tools/check_trace_schema.py
           python tools/check_pid_support_report.py
+          python tools/check_pid_names.py
+          python tools/check_ci_coverage.py
 
       - name: Run browser OTA/UI regression
         run: |
@@ -61,9 +67,19 @@ jobs:
           npx playwright install --with-deps chromium
           NODE_PATH="$PWD/node_modules" node tests/web/brightness_ui.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/pidsupport_ui.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/config_roundtrip.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/config_first_load.cjs
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
+
+      # The diagnostic and speed-density images were built by nobody, by
+      # anything. Their code is behind #ifdef, so a field that does not exist in
+      # the release build is a clean release build and a broken diagnostic one -
+      # which is how three trace columns were committed referencing members the
+      # struct had never had.
+      - name: Build the diagnostic and speed-density images
+        run: pio run -e esp32s3_n16r8_diagnostic -e esp32s3_n16r8_speeddensity
 
       - name: Check build and committed release artifacts
         run: |

@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <esp_log.h>
 #include <esp_sleep.h>
+
+#include "screen_gate.h"
 #include "driver/gpio.h"
 
 #include "app_config.h"
@@ -48,6 +50,7 @@ OneButton button;
 LpgValveInput lpgInput;
 PowerManager powerManager;
 BrightnessManager brightnessManager;
+ScreenGate screenGate;
 OtaDiagnostics otaDiagnostics;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
@@ -61,6 +64,11 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
 
 bool serviceMode = false;
 bool engineWasRunning = false;
+// Rollback-by-button state. Cleared on entry to service mode, not on leaving
+// it: the selector is only reachable from here, so a stale one from a previous
+// session has nothing to leak into.
+bool rollbackSelector = false;
+bool rollbackArmed = false;
 uint32_t lastMemoryLogAt = 0;
 
 void serviceDtcPersistence(uint32_t now) {
@@ -121,6 +129,15 @@ void captureDiagnosticTrace(uint32_t now) {
   sample.speedKph = telemetry.speedKph.value;
   sample.boostRawBar = telemetry.boostBar;
   sample.boostFilteredBar = telemetry.filteredBoostBar;
+  // A signal never received stays NAN and serialises as null, which the reader
+  // can tell apart from a real zero. That matters here: a null is a sample to
+  // skip, a zero would be a sample that fits to VE = 0.
+  sample.engineLoadPct = telemetry.engineLoadPct.value;
+  sample.intakeAirC = telemetry.intakeAirC.value;
+  sample.engineLoadEcuId = telemetry.engineLoadEcuId;
+  sample.mapEcuId = telemetry.mapEcuId;
+  sample.rpmEcuId = telemetry.rpmEcuId;
+  sample.intakeAirEcuId = telemetry.intakeAirEcuId;
   sample.fuelRawLph = telemetry.currentFuelRawLph;
   sample.fuelCorrectedLph = telemetry.currentFuelLph;
   sample.consumption = telemetry.currentConsumption;
@@ -136,6 +153,10 @@ void captureDiagnosticTrace(uint32_t now) {
   sample.obdResponseCount = telemetry.obdResponseCount;
   sample.obdTimeoutCount = telemetry.obdTimeoutCount;
   sample.canErrorCount = telemetry.canErrorCount;
+  sample.canBusErrorCount = telemetry.canBusErrorCount;
+  sample.canTec = telemetry.canTec;
+  sample.canRec = telemetry.canRec;
+  sample.canRxMissedCount = telemetry.canRxMissedCount;
   sample.ecuResponseId = telemetry.ecuResponseId;
   sample.fuelMode = static_cast<uint8_t>(telemetry.fuelMode);
   sample.fuelSource = static_cast<uint8_t>(configStore.data().fuelSource);
@@ -215,6 +236,9 @@ void captureDiagnosticTrace(uint32_t now) {
 void enterServiceMode() {
   if (serviceMode) return;
   serviceMode = true;
+  // A fresh session starts with no half-made rollback decision behind it.
+  rollbackSelector = false;
+  rollbackArmed = false;
 #ifdef H2G_DIAGNOSTIC_BUILD
   diagnosticTrace.setCaptureActive(false);
 #endif
@@ -341,6 +365,11 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  // Service mode owns the two-press gesture; the dashboard owns it as a double
+  // page turn. Stated here rather than derived from the brightness setting,
+  // because a slot selector that only works in manual brightness is a selector
+  // most owners never find.
+  button.setMultiClickMode(serviceMode ? 1 : 0);
   button.update(now, configStore.data());
   const ButtonEvent event = button.takeEvent();
   if (event == ButtonEvent::QuadPress &&
@@ -358,7 +387,36 @@ void loop() {
   // Also runs in service mode so saved brightness changes and live ADC work
   // without a reboot. During a raw OTA body the hardware PWM holds its duty.
   brightnessManager.update(now, configStore.data());
-  dashboard.setBrightness(brightnessManager.state().currentPercent());
+
+  // The gauge hangs off the OBD battery line, which this car leaves live all
+  // night, so the only thing that ever turned anything off was the low-voltage
+  // guard at 11.5 V and it never fires overnight. Silence from the engine ECU
+  // is the only dependable sign that the vehicle is parked: requests go to the
+  // functional address and the gearbox answers them too, so "a block answered"
+  // would read true all night long.
+  //
+  // Only the backlight goes dark. TFT_DISPOFF has no counterpart outside deep
+  // sleep, where the part reboots and never needs waking, and the first
+  // answering frame has to bring the panel straight back.
+  // Silence is the first trigger and engine-off the second, because PID 0x42 is
+  // advertised by the transmission only: this vehicle keeps answering from a
+  // block that is not the engine, and a gearbox has already been seen replying
+  // to a PID it does not have with a zero. If either block stays awake all night
+  // then "something answered" never becomes false, and a silence-only trigger
+  // would simply never fire. Requiring speed as well as zero RPM keeps a car
+  // rolling downhill from counting as parked.
+  const bool engineOff = telemetry.rpm.valid(now) &&
+                         telemetry.rpm.value < 200.0f &&
+                         telemetry.rawSpeedKph.valid(now) &&
+                         telemetry.rawSpeedKph.value < 4.0f;
+  screenGate.update(now, telemetry.obdConnected(now), engineOff,
+                    static_cast<uint32_t>(configStore.data().screenOffDelaySec) *
+                        1000U,
+                    serviceMode || event != ButtonEvent::None);
+  telemetry.screenOffReason = screenGate.reasonName();
+  dashboard.setBrightness(screenGate.dark()
+                              ? 0.0f
+                              : brightnessManager.state().currentPercent());
 
   if (serviceMode) {
 #ifndef H2G_DEMO_MODE
@@ -369,6 +427,53 @@ void loop() {
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
     servicePortal.loop();
+    // Rollback without a laptop. Two presses open the selector, a long press
+    // points the next boot at the other slot, and a longer hold restarts. The
+    // versions are on the screen at each step because the whole point is that
+    // the owner can see what they are choosing before it happens.
+    if (event == ButtonEvent::DoublePress && !rollbackSelector) {
+      char version[33];
+      if (servicePortal.otherSlotVersion(version, sizeof(version))) {
+        rollbackSelector = true;
+        rollbackArmed = false;
+        dashboard.showMessage("ОТКАТ ПРОШИВКИ", version,
+                              configStore.data(), "ДЛИННОЕ - ВЫБОР СЛОТА");
+      } else {
+        dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "ВТОРОЙ СЛОТ ПУСТ",
+                              configStore.data(), "УСТАНОВИТЕ ПРОШИВКУ");
+      }
+    } else if (rollbackSelector && event == ButtonEvent::LongPress &&
+               !rollbackArmed) {
+      switch (servicePortal.selectOtherSlotForBoot()) {
+        case ServicePortal::RollbackResult::Ok:
+          rollbackArmed = true;
+          dashboard.showMessage("СЛОТ ВЫБРАН", "ПЕРЕЗАГРУЗКА ВЫБРАН",
+                                configStore.data(), "ДЛИННОЕ - ПЕРЕЗАПУСК");
+          break;
+        case ServicePortal::RollbackResult::NoOtherSlot:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "НЕТ ВТОРОГО СЛОТА",
+                                configStore.data(), "");
+          break;
+        case ServicePortal::RollbackResult::NoImage:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "СЛОТ БЕЗ ПРОШИВКИ",
+                                configStore.data(), "");
+          break;
+        case ServicePortal::RollbackResult::Failed:
+          rollbackSelector = rollbackArmed = false;
+          dashboard.showMessage("ОШИБКА ОТКАТА", "СЛОТ НЕ ВЫБРАН",
+                                configStore.data(), "");
+          break;
+      }
+    } else if (rollbackArmed && event == ButtonEvent::ServiceHold) {
+      if (!persistence.checkpoint(trip, petrolCalibration,
+                                  configStore.data().saveTrip, true)) {
+        ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+      }
+      brightnessManager.checkpoint();
+      ESP.restart();
+    }
     if (event == ButtonEvent::ServiceHold) {
       brightnessManager.checkpoint();
       ESP.restart();
@@ -407,9 +512,11 @@ void loop() {
     if (engineRunning) engineWasRunning = true;
     else if (engineStopped) engineWasRunning = false;
   }
+
   if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {
     enterLowVoltageSleep();
   }
+
   dashboard.render(now, telemetry, telemetryEngine, configStore.data());
 
   if (event == ButtonEvent::ShortPress) {
