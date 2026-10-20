@@ -1477,12 +1477,16 @@ void ServicePortal::sendStatus() {
     doc["vinEcuId"] = nullptr;
   }
   doc["timeouts"] = telemetry_.obdTimeoutCount;
-  // Three counts that say what the counters above are counting. Responses come
-  // from requests of ours; unsolicited ones are answers the LPG controller's
-  // own polling produced, which reach every listener on the bus. Malformed ones
-  // were refused for carrying fewer bytes than the parameter needs. Over-long
-  // ones were decoded - the normative bytes sit in the normative positions -
-  // but the standard defines no such extra bytes, so they are recorded.
+  // Three counts that say what the counters above are counting. Responses were
+  // answers to a request of ours. "unsolicitedResponses" answers arrived while
+  // none was waiting - on this bus mostly the LPG controller's own polling
+  // being answered, but also late duplicates and answers that missed their
+  // window; it is not a count of the controller's traffic. "malformedResponses"
+  // answers carried fewer bytes than the parameter needs and were not decoded;
+  // frames that failed a transport check are dropped before they can be counted
+  // here, so this is not a count of damaged frames. Over-long ones were decoded
+  // - the normative bytes sit in the normative positions - but the standard
+  // defines no such extra bytes, so they are recorded.
   doc["unsolicitedResponses"] = telemetry_.obdUnsolicitedCount;
   doc["malformedResponses"] = telemetry_.obdMalformedCount;
   doc["overLongResponses"] = telemetry_.obdOverLongCount;

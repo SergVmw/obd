@@ -985,6 +985,104 @@ void testReadMonitorIsNotSatisfiedByAnotherPid() {
   CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Reading);
 }
 
+// The bus this device actually lives on: the engine answers, the gearbox
+// answers, and the LPG controller asks questions of its own about ten times a
+// second, so every request we send goes out into a stream of frames carrying
+// the same 0x41 ours will carry. This is the whole selection rule in one
+// exchange: somebody else's request, the wrong responder, the right responder
+// answering the wrong question, an answer too short to read, and an answer
+// that cannot be ours because service 01 has none of them - all refused, all
+// leaving the request on the wire for the frame that is actually ours.
+void testEveryTalkerAnswersAndOnlyOursIsTaken() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  // The engine-only half of the identity is observed first, so discovery is
+  // waiting for the RPM half and the scan starts on the functional address.
+  CHECK(diagnostics.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(diagnostics.requestScan(10));
+  build(diagnostics, 10, 0x7DF, 2, 0x01, 0x0C);
+
+  // Somebody else's request, on the very address we transmit on ourselves.
+  reject(diagnostics,
+         frame(0x7DF, {0x02, 0x01, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00}), 11);
+  // Right block, right service, wrong parameter - the controller asked for it.
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0D, 0x00, 0x00}), 12);
+  // Right parameter, one byte short of the two engine speed needs.
+  reject(diagnostics, frame(0x7E8, {0x03, 0x41, 0x0C, 0x0F}), 13);
+  // A First Frame at all. Six bytes is the largest Mode 01 answer there is -
+  // service, echoed PID and four data bytes - and a Single Frame holds seven.
+  reject(diagnostics, frame(0x7E8, {0x10, 0x0C, 0x41, 0x0C, 0x0F, 0xA0}), 14);
+  // Three bytes: two of PCI and the service byte, and no parameter byte to
+  // compare. This is the frame that used to be taken on trust.
+  reject(diagnostics, frame(0x7E8, {0x10, 0x0C, 0x41}), 15);
+  CHECK(diagnostics.waiting());
+
+  // 4000 rpm, and it is the only frame of the burst that ends discovery.
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 16);
+  CHECK(diagnostics.state().engineEcuLocked);
+  CHECK(diagnostics.state().engineResponseId == 0x7E8);
+
+  // Addressed now. The gearbox and the controller keep talking, but only the
+  // engine is a responder to this request.
+  build(diagnostics, 20, 0x7E0, 2, 0x01, 0x01);
+  // Right parameter, wrong block: monitor status from the gearbox.
+  reject(diagnostics,
+         frame(0x7E9, {0x06, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00}), 21);
+  // Right block, wrong parameter: somebody asked for engine speed.
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 22);
+  // Right parameter, two of its four bytes missing.
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x01, 0x00, 0x00}), 23);
+  reject(diagnostics, frame(0x7E8, {0x10, 0x0C, 0x41}), 24);
+  // A First Frame with room for the parameter after all: refused on the PID,
+  // which is the case the transport could always decide.
+  reject(diagnostics, frame(0x7E8, {0x10, 0x0C, 0x41, 0x0C}), 25);
+  CHECK(diagnostics.waiting());
+  CHECK(diagnostics.state().storedStatus != DtcCategoryStatus::Malformed);
+  accept(diagnostics, frame(0x7E8, {0x06, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00}),
+         26);
+  CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Reading);
+}
+
+// What the rule tested above cannot do, and why no test can make it do it.
+// Two testers ask the same block for the same parameter; the block answers
+// once. ISO 15765-4 gives a frame a service, a parameter and a value; it gives
+// it no requester, because an answer on this bus is a broadcast and every
+// listener sees it. So the two histories below are not two scenarios as far as
+// this transport is concerned - they are the same call with the same
+// arguments, and they must come out the same way.
+//
+// What is being tested is therefore not that the device takes its own answer,
+// which nothing can do, but that the decision depends on nothing the device
+// cannot see: taking the answer is safe because it is the parameter we asked
+// for, from the block we address, read at the moment it passed the bus.
+void testTwoTestersAskingTheSameParameterIsOneAnswer() {
+  TelemetryData telemetry;
+
+  // Road speed, the first of the three clear-safety verifications: one byte of
+  // data, the answer arrives once and both testers see it.
+  ObdDiagnostics alone(telemetry);
+  identifyEngine(alone);
+  CHECK(alone.requestClear(1));
+  finishEmptyPreclear(alone, 1);
+  build(alone, 10, 0x7E0, 2, 0x01, 0x0D);
+  accept(alone, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 11);
+  const DtcOperation onAnEmptyBus = alone.state().operation;
+
+  ObdDiagnostics shared(telemetry);
+  identifyEngine(shared);
+  CHECK(shared.requestClear(1));
+  finishEmptyPreclear(shared, 1);
+  build(shared, 10, 0x7E0, 2, 0x01, 0x0D);
+  // The controller's request for the same parameter, passing the bus first.
+  reject(shared, frame(0x7DF, {0x02, 0x01, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00}),
+         11);
+  // One answer. Both testers see it; neither can tell it from the other's, so
+  // the state machine must end up in exactly the same place either way.
+  accept(shared, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 12);
+  CHECK(shared.state().operation == onAnEmptyBus);
+  CHECK(shared.state().operation == DtcOperation::VerifyRpm);
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -1009,6 +1107,8 @@ int main() {
   testForeignMode01AnswerDoesNotEndAVerification();
   testVoltageVerificationIgnoresAnotherPid();
   testReadMonitorIsNotSatisfiedByAnotherPid();
-  std::printf("OBD diagnostics tests: %d groups passed\n", 22);
+  testEveryTalkerAnswersAndOnlyOursIsTaken();
+  testTwoTestersAskingTheSameParameterIsOneAnswer();
+  std::printf("OBD diagnostics tests: %d groups passed\n", 24);
   return 0;
 }

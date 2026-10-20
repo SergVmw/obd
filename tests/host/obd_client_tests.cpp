@@ -1231,6 +1231,70 @@ void testAnswerToAnotherTesterIsNotCredited() {
   CHECK(rig.awaitingPid(0x01, 0x0C));
 }
 
+// The bus as it actually is: the gearbox answering questions of its own, the
+// engine answering the LPG controller, and in among it the one frame we asked
+// for. Nothing in a frame says who asked, so the choice is made on what can be
+// read: the parameter, and whether the bytes the parameter needs are there.
+// Three frames arrive that are not ours to count and one that is too short to
+// read; the request stays on the wire through all four.
+void testEveryBlockTalkingAtOnce() {
+  Rig rig;
+  rig.identifyEngine();
+
+  // A reading to recognise: 1875 rpm, already on the dashboard.
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint8_t first[] = {0x04, 0x41, 0x0C, 0x1D, 0x4C};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, first, sizeof(first)));
+  rig.deliver();
+  CHECK(rig.telemetry.rpm.value > 1874.0f && rig.telemetry.rpm.value < 1876.0f);
+
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint32_t beforeResponses = rig.telemetry.obdResponseCount;
+  const uint32_t beforeUnsolicited = rig.telemetry.obdUnsolicitedCount;
+  const uint32_t beforeMalformed = rig.telemetry.obdMalformedCount;
+
+  // The gearbox, on its own business: road speed, which we did not ask for.
+  const uint8_t gearbox[] = {0x03, 0x41, 0x0D, 0x2A};
+  // The engine answering the controller: coolant, which we did not ask for.
+  const uint8_t coolant[] = {0x03, 0x41, 0x05, 0x5A};
+  // Engine speed - ours - with one of its two bytes missing. Read anyway it
+  // would say 2688 rpm, so this is the frame that must not be decoded.
+  const uint8_t truncated[] = {0x03, 0x41, 0x0C, 0x2A};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, gearbox, sizeof(gearbox)));
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, coolant, sizeof(coolant)));
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, truncated, sizeof(truncated)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.obdResponseCount == beforeResponses);
+  CHECK(rig.telemetry.obdUnsolicitedCount == beforeUnsolicited + 2);
+  CHECK(rig.telemetry.obdMalformedCount == beforeMalformed + 1);
+  CHECK(rig.telemetry.malformedPid == 0x0C);
+  CHECK(rig.telemetry.malformedEcuId == 0x7E8);
+  CHECK(rig.telemetry.malformedExpected == 4);
+  CHECK(rig.telemetry.malformedReceived == 3);
+  // Still 1875, not 2688: the short answer changed nothing.
+  CHECK(rig.telemetry.rpm.value > 1874.0f && rig.telemetry.rpm.value < 1876.0f);
+  // The two foreign readings are real, so they are used: 42 km/h and 50 C.
+  // Speed is kept raw here and offset by configuration later, so the proof
+  // that the frame was applied is the raw value.
+  CHECK(rig.telemetry.rawSpeedKph.value > 41.0f &&
+        rig.telemetry.rawSpeedKph.value < 43.0f);
+  CHECK(rig.telemetry.coolantC.value > 49.0f &&
+        rig.telemetry.coolantC.value < 51.0f);
+  // Not served, so the request is still the one on the wire.
+  CHECK(rig.awaitingPid(0x01, 0x0C));
+
+  // And the answer that is ours: 896 rpm, the only frame of the burst that
+  // ends the request.
+  const uint8_t answer[] = {0x04, 0x41, 0x0C, 0x0E, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+  CHECK(rig.telemetry.obdResponseCount == beforeResponses + 1);
+  CHECK(rig.telemetry.obdUnsolicitedCount == beforeUnsolicited + 2);
+  CHECK(rig.telemetry.rpm.value > 895.0f && rig.telemetry.rpm.value < 897.0f);
+  CHECK(!rig.awaitingPid(0x01, 0x0C));
+}
+
 int main() {
   test("a manifold picks the engine and speed alone cannot",
        testManifoldDecidesTheEngineAndSpeedAloneCannot);
@@ -1308,6 +1372,8 @@ int main() {
        testOverLongAnswerIsDecodedAndCounted);
   test("an answer to another tester is not credited",
        testAnswerToAnotherTesterIsNotCredited);
+  test("every block talking at once and only ours is taken",
+       testEveryBlockTalkingAtOnce);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

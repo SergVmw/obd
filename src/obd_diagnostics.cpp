@@ -644,9 +644,17 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     //
     // Accepting the wrong one ended the request, and processVerificationPayload
     // only then compared the PID: a mismatch made it return false, which marks
-    // the whole scan malformed or fails a DTC clear as unverifiable. Against
-    // 750 ms of waiting that is about one request in five, and three
-    // verifications in a row turn a spurious clear failure into a coin toss.
+    // the whole scan malformed or fails a DTC clear as unverifiable.
+    //
+    // How often. The controller asks about 9.5 times a second - 15 939 frames
+    // received on 0x7DF in a 1672-second capture - so an answer to its requests
+    // passes roughly every 105 ms, and our own answer takes 12 to 13 ms to
+    // arrive, measured on this vehicle. The wrong one wins when it falls inside
+    // that window: about one request in eight, and a clear needs three
+    // verifications in a row, which puts a spurious failure near one clear in
+    // three. Both are estimates from those two rates, not counted failures: the
+    // capture keeps no timestamp per frame, so the rate it was never measured
+    // directly.
     //
     // Length is taken from the same table the poller uses. An answer with the
     // right PID but too few bytes to decode is not an answer either.
@@ -687,6 +695,20 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     // ECU is locked. Every request after discovery already carries a responseId_
     // pinned by buildRequest, so there is nothing here to fix up.
     if (discovery) return false;
+    // Service 01 has no multi-frame answers to refuse. The largest one this
+    // transport can provoke is six bytes - the service, the echoed PID and the
+    // four data bytes of monitor status - and a Single Frame holds seven, so a
+    // conforming block cannot answer Mode 01 any other way. A First Frame
+    // carrying 0x41 therefore answers a request this device did not send.
+    //
+    // The PID can only be compared when the frame is long enough to carry one:
+    // two bytes of PCI and the service byte fill three, and the parameter sits
+    // behind them. With three bytes on the wire there was nothing to compare,
+    // so the frame was assembled and processVerificationPayload found the
+    // mismatch afterwards - which is the failure this whole comparison exists
+    // to prevent, a verdict about the vehicle drawn from somebody else's
+    // answer. Refuse the frame instead of the scan.
+    if (requestedService == 0x01) return false;
     if (message.data_length_code < 3) return false;
     const size_t payloadLength =
         (static_cast<size_t>(message.data[0] & 0x0FU) << 8) |
@@ -694,13 +716,6 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     if (payloadLength == 0) return false;
     const uint8_t first = message.data[2];
     if (first != expectedService && first != 0x7F) return false;
-    // Same race across a multi-frame reply: for service 0x01 the PID sits one
-    // byte further in, behind the two-byte length, and is just as unchecked.
-    if (requestedService == 0x01 && first == expectedService &&
-        message.data_length_code >= 4 &&
-        message.data[3] != pidForRequest(request_)) {
-      return false;
-    }
 
     resetAssembly();
     responseExpected_ = payloadLength;

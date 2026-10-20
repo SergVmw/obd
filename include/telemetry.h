@@ -127,22 +127,36 @@ struct TelemetryData {
   // it is a statement about this moment, not a setting.
   const char* screenOffReason = "lit";
   uint32_t obdResponseCount = 0;
-  // Answers that could not be decoded because the bytes the parameter needs
-  // were not in the frame. Counted rather than only dropped: whether any block
-  // on this vehicle answers short is a question about the vehicle, and until
-  // it is answered, the choice to refuse such an answer cannot be shown to
-  // have cost nothing.
+  // Mode 01 answers that carried fewer bytes than the parameter needs: counted
+  // instead of decoded. This is not a count of damaged frames. Everything that
+  // fails a transport check - wrong PCI, wrong service, a length byte that
+  // disagrees with the frame - is dropped before this point and never appears
+  // here, so a zero says nothing about how many broken frames the bus carried.
+  // What it says is that no block answered a parameter of ours too short to
+  // read. One answer is exempt by design: PID 03 is accepted with one data
+  // byte where the standard defines two (see obd_pid_specs.h), so it is never
+  // counted here either.
+  //
+  // Counted rather than only dropped: whether any block on this vehicle
+  // answers short is a question about the vehicle, and until it is answered,
+  // the choice to refuse such an answer cannot be shown to have cost nothing.
   uint32_t obdMalformedCount = 0;
   // Answers carrying more bytes than the parameter needs. These are decoded --
   // the normative bytes sit in the normative positions -- but they are counted,
   // because a block that over-delivers on one parameter may over-deliver on
   // another where the extra bytes are not padding behind a complete value.
   uint32_t obdOverLongCount = 0;
-  // Answers to somebody else's request. The LPG controller shares this bus and
-  // asks for Mode 01 parameters of its own; every block answers it and every
-  // answer reaches us. The data is real, but no request of ours produced it, so
-  // it must not be counted as one -- otherwise the "connected" indicator and
-  // the timeout rate describe the other device's traffic as if it were ours.
+  // Mode 01 answers that arrived while no matching request of ours was waiting.
+  // On this bus most of them are the LPG controller's own polling being
+  // answered, but this is not a counter of the controller's traffic: a late
+  // duplicate of an answer we already took, and an answer to a request of ours
+  // that arrived after the request was closed, land here too. The reverse is
+  // not countable at all - when two testers ask for the same parameter the
+  // block answers once, and no frame says which of them it was for.
+  //
+  // The data in these answers is real and is applied; what is withheld is the
+  // credit for it, so that the "connected" indicator and the timeout rate
+  // describe what we asked for and not whatever else the bus was carrying.
   uint32_t obdUnsolicitedCount = 0;
   // The last answer refused for length, with what was expected and what
   // arrived. One record, overwritten: it is kept so "which block, which
