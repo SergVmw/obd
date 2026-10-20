@@ -36,6 +36,17 @@ void accept(ObdDiagnostics& diagnostics, const twai_message_t& message,
   }
 }
 
+// The mirror of accept(): a frame the transport must not touch. Used for the
+// answers another tester's requests produce - they are on the bus, they are
+// addressed like ours and they must leave the pending request alone.
+void reject(ObdDiagnostics& diagnostics, const twai_message_t& message,
+            uint32_t now) {
+  twai_message_t flow{};
+  bool needsFlowControl = false;
+  CHECK(!diagnostics.handleFrame(message, now, flow, needsFlowControl));
+  CHECK(!needsFlowControl);
+}
+
 void build(ObdDiagnostics& diagnostics, uint32_t now, uint32_t id,
            uint8_t length, uint8_t service, int pid = -1) {
   twai_message_t request{};
@@ -892,6 +903,88 @@ void testTheFirstCategoryIsRescuedTooWhenOthersAnswer() {
   CHECK(state.entryCount == 0);
 }
 
+// Five of the nine diagnostic requests are service 0x01 - the discovery
+// exchange, monitor status and the three clear-safety verifications - and a
+// Mode 01 answer is told apart by its service byte alone. The LPG controller on
+// this bus asks for Mode 01 parameters of its own, so while one of those five
+// requests is in flight the frames arriving are our answer plus its answers,
+// and all of them carry 0x41.
+//
+// The first one used to end the request. The PID was compared afterwards,
+// inside processVerificationPayload, whose rejection marks the whole scan
+// malformed or fails the clear as unverifiable - a verdict about the vehicle
+// drawn from a frame that answered somebody else's question.
+void testForeignMode01AnswerDoesNotEndAVerification() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  identifyEngine(diagnostics);
+  CHECK(diagnostics.requestClear(1));
+  finishEmptyPreclear(diagnostics, 1);
+  CHECK(diagnostics.state().operation == DtcOperation::VerifySpeed);
+
+  build(diagnostics, 10, 0x7E0, 2, 0x01, 0x0D);
+  // The controller asked for engine speed. Same service byte ours would carry.
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 11);
+  CHECK(diagnostics.waiting());
+  CHECK(diagnostics.state().operation == DtcOperation::VerifySpeed);
+  // What the old code produced: the verification was declared unavailable on a
+  // frame that answered the LPG controller instead of us.
+  CHECK(diagnostics.state().clearResult !=
+        DtcClearResult::VerificationUnavailable);
+
+  // Ours still completes the step.
+  accept(diagnostics, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 12);
+  CHECK(diagnostics.state().operation == DtcOperation::VerifyRpm);
+}
+
+// Voltage is the exposed step. The controller polls engine speed and road speed
+// continuously and control module voltage rarely if ever, so nearly everything
+// arriving in this window is an answer to somebody else's request.
+void testVoltageVerificationIgnoresAnotherPid() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  identifyEngine(diagnostics);
+  CHECK(diagnostics.requestClear(1));
+  finishEmptyPreclear(diagnostics, 1);
+
+  build(diagnostics, 10, 0x7E0, 2, 0x01, 0x0D);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 11);
+  build(diagnostics, 12, 0x7E0, 2, 0x01, 0x0C);
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x00, 0x00}), 13);
+  build(diagnostics, 14, 0x7E0, 2, 0x01, 0x42);
+  reject(diagnostics, frame(0x7E8, {0x03, 0x41, 0x0D, 0x00}), 15);
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 16);
+  CHECK(diagnostics.waiting());
+  CHECK(diagnostics.state().operation == DtcOperation::VerifyVoltage);
+  CHECK(diagnostics.state().clearResult !=
+        DtcClearResult::VerificationUnavailable);
+  // 12.400 V, and it is the only answer that finishes this step.
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x42, 0x30, 0x70}), 17);
+  CHECK(diagnostics.state().operation == DtcOperation::Clearing);
+}
+
+// Monitor status is the one that costs a whole scan rather than one clear: a
+// foreign answer to ReadMonitor marks stored DTCs malformed and leaves pending
+// and permanent unscanned.
+void testReadMonitorIsNotSatisfiedByAnotherPid() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  // The engine-only parameter is observed first, so the RPM answer that
+  // discovery is waiting for completes the pair and the scan can move on to
+  // monitor status with the engine bound.
+  CHECK(diagnostics.observeEngineResponse(0x7E8, 0x0B, true));
+  CHECK(diagnostics.requestScan(10));
+  build(diagnostics, 10, 0x7DF, 2, 0x01, 0x0C);
+  accept(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 11);
+  build(diagnostics, 12, 0x7E0, 2, 0x01, 0x01);
+  reject(diagnostics, frame(0x7E8, {0x04, 0x41, 0x0C, 0x0F, 0xA0}), 13);
+  CHECK(diagnostics.waiting());
+  CHECK(diagnostics.state().storedStatus != DtcCategoryStatus::Malformed);
+  accept(diagnostics, frame(0x7E8, {0x06, 0x41, 0x01, 0x00, 0x00, 0x00, 0x00}),
+         14);
+  CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Reading);
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -913,6 +1006,9 @@ int main() {
   testClearRejectsMovingEngineAndUnsafeVoltage();
   testClearNegativeResponseAndBusyGate();
   testClearRefusesIncompleteScanAndFailedPreservation();
-  std::printf("OBD diagnostics tests: %d groups passed\n", 19);
+  testForeignMode01AnswerDoesNotEndAVerification();
+  testVoltageVerificationIgnoresAnotherPid();
+  testReadMonitorIsNotSatisfiedByAnotherPid();
+  std::printf("OBD diagnostics tests: %d groups passed\n", 22);
   return 0;
 }

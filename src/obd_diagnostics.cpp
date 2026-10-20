@@ -1,5 +1,7 @@
 #include "obd_diagnostics.h"
 
+#include "obd_pid_specs.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -629,15 +631,41 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     const uint8_t first = message.data[1];
     const bool matchingNegative = payloadLength >= 3 && first == 0x7F &&
                                   message.data[2] == requestedService;
+    // Compare the PID for every Mode 01 request, not only for discovery.
+    //
+    // Five of the nine diagnostic requests are service 0x01: the discovery
+    // exchange, monitor status, and the three clear-safety verifications. A
+    // Mode 01 answer is told apart by its service byte, so an answer to any
+    // other tester's Mode 01 request carries the same 0x41 that ours does and
+    // passes the check. The LPG controller on this bus asks for Mode 01
+    // parameters roughly ten times a second, and it keeps doing so with the
+    // ignition off; while one of those five requests is in flight the frames
+    // arriving are our answer plus its answers, and the first one wins.
+    //
+    // Accepting the wrong one ended the request, and processVerificationPayload
+    // only then compared the PID: a mismatch made it return false, which marks
+    // the whole scan malformed or fails a DTC clear as unverifiable. Against
+    // 750 ms of waiting that is about one request in five, and three
+    // verifications in a row turn a spurious clear failure into a coin toss.
+    //
+    // Length is taken from the same table the poller uses. An answer with the
+    // right PID but too few bytes to decode is not an answer either.
+    const bool mode01 = requestedService == 0x01;
+    const uint8_t payloadBytes = static_cast<uint8_t>(payloadLength);
+    const bool pidMatches =
+        !mode01 ||
+        (payloadLength >= 3 && message.data[2] == pidForRequest(request_));
+    const bool lengthMatches =
+        !mode01 ||
+        ObdPidSpecs::payloadSufficient(pidForRequest(request_), payloadBytes);
+    const bool matchingPositive =
+        first == expectedService && pidMatches && lengthMatches;
     if (discovery) {
       // A functional request can produce replies from several ECUs. Only a
       // structurally valid RPM reply identifies the engine ECU; unrelated
       // positive replies and NRCs must not win the race or terminate discovery.
-      if (first != expectedService || payloadLength < 4 ||
-          message.data[2] != pidForRequest(request_)) {
-        return false;
-      }
-    } else if (first != expectedService && !matchingNegative) {
+      if (!matchingPositive) return false;
+    } else if (!matchingPositive && !matchingNegative) {
       return false;
     }
 
@@ -666,6 +694,13 @@ bool ObdDiagnostics::handleFrame(const twai_message_t& message, uint32_t now,
     if (payloadLength == 0) return false;
     const uint8_t first = message.data[2];
     if (first != expectedService && first != 0x7F) return false;
+    // Same race across a multi-frame reply: for service 0x01 the PID sits one
+    // byte further in, behind the two-byte length, and is just as unchecked.
+    if (requestedService == 0x01 && first == expectedService &&
+        message.data_length_code >= 4 &&
+        message.data[3] != pidForRequest(request_)) {
+      return false;
+    }
 
     resetAssembly();
     responseExpected_ = payloadLength;

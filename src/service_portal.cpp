@@ -1477,6 +1477,26 @@ void ServicePortal::sendStatus() {
     doc["vinEcuId"] = nullptr;
   }
   doc["timeouts"] = telemetry_.obdTimeoutCount;
+  // Three counts that say what the counters above are counting. Responses come
+  // from requests of ours; unsolicited ones are answers the LPG controller's
+  // own polling produced, which reach every listener on the bus. Malformed ones
+  // were refused for carrying fewer bytes than the parameter needs. Over-long
+  // ones were decoded - the normative bytes sit in the normative positions -
+  // but the standard defines no such extra bytes, so they are recorded.
+  doc["unsolicitedResponses"] = telemetry_.obdUnsolicitedCount;
+  doc["malformedResponses"] = telemetry_.obdMalformedCount;
+  doc["overLongResponses"] = telemetry_.obdOverLongCount;
+  if (telemetry_.malformedReceived != 0) {
+    JsonObject bad = doc["lastMalformedResponse"].to<JsonObject>();
+    char ecuId[8];
+    char pid[6];
+    snprintf(ecuId, sizeof(ecuId), "0x%03X", telemetry_.malformedEcuId);
+    snprintf(pid, sizeof(pid), "0x%02X", telemetry_.malformedPid);
+    bad["ecuId"] = ecuId;
+    bad["pid"] = pid;
+    bad["expectedBytes"] = telemetry_.malformedExpected;
+    bad["receivedBytes"] = telemetry_.malformedReceived;
+  }
   doc["freeHeap"] = ESP.getFreeHeap();
   JsonObject dtc = doc["dtc"].to<JsonObject>();
   dtc["milKnown"] = telemetry_.milStatusKnown;

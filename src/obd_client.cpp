@@ -1,5 +1,7 @@
 #include "obd_client.h"
 
+#include "obd_pid_specs.h"
+
 #include <math.h>
 #include <esp_log.h>
 
@@ -650,6 +652,32 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   }
 
   const uint8_t pid = message.data[2];
+  // Normative length, checked before anything reads a byte of the answer.
+  //
+  // The check used to sit inside the branch below, which decides which block is
+  // the engine, so it ran while the engine ECU was still being identified and
+  // stopped the moment identification settled: 0x0C is not one of the four
+  // engine-only parameters, so engineIdentityDecides() returns false for it as
+  // soon as any block holds the identity, which is the state the vehicle is in
+  // for the whole of every drive. In that state a two-byte parameter answered
+  // with one byte was decoded with the missing byte read as zero, and the
+  // request was then closed as answered, so it was never repeated.
+  //
+  // A short frame is refused here and recorded, not decoded. The counter is
+  // what turns "no block on this vehicle does this" from an assumption into an
+  // observation, and it is the only way to find out what refusing them costs.
+  if (!ObdPidSpecs::payloadSufficient(pid, payloadLength)) {
+    ++telemetry_.obdMalformedCount;
+    telemetry_.malformedPid = pid;
+    telemetry_.malformedEcuId = static_cast<uint16_t>(message.identifier);
+    telemetry_.malformedExpected = ObdPidSpecs::minPayloadLength(pid);
+    telemetry_.malformedReceived = payloadLength;
+    return;
+  }
+  if (ObdPidSpecs::isOverLong(pid, payloadLength)) {
+    ++telemetry_.obdOverLongCount;
+  }
+
   // Identity needs an observed RPM answer as well as an engine-only one, and
   // 0x0C cannot be both: once the mask claims two parameters it stops being an
   // identity signal, and 0x0C is not an engine-data PID either, so it falls to
@@ -662,7 +690,10 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     diagnostics_.noteRpmAnswer(message.identifier, identityDiscriminates());
   }
   if (engineIdentityDecides(message.identifier, pid)) {
-    if (payloadLength < (pid == 0x0C ? 4 : 3)) return;
+    // No length check here any more. It used to be the only one, and being
+    // inside this branch meant it stopped being reached once the engine ECU
+    // was identified -- which is when the vehicle is actually being driven.
+    // The normative check now runs above, for every answer, before this point.
     if (!diagnostics_.acceptsEngineResponse(message.identifier)) {
       if (!diagnostics_.observeEngineResponse(message.identifier, pid,
                                               identityDiscriminates())) {
@@ -726,9 +757,21 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
   const uint8_t a = message.data[3];
   const uint8_t b = payloadLength >= 4 ? message.data[4] : 0;
 
-  telemetry_.lastObdResponseAt = now;
-  telemetry_.obdResponseCount++;
-  telemetry_.ecuResponseId = static_cast<uint16_t>(message.identifier);
+  // Credited only when the answer belongs to a request of ours. The LPG
+  // controller shares the bus and polls Mode 01 itself, so answers to its
+  // requests arrive continuously and are structurally indistinguishable from
+  // answers to ours -- same blocks, same parameters, same frame format. They
+  // carry real data and the switch below still applies it, because dropping
+  // them would leave the portal blind whenever our own polling is paused. But
+  // counting them as ours made the timeout rate describe the other device, and
+  // let "connected" stay lit on traffic that never answered anything we asked.
+  if (matchedMode01Request) {
+    telemetry_.lastObdResponseAt = now;
+    telemetry_.obdResponseCount++;
+    telemetry_.ecuResponseId = static_cast<uint16_t>(message.identifier);
+  } else {
+    ++telemetry_.obdUnsolicitedCount;
+  }
   // The engine identity is decided once, by PID 0C, and mirrored here so the
   // dashboard and the portal can show it without reaching into the
   // diagnostics transport. ecuResponseId above is deliberately left as the

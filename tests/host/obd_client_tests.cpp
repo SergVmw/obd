@@ -1153,6 +1153,84 @@ void testTrafficEndsTheHoldOffBeforeItExpires() {
   CHECK(h2g_twai_stub::transmitted().size() > before);
 }
 
+// A two-byte parameter answered with one byte used to be decoded with the
+// missing byte read as zero, and the request was then closed as answered, so it
+// was never repeated. The length check that was supposed to stop this sat inside
+// the branch that decides which block is the engine, and 0x0C is not one of the
+// four parameters that branch votes on, so the check stopped being reached at
+// exactly the moment the vehicle settled - which is the whole of every drive.
+void testShortEngineSpeedAnswerIsNotDecoded() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint8_t good[] = {0x04, 0x41, 0x0C, 0x1D, 0x4C};  // 7500/4 = 1875 rpm
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, good, sizeof(good)));
+  rig.deliver();
+  CHECK(rig.telemetry.rpm.value > 1874.0f && rig.telemetry.rpm.value < 1876.0f);
+
+  const uint32_t beforeMalformed = rig.telemetry.obdMalformedCount;
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  // One data byte. Decoded with B = 0 this would read 896 rpm instead of
+  // whatever the engine is actually doing.
+  const uint8_t truncated[] = {0x03, 0x41, 0x0C, 0x0E};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, truncated, sizeof(truncated)));
+  rig.deliver();
+  CHECK(rig.telemetry.rpm.value > 1874.0f && rig.telemetry.rpm.value < 1876.0f);
+  CHECK(rig.telemetry.obdMalformedCount == beforeMalformed + 1);
+  CHECK(rig.telemetry.malformedPid == 0x0C);
+  CHECK(rig.telemetry.malformedEcuId == 0x7E8);
+  CHECK(rig.telemetry.malformedExpected == 4);
+  CHECK(rig.telemetry.malformedReceived == 3);
+  // Not served, so the request is still the one on the wire.
+  CHECK(rig.awaitingPid(0x01, 0x0C));
+}
+
+// The opposite direction: more bytes than the parameter needs. The normative
+// ones sit in the normative positions, so the frame is decoded - a block that
+// answers engine speed and vehicle speed together has not sent a corrupt
+// answer - but it is counted, because a block that over-delivers here may
+// over-deliver where the extra bytes are not padding.
+void testOverLongAnswerIsDecodedAndCounted() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.pumpUntilPidPending(0x01, 0x0C);
+  const uint8_t combined[] = {0x05, 0x41, 0x0C, 0x1D, 0x4C, 0x2A};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, combined, sizeof(combined)));
+  rig.deliver();
+  CHECK(rig.telemetry.rpm.value > 1874.0f && rig.telemetry.rpm.value < 1876.0f);
+  CHECK(rig.telemetry.obdOverLongCount == 1);
+}
+
+// The LPG controller shares this bus and asks for Mode 01 parameters of its
+// own. Every block answers it and every answer reaches us, indistinguishable
+// from an answer to a request of ours. The data is real, so it is still applied
+// - dropping it would leave the portal reading nothing whenever our own
+// polling is paused - but it is not ours to count: the response rate, the
+// timeout rate and the "connected" indicator all describe what we asked for.
+void testAnswerToAnotherTesterIsNotCredited() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.pumpUntilPidPending(0x01, 0x0C);
+
+  const uint32_t beforeResponses = rig.telemetry.obdResponseCount;
+  const uint32_t beforeUnsolicited = rig.telemetry.obdUnsolicitedCount;
+  const uint32_t beforeAt = rig.telemetry.lastObdResponseAt;
+  // The controller asked for coolant temperature; the engine answered it while
+  // we are waiting for engine speed.
+  const uint8_t coolant[] = {0x03, 0x41, 0x05, 0x5A};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, coolant, sizeof(coolant)));
+  rig.deliver();
+
+  CHECK(rig.telemetry.obdResponseCount == beforeResponses);
+  CHECK(rig.telemetry.lastObdResponseAt == beforeAt);
+  CHECK(rig.telemetry.obdUnsolicitedCount == beforeUnsolicited + 1);
+  // 0x5A - 40 = 50 C, and it is a real reading, so it is still used.
+  CHECK(rig.telemetry.coolantC.valid(hostMillis));
+  CHECK(rig.telemetry.coolantC.value > 49.0f && rig.telemetry.coolantC.value < 51.0f);
+  CHECK(rig.awaitingPid(0x01, 0x0C));
+}
+
 int main() {
   test("a manifold picks the engine and speed alone cannot",
        testManifoldDecidesTheEngineAndSpeedAloneCannot);
@@ -1224,6 +1302,12 @@ int main() {
        testAStuckBusIsProbedRatherThanHammered);
   test("traffic ends the hold-off before it expires",
        testTrafficEndsTheHoldOffBeforeItExpires);
+  test("a short engine speed answer is not decoded",
+       testShortEngineSpeedAnswerIsNotDecoded);
+  test("an over-long answer is decoded and counted",
+       testOverLongAnswerIsDecodedAndCounted);
+  test("an answer to another tester is not credited",
+       testAnswerToAnotherTesterIsNotCredited);
   std::cout << testsRun << " obd client tests passed\n";
   return 0;
 }

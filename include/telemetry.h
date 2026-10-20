@@ -127,6 +127,30 @@ struct TelemetryData {
   // it is a statement about this moment, not a setting.
   const char* screenOffReason = "lit";
   uint32_t obdResponseCount = 0;
+  // Answers that could not be decoded because the bytes the parameter needs
+  // were not in the frame. Counted rather than only dropped: whether any block
+  // on this vehicle answers short is a question about the vehicle, and until
+  // it is answered, the choice to refuse such an answer cannot be shown to
+  // have cost nothing.
+  uint32_t obdMalformedCount = 0;
+  // Answers carrying more bytes than the parameter needs. These are decoded --
+  // the normative bytes sit in the normative positions -- but they are counted,
+  // because a block that over-delivers on one parameter may over-deliver on
+  // another where the extra bytes are not padding behind a complete value.
+  uint32_t obdOverLongCount = 0;
+  // Answers to somebody else's request. The LPG controller shares this bus and
+  // asks for Mode 01 parameters of its own; every block answers it and every
+  // answer reaches us. The data is real, but no request of ours produced it, so
+  // it must not be counted as one -- otherwise the "connected" indicator and
+  // the timeout rate describe the other device's traffic as if it were ours.
+  uint32_t obdUnsolicitedCount = 0;
+  // The last answer refused for length, with what was expected and what
+  // arrived. One record, overwritten: it is kept so "which block, which
+  // parameter" can be read off a dump instead of guessed at.
+  uint8_t malformedPid = 0;
+  uint16_t malformedEcuId = 0;
+  uint8_t malformedExpected = 0;
+  uint8_t malformedReceived = 0;
   // VIN as read from the vehicle, empty until it is known. The client owns the
   // one-shot request and copies the result here so the dashboard and the
   // portal do not need a dependency on the transport.
