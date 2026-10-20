@@ -577,6 +577,51 @@ int main() {
     CHECK(r.events.size() == 4);
     for (const auto e : r.events) CHECK(e == ButtonEvent::ShortPress);
   });
+  // The class was never the problem: the gesture is recognised or not
+  // depending on what loop() hands it, and that call site is in main.cpp where
+  // no compiled test can see it. These three pin the contract the call site
+  // relies on, so the wiring can be checked without an ESP32 in the loop.
+  test("the dashboard screen follows brightness mode, not a forced setting", [] {
+    // -1 is "ask the brightness mode": four presses switch day and night in
+    // manual, and are four page turns in every other mode.
+    ButtonRig manual;
+    manual.button.setMultiClickMode(-1);
+    manual.config.brightness.mode = BrightnessMode::Manual;
+    for (int i = 0; i < 4; ++i) manual.click();
+    manual.run(1000, false);
+    CHECK(manual.events.size() == 1 &&
+          manual.events[0] == ButtonEvent::QuadPress);
+
+    ButtonRig automatic;
+    automatic.button.setMultiClickMode(-1);
+    automatic.config.brightness.mode = BrightnessMode::Auto;
+    for (int i = 0; i < 4; ++i) automatic.click();
+    CHECK(automatic.events.size() == 4);
+    for (const auto e : automatic.events) CHECK(e == ButtonEvent::ShortPress);
+  });
+
+  test("a series forced off never reaches four presses in any brightness mode",
+       [] {
+    // What 0 means, and what the dashboard screen asked for from 0.4.24 to
+    // 0.4.26: the quad-press handler in loop() existed and could not be
+    // reached by pressing the button, manual brightness or not.
+    ButtonRig r;
+    r.button.setMultiClickMode(0);
+    for (int i = 0; i < 4; ++i) r.click();
+    CHECK(r.events.size() == 4);
+    for (const auto e : r.events) CHECK(e == ButtonEvent::ShortPress);
+  });
+
+  test("service mode keeps the two-press selector in automatic brightness", [] {
+    ButtonRig r;
+    r.button.setMultiClickMode(1);
+    r.config.brightness.mode = BrightnessMode::Auto;
+    r.click();
+    r.click();
+    r.run(1000, false);
+    CHECK(r.events.size() == 1 && r.events[0] == ButtonEvent::DoublePress);
+  });
+
   test("long and service holds cancel pending clicks, never trigger quadruple", [] {
     ButtonRig r; r.click(); r.run(2000, true); r.run(600, false);
     CHECK(r.events.size() == 1 && r.events[0] == ButtonEvent::LongPress);

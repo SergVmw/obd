@@ -67,6 +67,21 @@ assert ui.index('ledcWrite(0, 0)') < ui.index('tft_.init()')
 assert ui.index('tft_.fillScreen(kBackground)') < ui.index('setBrightness(initialBrightnessPercent')
 assert main.index('brightnessManager.update(now') < main.index('if (serviceMode) {'), "ADC/PWM must run in service too"
 assert 'ButtonEvent::QuadPress' in main and 'c = previous;' in main
+# The quad-press handler in loop() is reachable only if the button is allowed to
+# recognise a series, and on the dashboard screen that is the brightness mode's
+# decision, not the call site's. 0 means "never", which is how 0.4.26 shipped a
+# day/night gesture the button could not produce; -1 means "ask the setting",
+# which is what the README documents and what the host tests exercise.
+call = re.search(r"button\.setMultiClickMode\(serviceMode \? (-?\d+) : (-?\d+)\)",
+                 main)
+assert call, "setMultiClickMode call site not found in main.cpp"
+assert call.group(1) == '1', (
+    f"service mode must force the series on, got {call.group(1)}: the rollback "
+    f"slot selector has to work in automatic brightness too")
+assert call.group(2) == '-1', (
+    f"the dashboard screen must derive the series from the brightness mode "
+    f"(-1), got {call.group(2)}: 0 disables it and the quad-press handler in "
+    f"loop() becomes unreachable from the button")
 assert '/api/brightness/calibration/reset' in html and '/api/brightness/calibration/reset' in portal
 assert 'light-calibration-reset' in html and 'light-calibration-reset' in portal
 assert 'brightnessStatus(null)' in html, "stale live readings must be cleared on failure"

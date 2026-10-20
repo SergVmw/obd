@@ -369,7 +369,13 @@ void loop() {
   // page turn. Stated here rather than derived from the brightness setting,
   // because a slot selector that only works in manual brightness is a selector
   // most owners never find.
-  button.setMultiClickMode(serviceMode ? 1 : 0);
+  //
+  // The dashboard branch hands the decision back to the button (-1), which
+  // follows the brightness mode: four presses switch day and night in manual,
+  // and stay four page turns in every other mode. Handing it 0 instead forces
+  // the sequence off rather than leaving it to the setting, and the quad-press
+  // handler below becomes a documented gesture the button cannot produce.
+  button.setMultiClickMode(serviceMode ? 1 : -1);
   button.update(now, configStore.data());
   const ButtonEvent event = button.takeEvent();
   if (event == ButtonEvent::QuadPress &&
