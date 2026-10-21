@@ -466,6 +466,10 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
   const uint32_t restoreStartedUs = micros();
   restoreBackground();
   restoreMicrosTotal_ += micros() - restoreStartedUs;
+  // The diagnostics screen is last. It carries the VIN and the code counts,
+  // which are read once and then only looked up, while the trims page is part
+  // of a running drive: the cycle should reach what is watched before what is
+  // filed.
   switch (page_) {
     case 1:
       drawFuel(data, engine, config, now);
@@ -474,10 +478,10 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
       drawTemperatures(data, config, now);
       break;
     case 3:
-      drawDiagnostics(data, config, now);
+      drawLpg(data, engine, config, now);
       break;
     case 4:
-      drawLpg(data, engine, config, now);
+      drawDiagnostics(data, config, now);
       break;
     default:
       drawMain(data, engine, config, now);
@@ -511,11 +515,11 @@ bool DashboardUi::pageEnabled(uint8_t page, const ConfigData& config) const {
   if (page == 0) return true;
   if (page == 1) return config.pageFuel;
   if (page == 2) return config.pageTemperature;
-  if (page == 3) return config.pageDiagnostics;
   // The trims page only exists on a gassed car: without LPG the engine never
   // runs on it, both trim PIDs are not requested, and the page would show
   // nothing but an idle zero.
-  if (page == 4) return config.lpgEnabled;
+  if (page == 3) return config.lpgEnabled;
+  if (page == 4) return config.pageDiagnostics;
   return false;
 }
 
@@ -665,31 +669,108 @@ void DashboardUi::drawMain(const TelemetryData& data,
   drawText(centerUnit, 120, 132, MC_DATUM, kMuted, FontRole::Small,
            labelFont(config, true));
 
-  char current[16];
-  char average[16];
-  if (data.fuelValueValid) {
-    snprintf(current, sizeof(current), "%.1f", data.currentConsumption);
-  } else {
-    strlcpy(current, "--.-", sizeof(current));
-  }
-  // The average cell had no guard at all: with the engine shut down it printed
-  // whatever the petrol leg held, formatted as a normal figure. Asked the
-  // engine instead, so it and the two cells below cannot disagree.
-  if (engine.averageAvailable()) {
-    snprintf(average, sizeof(average), "%.1f",
-             engine.averageForCurrentFuel(config));
-  } else {
-    strlcpy(average, "--.-", sizeof(average));
-  }
-  drawValueCell(68, 169, current,
-                data.consumptionIsPerHour
-                    ? translated(config, "Л/Ч", "L/H")
-                    : translated(config, "ТЕКУЩИЙ", "CURRENT"),
-                config, config.colorText);
-  drawValueCell(172, 169, average,
-                translated(config, "СРЕДНИЙ", "AVERAGE"), config,
-                config.colorText);
+  drawMainCell(68, config.mainCellLeft(), data, engine, config, now);
+  drawMainCell(172, config.mainCellRight(), data, engine, config, now);
   drawStatusRow(data, config, now);
+}
+
+// What one of the two cells under the centre figure shows. The pair used to be
+// hard-wired to current consumption and the trip average; both are now a
+// choice, so each value carries its own unit and its own idea of when it can be
+// stated at all. The consumption figures ask the engine rather than reading
+// fields, which is what keeps a cell from disagreeing with the fuel screen
+// about the same number - and what keeps it from printing a petrol average with
+// the engine shut down, which is the defect the average cell was fixed for.
+void DashboardUi::drawMainCell(int16_t x, MainCellValue cell,
+                               const TelemetryData& data,
+                               const TelemetryEngine& engine,
+                               const ConfigData& config, uint32_t now) {
+  char value[16];
+  const char* unit = "";
+  bool valid = false;
+  switch (cell) {
+    case MainCellValue::Boost:
+      valid = data.mapKpa.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%+.2f", data.filteredBoostBar);
+      unit = translated(config, "БАР", "BAR");
+      break;
+    case MainCellValue::Speed:
+      valid = data.speedKph.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%.0f", data.speedKph.value);
+      unit = translated(config, "КМ/Ч", "KM/H");
+      break;
+    case MainCellValue::Rpm:
+      valid = data.rpm.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%.0f", data.rpm.value);
+      unit = translated(config, "ОБ/МИН", "RPM");
+      break;
+    // The unit rides on the value, as it does on the temperatures screen: the
+    // font has no degree sign, and a glyph it lacks renders as a blank rather
+    // than as something a reader could take for a typo.
+    case MainCellValue::Coolant:
+      valid = data.coolantC.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%.0f C", data.coolantC.value);
+      unit = translated(config, "ОХЛ. ЖИДК.", "COOLANT");
+      break;
+    case MainCellValue::IntakeAir:
+      valid = data.intakeAirC.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%.0f C", data.intakeAirC.value);
+      unit = translated(config, "ВОЗДУХ", "INTAKE");
+      break;
+    case MainCellValue::Voltage:
+      valid = data.ecuVoltage.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%.1f", data.ecuVoltage.value);
+      unit = translated(config, "ВОЛЬТ", "VOLTS");
+      break;
+    case MainCellValue::CurrentConsumption:
+      valid = data.fuelValueValid;
+      if (valid) snprintf(value, sizeof(value), "%.1f", data.currentConsumption);
+      unit = data.consumptionIsPerHour ? translated(config, "Л/Ч", "L/H")
+                                       : translated(config, "ТЕКУЩИЙ", "CURRENT");
+      break;
+    case MainCellValue::AverageConsumption:
+      valid = engine.averageAvailable();
+      if (valid) {
+        snprintf(value, sizeof(value), "%.1f",
+                 engine.averageForCurrentFuel(config));
+      }
+      unit = translated(config, "СРЕДНИЙ", "AVERAGE");
+      break;
+    // The propelled part only, which is the one figure a manufacturer number
+    // can be compared with.
+    case MainCellValue::AverageWhileMoving:
+      valid = engine.averageAvailable();
+      if (valid) {
+        snprintf(value, sizeof(value), "%.1f", engine.averageWhileMoving(config));
+      }
+      unit = translated(config, "В ДВИЖ.", "MOVING");
+      break;
+    // Standing burns fuel per hour, and a per-100 km rate for a queue would be
+    // meaningless, so this one keeps its own unit.
+    case MainCellValue::IdleConsumption: {
+      const float perHour = engine.idleLitersPerHour(config);
+      valid = perHour > 0.0f;
+      if (valid) snprintf(value, sizeof(value), "%.2f", perHour);
+      unit = translated(config, "ПРОСТОЙ Л/Ч", "IDLE L/H");
+      break;
+    }
+    case MainCellValue::IdleShare: {
+      const float share = engine.idleShareOfTrip();
+      valid = share > 0.05f;
+      if (valid) snprintf(value, sizeof(value), "%.0f%%", share);
+      unit = translated(config, "ПРОСТОИ", "IDLE %");
+      break;
+    }
+    // A value the firmware does not know is one a newer release wrote, and
+    // showing the boost it replaced is closer to the truth than a blank cell.
+    default:
+      valid = data.mapKpa.valid(now);
+      if (valid) snprintf(value, sizeof(value), "%+.2f", data.filteredBoostBar);
+      unit = translated(config, "БАР", "BAR");
+      break;
+  }
+  if (!valid) strlcpy(value, "--.-", sizeof(value));
+  drawValueCell(x, 169, value, unit, config, config.colorText);
 }
 
 void DashboardUi::drawValueCell(int16_t x, int16_t y, const char* value,

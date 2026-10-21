@@ -34,6 +34,11 @@ constexpr size_t kV8RecordSize = 216;
 // uint32_t checksum aligned. Everything a schema-8 record holds is the prefix
 // before its checksum, which is what migrateV8 copies.
 constexpr size_t kV9ChecksumOffset = 216;
+// Everything a schema-9 record holds. The copy stops at the first appended
+// byte: the two cell choices fill padding a schema-9 record never defined, so
+// copying the whole prefix would read whatever the compiler left there as a
+// choice of what the main screen shows.
+constexpr size_t kV9FieldsEnd = 214;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -49,9 +54,24 @@ static_assert(offsetof(ConfigData, lpgOnDelayMs) == kV8ChecksumOffset,
               "Schema-8 prefix changed; update the migration explicitly");
 static_assert(offsetof(ConfigData, checksum) == kV9ChecksumOffset,
               "Schema-9 checksum offset");
+static_assert(offsetof(ConfigData, cellLeftValue) == kV9FieldsEnd,
+              "Schema-9 prefix changed; update the migration explicitly");
 static_assert(kV9ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
+
+// The diagnostics screen moved to the end of the page cycle in 0.4.28, so the
+// number an owner chose no longer names the screen it named. Following the
+// screen rather than the index is what the setting means: a choice of content,
+// not a choice of position. Only a migrated record needs it - one already at
+// the current schema was written by code that knows the new order.
+void remapStartPageForReorderedPages(ConfigData& config) {
+  if (config.displayStartPage() == 3) {
+    config.setDisplayStartPage(4);  // diagnostics OBD, now last
+  } else if (config.displayStartPage() == 4) {
+    config.setDisplayStartPage(3);  // LPG trims, now fourth
+  }
+}
 
 uint32_t fnv1a(const uint8_t* bytes, size_t length) {
   uint32_t hash = 2166136261UL;
@@ -74,6 +94,9 @@ ConfigData ConfigStore::defaults() {
   c.rotation = 0;
   c.setDisplayStartPage(0);
   c.setMainCenterValue(MainCenterValue::Boost);
+  // What the first screen has always drawn, so an upgrade looks identical.
+  c.setMainCellLeft(MainCellValue::CurrentConsumption);
+  c.setMainCellRight(MainCellValue::AverageConsumption);
   c.setUiLanguage(UiLanguage::Russian);
   c.setFuelTrimEnabled(true);
   c.setDfcoEnabled(true);
@@ -188,7 +211,12 @@ bool ConfigStore::valid(const ConfigData& config) {
          BrightnessLogic::validSettings(config.brightness,
                                          config.brightnessDay,
                                          config.brightnessNight) &&
-         config.rotation <= 3 && config.displayStartPage() <= 3 &&
+         config.rotation <= 3 &&
+         // Five screens, 0..4, which is DashboardUi::kPageCount. This bound
+         // said 3 while the cycle already had five: the portal offers every
+         // screen as a start page and save() refuses a record that fails
+         // valid(), so choosing the last one was offered and then thrown away.
+         config.displayStartPage() <= 4 &&
          static_cast<uint8_t>(config.mainCenterValue()) <= 3 &&
          static_cast<uint8_t>(config.uiLanguage()) <= 1 &&
          config.autoReturnSec <= 120 &&
@@ -252,6 +280,7 @@ bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
   if (destination.brightnessNight > destination.brightnessDay) {
     destination.brightnessNight = destination.brightnessDay;
   }
+  remapStartPageForReorderedPages(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -273,6 +302,7 @@ bool ConfigStore::migrateV6(const uint8_t* record, ConfigData& destination) {
   // owner tuned falls back to the factory, including the fuel model, which on
   // this vehicle stops entirely because it has neither a MAF nor PID 5E.
   memcpy(static_cast<void*>(&destination), record, kV6ChecksumOffset);
+  remapStartPageForReorderedPages(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -293,6 +323,7 @@ bool ConfigStore::migrateV7(const uint8_t* record, ConfigData& destination) {
   // valid for schema 7 precisely because the byte was padding, and reading it
   // back as an enumeration is what this line exists to prevent.
   memcpy(static_cast<void*>(&destination), record, kV7FieldsEnd);
+  remapStartPageForReorderedPages(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -314,6 +345,28 @@ bool ConfigStore::migrateV8(const uint8_t* record, ConfigData& destination) {
   // owner who needs one sets it, and an owner who does not cannot have fuel
   // moved between tanks by an upgrade.
   memcpy(static_cast<void*>(&destination), record, kV8ChecksumOffset);
+  remapStartPageForReorderedPages(destination);
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
+bool ConfigStore::migrateV9(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV9ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 9 ||
+      storedChecksum != fnv1a(record, kV9ChecksumOffset)) return false;
+
+  destination = defaults();
+  // The prefix the record holds, which is every field schema 10 keeps in the
+  // same place. What the copy cannot supply is the pair of main-screen cells,
+  // and defaults() gives them the values the screen always drew: current
+  // consumption on the left, the trip average on the right.
+  memcpy(static_cast<void*>(&destination), record, kV9FieldsEnd);
+  remapStartPageForReorderedPages(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -343,6 +396,12 @@ bool ConfigStore::begin() {
       if (schema == H2G_CONFIG_SCHEMA) {
         memcpy(&config_, record, sizeof(config_));
         loaded = valid(config_);
+      } else if (schema == 9) {
+        // The same length as the current record: the two cell bytes filled
+        // padding that was already there, so only the stored version says
+        // whether these bytes are the old layout or the new one.
+        loaded = migrateV9(record, config_);
+        needsSave = loaded;
       } else {
         loaded = false;
       }

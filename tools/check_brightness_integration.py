@@ -34,6 +34,7 @@ integer_ranges = {
     "lightDayAdc": (0, 4095), "lightDimDelayMs": (0, 30000),
     "lightBrightenDelayMs": (0, 30000), "rotation": (0, 3),
     "startPage": (0, 4), "mainCenterValue": (0, 3),
+    "mainCellLeft": (0, 10), "mainCellRight": (0, 10),
     "uiLanguage": (0, 1), "autoReturnSec": (0, 120),
     "baroSource": (0, 4), "boostArcStyle": (0, 1),
     "smoothingMs": (0, 2000), "fuelSource": (0, 5),

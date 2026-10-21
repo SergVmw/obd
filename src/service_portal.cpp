@@ -577,6 +577,8 @@ void ServicePortal::sendConfig() {
   display["rotation"] = c.rotation;
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
+  display["mainCellLeft"] = static_cast<uint8_t>(c.mainCellLeft());
+  display["mainCellRight"] = static_cast<uint8_t>(c.mainCellRight());
   display["mainDigitSize"] = static_cast<uint8_t>(c.mainDigit());
   // A display offset, not a measurement setting: it shifts the readout so it can
   // agree with the dashboard needle and reaches nothing that is calculated. It
@@ -677,6 +679,7 @@ void ServicePortal::receiveConfig() {
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
         {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
         {"startPage", 0, 4}, {"mainCenterValue", 0, 3},
+        {"mainCellLeft", 0, 10}, {"mainCellRight", 0, 10},
         {"mainDigitSize", 0, 1},
         {"uiLanguage", 0, 1}, {"autoReturnSec", 0, 120}};
     const char* invalid = invalidIntegerField(
@@ -719,6 +722,10 @@ void ServicePortal::receiveConfig() {
         d["startPage"] | c.displayStartPage(), 0, 4));
     c.setMainCenterValue(static_cast<MainCenterValue>(clampValue<int>(
         d["mainCenterValue"] | static_cast<int>(c.mainCenterValue()), 0, 3)));
+    c.setMainCellLeft(static_cast<MainCellValue>(clampValue<int>(
+        d["mainCellLeft"] | static_cast<int>(c.mainCellLeft()), 0, 10)));
+    c.setMainCellRight(static_cast<MainCellValue>(clampValue<int>(
+        d["mainCellRight"] | static_cast<int>(c.mainCellRight()), 0, 10)));
     c.setMainDigitSize(static_cast<MainDigitSize>(clampValue<int>(
         d["mainDigitSize"] | static_cast<int>(c.mainDigit()), 0, 1)));
     c.displaySpeedOffsetKph = clampValue<float>(

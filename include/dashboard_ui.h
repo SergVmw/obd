@@ -40,6 +40,12 @@ class DashboardUi {
 
   void drawMain(const TelemetryData& data, const TelemetryEngine& engine,
                 const ConfigData& config, uint32_t now);
+  // One of the two cells under the centre figure of the first screen. Which
+  // reading it carries is the owner's choice, so the pair the screen always
+  // drew is only the factory default.
+  void drawMainCell(int16_t x, MainCellValue cell, const TelemetryData& data,
+                    const TelemetryEngine& engine, const ConfigData& config,
+                    uint32_t now);
   void drawFuel(const TelemetryData& data, const TelemetryEngine& engine,
                 const ConfigData& config, uint32_t now);
   void drawLpg(const TelemetryData& data, const TelemetryEngine& engine,

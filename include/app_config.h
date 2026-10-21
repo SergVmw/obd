@@ -34,6 +34,29 @@ enum class MainCenterValue : uint8_t {
   AverageConsumption = 3,
 };
 
+// What the two cells under the centre figure may show. The first screen used to
+// hard-wire current consumption on the left and the trip average on the right;
+// the choice is the owner's, so the list is every reading the instrument holds
+// that means something there, and nothing it merely calculates for another
+// screen. Consumption figures come from the engine, not from the raw fields, so
+// a cell and the fuel screen cannot disagree about the same number.
+//
+// Appended values only. Existing numbers keep their meaning, so an upgrade
+// shows what it showed before it was asked.
+enum class MainCellValue : uint8_t {
+  Boost = 0,
+  Speed = 1,
+  Rpm = 2,
+  Coolant = 3,
+  IntakeAir = 4,
+  Voltage = 5,
+  CurrentConsumption = 6,
+  AverageConsumption = 7,
+  AverageWhileMoving = 8,
+  IdleConsumption = 9,
+  IdleShare = 10,
+};
+
 // Height of the large number in the centre of the first screen. Large is the
 // size the gauge has always drawn, so it stays the default and an upgrade looks
 // identical; Small is the 28 px alternative for a dashboard that shows more
@@ -135,6 +158,18 @@ struct ConfigData {
   void setDisplayStartPage(uint8_t page) { startPage = page; }
   MainCenterValue mainCenterValue() const { return centerValue; }
   void setMainCenterValue(MainCenterValue value) { centerValue = value; }
+  MainCellValue mainCellLeft() const {
+    return static_cast<MainCellValue>(cellLeftValue);
+  }
+  void setMainCellLeft(MainCellValue value) {
+    cellLeftValue = static_cast<uint8_t>(value);
+  }
+  MainCellValue mainCellRight() const {
+    return static_cast<MainCellValue>(cellRightValue);
+  }
+  void setMainCellRight(MainCellValue value) {
+    cellRightValue = static_cast<uint8_t>(value);
+  }
   UiLanguage uiLanguage() const { return language; }
   void setUiLanguage(UiLanguage value) { language = value; }
   bool fuelTrimEnabled() const { return fuelTrimPollingEnabled; }
@@ -175,6 +210,19 @@ struct ConfigData {
   // Range is validated to 0..30000 ms.
   uint16_t lpgOnDelayMs;
 
+  // What the two cells under the centre figure of the first screen show. The
+  // pair the screen always drew is the factory pair: current consumption on the
+  // left, the trip average on the right.
+  //
+  // These two bytes land in the padding the compiler was already leaving before
+  // the checksum, so the record does not grow and a schema-9 record is the same
+  // length as a schema-10 one. That is the 7/8 situation again: the loader has
+  // to read the stored version before it knows which layout these bytes are,
+  // and migrateV9 copies only up to the first appended byte, because the rest
+  // of the prefix is padding a schema-9 record never defined.
+  uint8_t cellLeftValue;
+  uint8_t cellRightValue;
+
   uint32_t checksum;
 };
 
@@ -195,6 +243,7 @@ class ConfigStore {
   static bool migrateV6(const uint8_t* record, ConfigData& destination);
   static bool migrateV7(const uint8_t* record, ConfigData& destination);
   static bool migrateV8(const uint8_t* record, ConfigData& destination);
+  static bool migrateV9(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

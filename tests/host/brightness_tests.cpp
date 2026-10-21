@@ -255,6 +255,108 @@ void testSchema8RecordKeepsSettingsAndTakesFactorySwitchOnDelay() {
   CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
 }
 
+// A schema-9 record is the same length as a schema-10 one: the two main-screen
+// cells landed in padding that already existed before the checksum, so the
+// stored version is the only thing telling begin() which layout those bytes
+// hold. It is the layout 0.4.25 to 0.4.27 wrote, so it is the one an upgrade in
+// the car meets.
+//
+// The padding byte is a parameter because the point of the migration is that
+// the record's own padding is never read back as a setting.
+std::vector<uint8_t> v9Record(uint8_t startPage = 0, uint8_t padding = 0xA5) {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = 9;
+  c.brightnessDay = 66;
+  c.lpgEnabled = true;
+  c.lpgCorrection = 1.2f;
+  c.lpgOnDelayMs = 2500;
+  c.setDisplayStartPage(startPage);
+  strlcpy(c.apPassword, "schema-nine-password", sizeof(c.apPassword));
+  std::vector<uint8_t> result(220);
+  std::memcpy(result.data(), &c, 216);
+  // 214..215 is the padding the schema-9 build never wrote. Poison it, because
+  // a migration that copied the whole prefix would read this as a choice of
+  // what the main screen shows.
+  result[214] = padding;
+  result[215] = padding;
+  const uint32_t hash = fnv(result.data(), 216);
+  std::memcpy(result.data() + 216, &hash, 4);
+  return result;
+}
+
+void testSchema9RecordKeepsSettingsAndTakesFactoryCells() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v9Record(3);
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  // Everything the record held, including the switch-on delay that sits in the
+  // two bytes immediately before the appended ones: the migration copies up to
+  // the first new field and not a byte less.
+  CHECK(c.brightnessDay == 66);
+  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.2f));
+  CHECK(c.lpgOnDelayMs == 2500);
+  CHECK(std::strcmp(c.apPassword, "schema-nine-password") == 0);
+  // What the record predates takes the pair the screen has always drawn, so an
+  // upgrade looks exactly as it did before it was asked. The poisoned padding
+  // proves these come from defaults() and not from the record.
+  CHECK(c.mainCellLeft() == MainCellValue::CurrentConsumption);
+  CHECK(c.mainCellRight() == MainCellValue::AverageConsumption);
+  // The diagnostics screen moved to the end of the cycle, so the start page the
+  // owner chose follows the screen and not the number: 3 was diagnostics.
+  CHECK(c.displayStartPage() == 4);
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
+// Both directions of the swap, and a page that did not move at all. A remap
+// that only worked one way would quietly send an owner to the wrong screen.
+void testStartPageFollowsTheScreenItNamed() {
+  for (uint8_t stored : {(uint8_t)3, (uint8_t)4}) {
+    Preferences::storage.clear();
+    Preferences::storage["h2gauge/config"] = v9Record(stored);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(store.data().displayStartPage() == (stored == 3 ? 4 : 3));
+  }
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v9Record(2);
+  ConfigStore temperatures;
+  CHECK(temperatures.begin());
+  CHECK(temperatures.data().displayStartPage() == 2);
+}
+
+// A record already at the current schema was written by code that knows the new
+// order, so the remap must not touch it: running it twice would swap the pages
+// back and forth on every boot.
+void testStartPageAndCellsSurviveASaveAtTheCurrentSchema() {
+  Preferences::storage.clear();
+  ConfigStore store;
+  CHECK(store.begin());
+  store.data().setDisplayStartPage(4);
+  store.data().setMainCellLeft(MainCellValue::Rpm);
+  store.data().setMainCellRight(MainCellValue::IdleShare);
+  CHECK(store.save());
+  ConfigStore reloaded;
+  CHECK(reloaded.begin());
+  CHECK(reloaded.data().displayStartPage() == 4);
+  CHECK(reloaded.data().mainCellLeft() == MainCellValue::Rpm);
+  CHECK(reloaded.data().mainCellRight() == MainCellValue::IdleShare);
+}
+
+void testSchema9RecordWithBrokenChecksumFallsBackToFactory() {
+  Preferences::storage.clear();
+  std::vector<uint8_t> record = v9Record();
+  record[216] ^= 0xFF;
+  Preferences::storage["h2gauge/config"] = record;
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  CHECK(c.brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(!c.lpgEnabled);
+}
+
 void testSchema8RecordWithBrokenChecksumFallsBackToFactory() {
   Preferences::storage.clear();
   auto record = v8Record();
@@ -735,6 +837,18 @@ int main() {
   });
   test("a schema-8 record whose checksum does not match falls back to factory", [] {
     testSchema8RecordWithBrokenChecksumFallsBackToFactory();
+  });
+  test("a schema-9 record keeps its settings and takes the factory main-screen cells", [] {
+    testSchema9RecordKeepsSettingsAndTakesFactoryCells();
+  });
+  test("the start page follows the screen it named, not the number it held", [] {
+    testStartPageFollowsTheScreenItNamed();
+  });
+  test("the start page and the cell choices survive a save at the current schema", [] {
+    testStartPageAndCellsSurviveASaveAtTheCurrentSchema();
+  });
+  test("a schema-9 record whose checksum does not match falls back to factory", [] {
+    testSchema9RecordWithBrokenChecksumFallsBackToFactory();
   });
   test("the switch-on delay survives a save and reload, and the range is enforced", [] {
     ConfigStore store; CHECK(store.begin());
