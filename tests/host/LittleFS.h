@@ -22,8 +22,9 @@ class HostLittleFS {
     const std::string key(path);
     if (mode[0] == 'r') {
       auto found = files.find(key);
+      const bool writable = std::strchr(mode, '+') != nullptr;
       return found == files.end() ? fs::File{}
-                                  : fs::File(&found->second, 0, false);
+                                  : fs::File(&found->second, 0, writable);
     }
     if (mode[0] == 'w') {
       auto& bytes = files[key];

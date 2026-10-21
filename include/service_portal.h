@@ -20,6 +20,10 @@
 #include "ota_diagnostics.h"
 #include "runtime_persistence.h"
 #include "telemetry.h"
+#include "trip_boundary.h"
+#include "trip_clock.h"
+#include "trip_context.h"
+#include "trip_history.h"
 
 class ServicePortal {
  public:
@@ -30,7 +34,9 @@ class ServicePortal {
                 DtcHistoryPersistence& dtcHistoryPersistence,
                 AssetStore& assets, LittleFsStorage& littleFs,
                 CanMonitor& canMonitor, ObdClient& obdClient,
-                BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics
+                BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics,
+                TripClock& tripClock, TripContextStore& tripContext,
+                TripBoundary& tripBoundary, TripHistory& tripHistory
 #ifdef H2G_DIAGNOSTIC_BUILD
                 , ObdTraceRecorder& diagnosticTrace
 #endif
@@ -41,7 +47,9 @@ class ServicePortal {
         persistence_(persistence), dtcHistoryPersistence_(dtcHistoryPersistence),
         assets_(assets), littleFs_(littleFs), canMonitor_(canMonitor),
         obdClient_(obdClient),
-        brightness_(brightness), otaDiagnostics_(otaDiagnostics)
+        brightness_(brightness), otaDiagnostics_(otaDiagnostics),
+        tripClock_(tripClock), tripContext_(tripContext),
+        tripBoundary_(tripBoundary), tripHistory_(tripHistory)
 #ifdef H2G_DIAGNOSTIC_BUILD
         , diagnosticTrace_(diagnosticTrace)
 #endif
@@ -73,6 +81,11 @@ class ServicePortal {
   void sendIndex();
   void sendConfig();
   void receiveConfig();
+  void receiveTime();
+  void sendTrips();
+  void sendTripDays();
+  void closeCurrentTrip();
+  void clearTripHistory();
   void sendStatus();
 #ifdef H2G_DIAGNOSTIC_BUILD
   void sendDiagnosticTrace();
@@ -136,6 +149,7 @@ class ServicePortal {
   bool requireAction(const char* action, uint32_t& lastAcceptedAt,
                      uint32_t cooldownMs);
   void touch();
+  void syncClockFromHeader(uint32_t now, bool force);
   static const char* fuelModeName(FuelMode mode);
 
   ConfigStore& configStore_;
@@ -151,6 +165,10 @@ class ServicePortal {
   ObdClient& obdClient_;
   BrightnessManager& brightness_;
   OtaDiagnostics& otaDiagnostics_;
+  TripClock& tripClock_;
+  TripContextStore& tripContext_;
+  TripBoundary& tripBoundary_;
+  TripHistory& tripHistory_;
 #ifdef H2G_DIAGNOSTIC_BUILD
   ObdTraceRecorder& diagnosticTrace_;
 #endif
@@ -161,6 +179,8 @@ class ServicePortal {
   bool serviceSession_ = false;
   uint32_t startedAt_ = 0;
   uint32_t lastActivityAt_ = 0;
+  uint32_t lastClockSyncAt_ = 0;
+  uint32_t lastTripsClearAt_ = 0;
   uint32_t lastCanSnapshotAt_ = 0;
   uint32_t lastDtcScanAt_ = 0;
   uint32_t lastDtcClearAt_ = 0;

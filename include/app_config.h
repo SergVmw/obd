@@ -288,6 +288,13 @@ struct ConfigData {
   uint8_t pointerBaseRadius;
   uint8_t pointerHalfAngleTenths;
 
+  // Schema 12: automatic trip history boundaries and local UTC offset.
+  // tripGapMin sits at byte 221 (first padding byte of schema 11),
+  // tripMinDistanceM at 222..223, utcOffsetMin at 224..225, checksum at 228.
+  uint8_t tripGapMin;
+  uint16_t tripMinDistanceM;
+  int16_t utcOffsetMin;
+
   uint32_t checksum;
 };
 
@@ -310,6 +317,7 @@ class ConfigStore {
   static bool migrateV8(const uint8_t* record, ConfigData& destination);
   static bool migrateV9(const uint8_t* record, ConfigData& destination);
   static bool migrateV10(const uint8_t* record, ConfigData& destination);
+  static bool migrateV11(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

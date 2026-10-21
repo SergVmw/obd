@@ -472,6 +472,114 @@ void testSchema10RecordWithBrokenChecksumFallsBackToFactory() {
   CHECK(!store.data().lpgEnabled);
 }
 
+std::vector<uint8_t> v11Record(uint8_t padByte = 0x00) {
+  constexpr size_t kV11Size = 228;
+  constexpr size_t kV11ChecksumOffset = 224;
+  constexpr size_t kV11FieldsEnd = 221;
+  ConfigData tuned = ConfigStore::defaults();
+  tuned.brightnessDay = 68;
+  tuned.lpgEnabled = true;
+  tuned.lpgCorrection = 1.24f;
+  tuned.setMainCellLeft(MainCellValue::Rpm);
+  tuned.setMainCellRight(MainCellValue::Voltage);
+  tuned.setBoostPointerMode(BoostPointerMode::Both);
+  tuned.setBoostPointerColor(BoostPointerColor::White);
+  tuned.setBoostPointerTipRadius(104);
+  tuned.setBoostPointerBaseRadius(79);
+  tuned.setBoostPointerHalfAngleTenths(45);
+  std::strcpy(tuned.apPassword, "schema-eleven-pass");
+
+  std::vector<uint8_t> raw(kV11Size, padByte);
+  std::memcpy(raw.data(), &tuned, kV11FieldsEnd);
+  const uint16_t schema = 11;
+  std::memcpy(raw.data() + offsetof(ConfigData, schemaVersion), &schema,
+              sizeof(schema));
+  const uint32_t crc = fnv(raw.data(), kV11ChecksumOffset);
+  std::memcpy(raw.data() + kV11ChecksumOffset, &crc, sizeof(crc));
+  return raw;
+}
+
+void testSchema11RecordKeepsSettingsAndTakesFactoryTripHistorySettings() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v11Record(0x00);
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  CHECK(c.brightnessDay == 68);
+  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.24f));
+  CHECK(c.mainCellLeft() == MainCellValue::Rpm);
+  CHECK(c.mainCellRight() == MainCellValue::Voltage);
+  CHECK(c.boostPointerMode() == BoostPointerMode::Both);
+  CHECK(c.boostPointerColor() == BoostPointerColor::White);
+  CHECK(c.boostPointerTipRadius() == 104);
+  CHECK(c.boostPointerBaseRadius() == 79);
+  CHECK(c.boostPointerHalfAngleTenths() == 45);
+  CHECK(std::strcmp(c.apPassword, "schema-eleven-pass") == 0);
+  CHECK(c.tripGapMin == 5);
+  CHECK(c.tripMinDistanceM == 100);
+  CHECK(c.utcOffsetMin == 180);
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
+void testSchema11PaddingGarbageNeverLeaksIntoTripSettings() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v11Record(0xFF);
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  CHECK(c.brightnessDay == 68);
+  CHECK(c.tripGapMin == 5);
+  CHECK(c.tripMinDistanceM == 100);
+  CHECK(c.utcOffsetMin == 180);
+}
+
+void testSchema11RecordWithBrokenChecksumFallsBackToFactory() {
+  Preferences::storage.clear();
+  std::vector<uint8_t> record = v11Record(0x00);
+  record[224] ^= 0xFF;
+  Preferences::storage["h2gauge/config"] = record;
+  ConfigStore store;
+  CHECK(store.begin());
+  CHECK(store.data().schemaVersion == H2G_CONFIG_SCHEMA);
+  CHECK(store.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(!store.data().lpgEnabled);
+}
+
+void testTripSettingsSaveReloadAndBounds() {
+  Preferences::storage.clear();
+  ConfigStore store;
+  CHECK(store.begin());
+  store.data().tripGapMin = 15;
+  store.data().tripMinDistanceM = 250;
+  store.data().utcOffsetMin = -300;
+  CHECK(store.save());
+
+  ConfigStore reloaded;
+  CHECK(reloaded.begin());
+  CHECK(reloaded.data().tripGapMin == 15);
+  CHECK(reloaded.data().tripMinDistanceM == 250);
+  CHECK(reloaded.data().utcOffsetMin == -300);
+
+  reloaded.data().tripGapMin = 0;
+  CHECK(!reloaded.save());
+  reloaded.data().tripGapMin = 61;
+  CHECK(!reloaded.save());
+  reloaded.data().tripGapMin = 15;
+
+  reloaded.data().tripMinDistanceM = 9;
+  CHECK(!reloaded.save());
+  reloaded.data().tripMinDistanceM = 10001;
+  CHECK(!reloaded.save());
+  reloaded.data().tripMinDistanceM = 250;
+
+  reloaded.data().utcOffsetMin = -721;
+  CHECK(!reloaded.save());
+  reloaded.data().utcOffsetMin = 841;
+  CHECK(!reloaded.save());
+}
+
 void testThePointerSurvivesASaveAtTheCurrentSchema() {
   Preferences::storage.clear();
   ConfigStore store;
@@ -1038,6 +1146,18 @@ int main() {
   });
   test("a pointer mode outside the enumeration is refused by valid()", [] {
     testPointerModeOutsideTheEnumerationIsRefused();
+  });
+  test("a schema-11 record keeps its settings and takes factory trip-history settings", [] {
+    testSchema11RecordKeepsSettingsAndTakesFactoryTripHistorySettings();
+  });
+  test("padding garbage in a schema-11 record never leaks into trip settings", [] {
+    testSchema11PaddingGarbageNeverLeaksIntoTripSettings();
+  });
+  test("a schema-11 record whose checksum does not match falls back to factory", [] {
+    testSchema11RecordWithBrokenChecksumFallsBackToFactory();
+  });
+  test("trip gap, minimum distance and explicit UTC offset survive save and enforce bounds", [] {
+    testTripSettingsSaveReloadAndBounds();
   });
   test("the switch-on delay survives a save and reload, and the range is enforced", [] {
     ConfigStore store; CHECK(store.begin());

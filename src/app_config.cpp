@@ -50,8 +50,14 @@ constexpr size_t kV10FieldsEnd = 216;
 constexpr size_t kV10RecordSize = 220;
 // Schema 11 appends the boost pointer: five bytes, which the compiler pads to
 // keep the uint32_t checksum aligned, so the checksum moves from 216 to 224 and
-// the record from 220 to 228.
+// the record from 220 to 228. Only bytes 0..220 hold defined fields; bytes
+// 221..223 were trailing alignment padding in schema 11.
+constexpr size_t kV11FieldsEnd = 221;
 constexpr size_t kV11ChecksumOffset = 224;
+constexpr size_t kV11RecordSize = 228;
+// Schema 12 places tripGapMin (1 B @ 221), tripMinDistanceM (2 B @ 222) and
+// utcOffsetMin (2 B @ 224), moving checksum to 228 and sizeof(ConfigData) to 232.
+constexpr size_t kV12ChecksumOffset = 228;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -65,13 +71,19 @@ static_assert(offsetof(ConfigData, mainDigitSize) == kV7FieldsEnd,
               "Schema-7 prefix changed; update the migration explicitly");
 static_assert(offsetof(ConfigData, lpgOnDelayMs) == kV8ChecksumOffset,
               "Schema-8 prefix changed; update the migration explicitly");
-static_assert(offsetof(ConfigData, checksum) == kV11ChecksumOffset,
-              "Schema-11 checksum offset");
 static_assert(offsetof(ConfigData, cellLeftValue) == kV9FieldsEnd,
               "Schema-9 prefix changed; update the migration explicitly");
 static_assert(offsetof(ConfigData, pointerMode) == kV10FieldsEnd,
               "Schema-10 prefix changed; update the migration explicitly");
-static_assert(kV11ChecksumOffset + 4 == sizeof(ConfigData),
+static_assert(offsetof(ConfigData, tripGapMin) == kV11FieldsEnd,
+              "Schema-11 defined prefix changed; update migrateV11 explicitly");
+static_assert(offsetof(ConfigData, tripMinDistanceM) == 222,
+              "Schema-12 tripMinDistanceM offset");
+static_assert(offsetof(ConfigData, utcOffsetMin) == 224,
+              "Schema-12 utcOffsetMin offset");
+static_assert(offsetof(ConfigData, checksum) == kV12ChecksumOffset,
+              "Schema-12 checksum offset");
+static_assert(kV12ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
 
@@ -195,6 +207,10 @@ ConfigData ConfigStore::defaults() {
   // but a firmware update must not silently change distance accounting.
   c.displaySpeedOffsetKph = 0.0f;
 
+  c.tripGapMin = 5;
+  c.tripMinDistanceM = 100;
+  c.utcOffsetMin = 180;
+
   c.checksum = checksum(c);
   return c;
 }
@@ -296,6 +312,9 @@ bool ConfigStore::valid(const ConfigData& config) {
          config.maxRequestsPerSecond <= 60 &&
          config.displaySpeedOffsetKph >= -20.0f &&
          config.displaySpeedOffsetKph <= 20.0f &&
+         config.tripGapMin >= 1 && config.tripGapMin <= 60 &&
+         config.tripMinDistanceM >= 10 && config.tripMinDistanceM <= 10000 &&
+         config.utcOffsetMin >= -720 && config.utcOffsetMin <= 840 &&
          deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
          apNameLength > 0 && apNameLength < sizeof(config.apName) &&
          apPasswordLength >= 8 &&
@@ -432,6 +451,28 @@ bool ConfigStore::migrateV10(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
+bool ConfigStore::migrateV11(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV11ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 11 ||
+      storedChecksum != fnv1a(record, kV11ChecksumOffset)) return false;
+
+  destination = defaults();
+  // Copy only the 221 defined bytes of schema 11: bytes 221..223 were trailing
+  // compiler padding before schema 11's checksum at 224 and must not overwrite
+  // tripGapMin (221) or tripMinDistanceM (222..223).
+  memcpy(static_cast<void*>(&destination), record, kV11FieldsEnd);
+  if (destination.brightnessNight > destination.brightnessDay) {
+    destination.brightnessNight = destination.brightnessDay;
+  }
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -449,23 +490,18 @@ bool ConfigStore::begin() {
     if (loaded) {
       uint16_t schema = 0;
       memcpy(&schema, record + 4, sizeof(schema));
-      // The length alone is not proof of the layout. It is today, because no
-      // other schema is this long, and it stopped being true the moment a
-      // record grew: spending one comparison here is what keeps the next
-      // append from arriving as a silent corruption of one.
       if (schema == H2G_CONFIG_SCHEMA) {
         memcpy(&config_, record, sizeof(config_));
         loaded = valid(config_);
-      } else if (schema == 9) {
-        // The same length as the current record: the two cell bytes filled
-        // padding that was already there, so only the stored version says
-        // whether these bytes are the old layout or the new one.
-        loaded = migrateV9(record, config_);
-        needsSave = loaded;
       } else {
         loaded = false;
       }
     }
+  } else if (storedLength == kV11RecordSize) {
+    uint8_t record[kV11RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record) && migrateV11(record, config_);
+    needsSave = loaded;
   } else if (storedLength == kV10RecordSize) {
     // Schema 9 and schema 10 are both this long, so the stored version says
     // which layout bytes 214..215 hold.

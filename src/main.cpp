@@ -23,6 +23,10 @@
 #include "runtime_persistence.h"
 #include "service_portal.h"
 #include "telemetry.h"
+#include "trip_boundary.h"
+#include "trip_clock.h"
+#include "trip_context.h"
+#include "trip_history.h"
 #include "version.h"
 
 namespace {
@@ -52,11 +56,16 @@ PowerManager powerManager;
 BrightnessManager brightnessManager;
 ScreenGate screenGate;
 OtaDiagnostics otaDiagnostics;
+TripClock tripClock;
+TripContextStore tripContext;
+TripBoundary tripBoundary;
+TripHistory tripHistory;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
                             dtcHistoryPersistence, assetStore, littleFsStorage,
                             canMonitor, obdClient, brightnessManager,
-                            otaDiagnostics
+                            otaDiagnostics, tripClock, tripContext,
+                            tripBoundary, tripHistory
 #ifdef H2G_DIAGNOSTIC_BUILD
                             , diagnosticTrace
 #endif
@@ -70,6 +79,23 @@ bool engineWasRunning = false;
 bool rollbackSelector = false;
 bool rollbackArmed = false;
 uint32_t lastMemoryLogAt = 0;
+
+void closeOpenTripToHistory(uint32_t now, uint32_t rtcSec) {
+  TripRecord rec = tripContext.buildRecord(0, rtcSec, trip, configStore.data());
+  if (!tripHistory.append(rec)) {
+    ESP_LOGE(kTag, "Trip history append failed");
+  }
+  telemetryEngine.resetTrip();
+  if (!tripContext.resetForNewTrip(now, rtcSec,
+                                   tripClock.nowEpochSec(rtcSec))) {
+    ESP_LOGE(kTag, "Trip context reset after close failed");
+  }
+  const bool legacyTripOk = !configStore.data().saveTrip || tripStore.save(trip);
+  if (!legacyTripOk || !persistence.checkpoint(trip, petrolCalibration, true,
+                                               true)) {
+    ESP_LOGE(kTag, "Post-close runtime checkpoint failed");
+  }
+}
 
 void serviceDtcPersistence(uint32_t now) {
   dtcHistoryPersistence.periodic(now, obdClient.dtcHistory());
@@ -212,6 +238,9 @@ void captureDiagnosticTrace(uint32_t now) {
       !persistence.checkpoint(trip, petrolCalibration, true, true)) {
     ESP_LOGE(kTag, "Forced LittleFS/NVS runtime checkpoint failed");
   }
+  if (!tripContext.checkpoint(millis(), true)) {
+    ESP_LOGE(kTag, "Forced trip context checkpoint failed");
+  }
   if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
     ESP_LOGE(kTag, "Forced DTC history checkpoint failed");
   }
@@ -254,6 +283,9 @@ void enterServiceMode() {
       !persistence.checkpoint(trip, petrolCalibration,
                               configStore.data().saveTrip, true)) {
     ESP_LOGE(kTag, "Service-entry runtime checkpoint failed");
+  }
+  if (!tripContext.checkpoint(millis(), true)) {
+    ESP_LOGE(kTag, "Service-entry trip context checkpoint failed");
   }
   if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
     ESP_LOGE(kTag, "Service-entry DTC history checkpoint failed");
@@ -334,12 +366,31 @@ void setup() {
   if (!persistence.begin(littleFsStorage, trip, petrolCalibration)) {
     ESP_LOGE(kTag, "Runtime persistence initialization failed");
   }
+  const uint32_t bootRtcSec = currentRtcSec();
+  if (!tripClock.begin(bootRtcSec)) {
+    ESP_LOGE(kTag, "Trip clock initialization failed");
+  }
+  if (!tripHistory.begin(littleFsStorage)) {
+    ESP_LOGW(kTag, "Trip history unavailable");
+  }
   DtcHistoryData recoveredDtcHistory{};
   if (!dtcHistoryPersistence.begin(littleFsStorage, recoveredDtcHistory)) {
     ESP_LOGE(kTag, "DTC history persistence initialization failed");
   }
   obdClient.restoreDtcHistory(recoveredDtcHistory);
   telemetryEngine.begin(&trip, &petrolCalibration);
+  if (!tripContext.begin(millis(), bootRtcSec,
+                         tripClock.nowEpochSec(bootRtcSec), trip)) {
+    ESP_LOGE(kTag, "Trip context initialization failed");
+  }
+  tripBoundary.seedRecoveredOpenTrip(tripStateHasActivity(trip),
+                                     tripContext.data().lastActiveRtcSec);
+  if (tripBoundary.update(bootRtcSec, false, 0.0f, false, 0.0f,
+                          trip.totalDistanceKm, configStore.data().tripGapMin,
+                          configStore.data().tripMinDistanceM) !=
+      TripBoundaryAction::None) {
+    closeOpenTripToHistory(millis(), bootRtcSec);
+  }
   lpgInput.begin();
 
   const bool bootService = OneButton::heldAtBoot(3000);
@@ -477,10 +528,12 @@ void loop() {
                                   configStore.data().saveTrip, true)) {
         ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
       }
+      tripContext.checkpoint(now, true);
       brightnessManager.checkpoint();
       ESP.restart();
     }
     if (event == ButtonEvent::ServiceHold) {
+      tripContext.checkpoint(now, true);
       brightnessManager.checkpoint();
       ESP.restart();
     }
@@ -495,8 +548,24 @@ void loop() {
 #endif
   serviceDtcPersistence(now);
 
+  const uint32_t rtcNowSec = currentRtcSec();
+  if (tripBoundary.update(rtcNowSec, telemetry.rpm.valid(now),
+                          telemetry.rpm.value, telemetry.rawSpeedKph.valid(now),
+                          telemetry.rawSpeedKph.value, trip.totalDistanceKm,
+                          configStore.data().tripGapMin,
+                          configStore.data().tripMinDistanceM) !=
+      TripBoundaryAction::None) {
+    closeOpenTripToHistory(now, rtcNowSec);
+  }
+
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
+  tripContext.update(
+      now, rtcNowSec, tripClock.nowEpochSec(rtcNowSec),
+      telemetry.rpm.valid(now) &&
+          telemetry.rpm.value >= TripBoundary::kEngineRunningRpm,
+      telemetry.rawSpeedKph.valid(now), telemetry.rawSpeedKph.value, trip,
+      tripBoundary.heldOpenAcrossPause());
 #ifdef H2G_DIAGNOSTIC_BUILD
   captureDiagnosticTrace(now);
 #endif
@@ -513,6 +582,9 @@ void loop() {
           !persistence.checkpoint(trip, petrolCalibration,
                                   configStore.data().saveTrip, true)) {
         ESP_LOGE(kTag, "Engine-stop runtime checkpoint failed");
+      }
+      if (!tripContext.checkpoint(now, true)) {
+        ESP_LOGE(kTag, "Engine-stop trip context checkpoint failed");
       }
     }
     if (engineRunning) engineWasRunning = true;
@@ -535,6 +607,11 @@ void loop() {
         dashboard.resetPeak();
       } else if (dashboard.page() == 1) {
         telemetryEngine.resetTrip();
+        tripBoundary.reset();
+        if (!tripContext.resetForNewTrip(now, rtcNowSec,
+                                         tripClock.nowEpochSec(rtcNowSec))) {
+          ESP_LOGE(kTag, "Trip-reset context save failed");
+        }
         const bool legacyResetOk = tripStore.save(trip);
         if (!legacyResetOk ||
             !persistence.checkpoint(trip, petrolCalibration, true, true)) {

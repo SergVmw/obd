@@ -37,6 +37,7 @@ class Preferences {
     }
     return true;
   }
+  void end() {}
  private:
   std::string prefix_;
 };

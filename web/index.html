@@ -29,7 +29,7 @@
  <div class="card"><small>Выбор топлива / режим</small><b id="sFuel">—</b><span class="meta" id="sFuelDetail">—</span></div>
 </div>
 <section class="box" id="app">
-<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button><button class="tab" data-tab="diag">Диагностика</button></nav>
+<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="trips">Поездки</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button><button class="tab" data-tab="diag">Диагностика</button></nav>
 
 <div class="pane active" id="display"><h2>Экран</h2><p class="desc">Яркость, оформление и интерактивный предпросмотр главного экрана.</p>
  <div class="preview">
@@ -147,8 +147,9 @@
 
 <div class="pane" id="fuel"><h2>Расход и ГБО</h2><p class="desc">Бензиновый расход работает независимо. Все газовые функции подчиняются одному глобальному выключателю.</p>
  <div class="section"><h3>Текущая поездка</h3><div class="calstate" aria-live="polite"><div><small>Общий путь</small><b id="tripDistance">—</b></div><div><small>Активное топливо</small><b id="tripActiveFuel">—</b></div><div><small>Простои, доля расхода</small><b id="tripIdleShare">—</b></div><div><small>Простои, л/ч</small><b id="tripIdleLph">—</b></div></div>
+  <div class="calstate" aria-live="polite" style="margin-top:9px"><div><small>Прогрев до движения</small><b id="tripPreMove">—</b></div><div><small>Холостой ход в пути</small><b id="tripInTripIdle">—</b></div><div><small>Средняя в движении</small><b id="tripAvgSpeed">—</b></div><div><small>Макс. скорость</small><b id="tripMaxSpeed">—</b></div></div>
   <div class="canwrap" style="margin-top:13px"><table class="cantable"><thead><tr><th>ТОПЛИВО</th><th>ЛИТРЫ</th><th>ИЗ НИХ ПРОСТОИ</th><th>ПУТЬ</th><th>СРЕДНИЙ Л/100</th><th>В ДВИЖЕНИИ</th><th>ПРОСТОИ</th><th>ДВИГАТЕЛЬ</th></tr></thead><tbody id="tripRows"><tr><td colspan="8">Нет данных о поездке</td></tr></tbody></table></div>
-  <p class="note" style="margin-top:13px">Литры в простоях — это топливо, сгоревшее без движения: очереди, светофоры, drive-through. Оно остаётся в столбце «СРЕДНИЙ», потому что бак оплатил его в любом случае, но вынесено отдельно, чтобы «В ДВИЖЕНИИ» можно было сравнивать с заводскими цифрами. «Средний» — весь путь целиком, «В движении» — без простоев. У простоя нет смысла в л/100 км: очередь сжигает топливо за час, а не за километр, поэтому здесь это доля и расход в час.</p></div>
+  <p class="note" style="margin-top:13px">Литры в простоях — это топливо, сгоревшее без движения: прогрев до первого метра и светофоры/очереди в пути. Оно остаётся в столбце «СРЕДНИЙ», потому что бак оплатил его в любом случае, но вынесено отдельно, чтобы «В ДВИЖЕНИИ» можно было сравнивать с трассовым расходом, а прогрев видеть отдельной строкой.</p></div>
  <div class="section"><h3>Конфигурация автомобиля</h3><div class="grid">
   <div class="check full"><input id="lpgEnabled" type="checkbox"><label for="lpgEnabled"><b>Использовать ГБО</b> — клапан, LPG-расчёты, индикация и контроль коррекций</label></div>
  </div><div class="note" style="margin-top:13px">Если выключено, GPIO5 не опрашивается, PID STFT/LTFT для контроля LPG не запрашиваются, газовые значения и настройки скрыты. Все функции бензина сохраняются.</div></div>
@@ -183,7 +184,48 @@
   </div><div class="note" style="margin-top:13px">Задержка включения — сколько секунд после сигнала клапана мотор ещё работает на бензине: клапан открывается сразу, форсунки переключаются позже. Пока она идёт, расход пишется в бензин, и индикатор LPG не горит. 0 — считать переключение мгновенным.</div><div class="note" style="margin-top:13px">GPIO5 требует внешнюю подтяжку 10 кОм к 3.3 В и защищённый вход через PC817/EL817. 12 В напрямую подключать нельзя.</div></div>
   <div class="section"><h3>Ручная проверка коэффициента LPG</h3><div class="grid"><div><label>Прибор рассчитал, л</label><input id="lpgCalculated" type="number" value="38.2" step="0.1"></div><div><label>Фактически заправлено, л</label><input id="lpgActual" type="number" value="42.1" step="0.1"></div></div><div class="buttons"><button class="btn" id="calcLpg">Рассчитать коэффициент LPG</button></div></div>
  </div>
- <div class="section"><div class="buttons"><button class="btn danger" id="resetTrip">Сбросить поездку</button></div></div>
+ <div class="section"><div class="buttons"><button class="btn primary" id="closeTripFuel">Завершить поездку в историю</button><button class="btn danger" id="resetTrip">Сбросить поездку</button></div></div>
+</div>
+
+<div class="pane" id="trips"><h2>История поездок</h2><p class="desc">Кольцевой архив на 2048 поездок в энергонезависимой памяти прибора. Каждая запись хранит сырые литры, действовавшие коэффициенты K, прогрев до первого метра, простои в пути и пиковую скорость по честному сигналу OBD.</p>
+ <div class="section"><h3>Часы прибора и управление поездками</h3>
+  <div class="calstate" aria-live="polite">
+   <div><small>Время прибора</small><b id="clockLocal">—</b></div>
+   <div><small>Статус часов</small><b id="clockState">—</b></div>
+   <div><small>Архив поездок</small><b id="historyState">—</b></div>
+   <div><small>Пик текущей поездки</small><b id="historyOpenPeak">—</b></div>
+  </div>
+  <div class="buttons">
+   <button class="btn" id="syncClockBtn">Синхронизировать UTC</button>
+   <button class="btn primary" id="closeTripBtn">Завершить текущую поездку</button>
+   <button class="btn" id="refreshTripsBtn">Обновить список</button>
+   <button class="btn" id="exportTripsBtn">Выгрузить архив JSON</button>
+   <button class="btn danger" id="clearTripsBtn">Очистить историю</button>
+  </div>
+  <p class="note" id="tripsActionNote" style="margin-top:12px">Браузер передаёт прибору только чистый UTC (Unix-секунды), а локальная дата поездки строится строго по заданному ниже часовому поясу прибора и никогда не подменяется часовым поясом телефона.</p>
+ </div>
+
+ <div class="section"><h3>Журнал и дневная аналитика</h3>
+  <div class="buttons" style="margin-top:0;margin-bottom:12px">
+   <button class="btn primary" id="tripsModeTrips">По поездкам</button>
+   <button class="btn" id="tripsModeDays">Сводка по дням</button>
+  </div>
+  <div id="tripsListView">
+   <p class="desc" id="tripsMeta" style="margin:0 0 10px">Загрузка архива…</p>
+   <div class="canwrap" style="max-height:460px"><table class="cantable"><thead><tr><th>№ / ДАТА</th><th>ПУТЬ / ДВИГ.</th><th>ТОПЛИВО И K</th><th>СРЕДН. / В ДВИЖ.</th><th>ПРОГРЕВ</th><th>ПРОСТОИ В ПУТИ</th><th>СКОРОСТЬ</th></tr></thead><tbody id="tripsHistoryRows"><tr><td colspan="7">Архив поездок пока пуст</td></tr></tbody></table></div>
+   <div class="buttons"><button class="btn" id="moreTripsBtn" hidden>Показать ещё</button></div>
+  </div>
+  <div id="tripsDaysView" hidden>
+   <p class="desc" id="tripDaysMeta" style="margin:0 0 10px">Загрузка сводки по дням…</p>
+   <div class="canwrap" style="max-height:460px"><table class="cantable"><thead><tr><th>ДАТА</th><th>ПОЕЗДОК</th><th>ПУТЬ</th><th>ТОПЛИВО</th><th>СРЕДН. / В ДВИЖ.</th><th>ПРОГРЕВ ЗА ДЕНЬ</th><th>ПРОСТОИ В ПУТИ</th><th>СКОРОСТЬ</th></tr></thead><tbody id="tripDaysRows"><tr><td colspan="8">Нет завершённых поездок для дневной сводки</td></tr></tbody></table></div>
+  </div>
+ </div>
+
+ <div class="section"><h3>Правила разделения поездок и часовой пояс</h3><div class="grid">
+  <div><label for="tripGapMin">Пауза между поездками, мин (1–60)</label><input id="tripGapMin" type="number" min="1" max="60" step="1" value="5"></div>
+  <div><label for="tripMinDistanceM">Мин. дистанция автозаписи, м (10–10000)</label><input id="tripMinDistanceM" type="number" min="10" max="10000" step="10" value="100"></div>
+  <div class="full"><label for="utcOffsetMin">Часовой пояс прибора, минут от UTC (<span id="utcOffsetLabel">UTC+03:00</span>)</label><input id="utcOffsetMin" type="number" min="-720" max="840" step="15" value="180"></div>
+ </div><div class="note" style="margin-top:13px"><b>Граница поездки:</b> новый пуск двигателя или пауза не короче заданного времени — что наступит раньше. Если до остановки пройдено меньше минимальной дистанции, перемещение не теряется и склеивается со следующей поездкой с пометкой «объединена». После изменения нажмите «Сохранить настройки».</div></div>
 </div>
 
 <div class="pane" id="control"><h2>Управление</h2><p class="desc">Одна кнопка: короткое нажатие — экран, длинное — действие, очень длинное — сервис. В ручном режиме яркости 4 быстрых нажатия — День / Ночь с сохранением; одиночное нажатие обрабатывается после паузы 400 мс.</p>
@@ -278,17 +320,25 @@
 <script>
 const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).value, c=id=>$(id).checked;
 let otaActive=false,otaMaxImageBytes=4194304,otaProbeBytes=288,otaTimeoutMs=180000;
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active')});
-async function api(path,opt={}){const r=await fetch(path,{cache:'no-store',...opt}),text=await r.text();if(!r.ok){let message=text;try{const j=JSON.parse(text),code=j.code?` [${j.code}]`:'',retry=Number(j.retryAfterSeconds)>0?` Повторите через ${j.retryAfterSeconds} с.`:'';message=(j.error||j.message||text)+code+retry}catch{}throw Error(message||`HTTP ${r.status}`)}if(!text)return null;return r.headers.get('content-type')?.includes('json')?JSON.parse(text):text}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='trips')refreshTripsAll()});
+async function api(path,opt={}){const headers={'X-H2G-Epoch':String(Math.floor(Date.now()/1000)),...(opt.headers||{})};const r=await fetch(path,{cache:'no-store',...opt,headers}),text=await r.text();if(!r.ok){let message=text;try{const j=JSON.parse(text),code=j.code?` [${j.code}]`:'',retry=Number(j.retryAfterSeconds)>0?` Повторите через ${j.retryAfterSeconds} с.`:'';message=(j.error||j.message||text)+code+retry}catch{}throw Error(message||`HTTP ${r.status}`)}if(!text)return null;return r.headers.get('content-type')?.includes('json')?JSON.parse(text):text}
 function set(id,value){const e=$(id);if(!e||value===undefined)return;e.type==='checkbox'?e.checked=!!value:e.value=value}
+function formatUtcOffsetLabel(mins){const m=Number.isFinite(mins)?Math.trunc(mins):180,sign=m>=0?'+':'-',abs=Math.abs(m);return `UTC${sign}${String(Math.floor(abs/60)).padStart(2,'0')}:${String(abs%60).padStart(2,'0')}`}
+function updateUtcOffsetLabel(){const el=$('utcOffsetLabel');if(el)el.textContent=formatUtcOffsetLabel(n('utcOffsetMin'))}
 function updateBrightnessValueLabels(){$('brightnessDayValue').textContent=n('brightnessDay')+'%';$('brightnessNightValue').textContent=n('brightnessNight')+'%'}
-const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainCellLeft:6,mainCellRight:7,mainDigitSize:0,displaySpeedOffsetKph:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,boostPointerMode:0,boostPointerColor:0,boostPointerTipRadius:99,boostPointerBaseRadius:86,boostPointerHalfAngleTenths:35,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.5,boostWarningBar:.9,boostDangerBar:1.15,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1,lpgAfr:15.5,lpgDensity:540,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000,lpgOnDelayMs:0},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18'}};
+const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainCellLeft:6,mainCellRight:7,mainDigitSize:0,displaySpeedOffsetKph:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,boostPointerMode:0,boostPointerColor:0,boostPointerTipRadius:99,boostPointerBaseRadius:86,boostPointerHalfAngleTenths:35,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.5,boostWarningBar:.9,boostDangerBar:1.15,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1,lpgAfr:15.5,lpgDensity:540,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000,lpgOnDelayMs:0},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18'},trips:{tripGapMin:5,tripMinDistanceM:100,utcOffsetMin:180}};
 function syncLpgUi(){const on=c('lpgEnabled');document.querySelectorAll('.lpgOnly').forEach(e=>e.classList.toggle('isOff',!on));const opt=$('previewFuel')?.querySelector('option[value=lpg]');if(opt)opt.disabled=!on;if(!on&&$('previewFuel'))$('previewFuel').value='petrol';drawGaugePreview()}
-function apply(o){const d=o.display||{},b=o.boost||{},f=o.fuel||{},l=o.lpg||{},x=o.controls||{},s=o.service||{},ob=o.obd||{};
-Object.entries(d).forEach(([k,z])=>set(k,z));Object.entries(b).forEach(([k,z])=>set(k,z));Object.entries(f).forEach(([k,z])=>set(k,z));Object.entries(l).forEach(([k,z])=>set(k,z));Object.entries(x).forEach(([k,z])=>set(k,z));Object.entries(s).forEach(([k,z])=>set(k,z));Object.entries(ob).forEach(([k,z])=>set(k,z));
+function apply(o){const d=o.display||{},b=o.boost||{},f=o.fuel||{},l=o.lpg||{},x=o.controls||{},s=o.service||{},ob=o.obd||{},tr=o.trips||{};
+Object.entries(d).forEach(([k,z])=>set(k,z));Object.entries(b).forEach(([k,z])=>set(k,z));Object.entries(f).forEach(([k,z])=>set(k,z));Object.entries(l).forEach(([k,z])=>set(k,z));Object.entries(x).forEach(([k,z])=>set(k,z));Object.entries(s).forEach(([k,z])=>set(k,z));Object.entries(ob).forEach(([k,z])=>set(k,z));Object.entries(tr).forEach(([k,z])=>set(k,z));
 if(f.speedDensityOnly){set('fuelSource',5);$('fuelSource').disabled=true;for(const option of $('fuelSource').options)option.disabled=option.value!=='5';$('fuelSourceNote').textContent='Эта тестовая сборка принудительно использует Speed-Density: PID 0B MAP + PID 0C RPM + PID 0F IAT. PID 10 и PID 5E не опрашиваются. Начальная VE = 0.85; расход оценочный и может потребовать калибровки.'}
-syncLpgUi();syncBrightnessUi();updateBrightnessValueLabels()}
-function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainCellLeft:n('mainCellLeft'),mainCellRight:n('mainCellRight'),mainDigitSize:n('mainDigitSize'),displaySpeedOffsetKph:n('displaySpeedOffsetKph'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),boostPointerMode:n('boostPointerMode'),boostPointerColor:n('boostPointerColor'),boostPointerTipRadius:n('boostPointerTipRadius'),boostPointerBaseRadius:n('boostPointerBaseRadius'),boostPointerHalfAngleTenths:n('boostPointerHalfAngleTenths'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),lpgAfr:n('lpgAfr'),lpgDensity:n('lpgDensity'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs'),lpgOnDelayMs:n('lpgOnDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword')}}}
+syncLpgUi();syncBrightnessUi();updateBrightnessValueLabels();updateUtcOffsetLabel()}
+function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainCellLeft:n('mainCellLeft'),mainCellRight:n('mainCellRight'),mainDigitSize:n('mainDigitSize'),displaySpeedOffsetKph:n('displaySpeedOffsetKph'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),boostPointerMode:n('boostPointerMode'),boostPointerColor:n('boostPointerColor'),boostPointerTipRadius:n('boostPointerTipRadius'),boostPointerBaseRadius:n('boostPointerBaseRadius'),boostPointerHalfAngleTenths:n('boostPointerHalfAngleTenths'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),lpgAfr:n('lpgAfr'),lpgDensity:n('lpgDensity'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs'),lpgOnDelayMs:n('lpgOnDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword')},trips:{tripGapMin:n('tripGapMin'),tripMinDistanceM:n('tripMinDistanceM'),utcOffsetMin:n('utcOffsetMin')}}}
+function tripsFormError(){
+ for(const id of ['tripGapMin','tripMinDistanceM','utcOffsetMin']){
+  const e=$(id);if(!e||e.value.trim()===''||!Number.isInteger(n(id))||!e.checkValidity())return 'Поездки и часовой пояс: проверьте целые числа и допустимые диапазоны.';
+ }
+ return '';
+}
 function syncBrightnessUi(){
  const mode=n('brightnessMode');$('manualBrightnessRow').hidden=mode!==1;$('autoBrightnessFields').hidden=mode!==0;
  $('lightThresholdHelp').textContent=c('lightAutoCalibrate')?'Введённые пороги — исходные, до обучения. После обучения используются рабочие пороги ниже. Для точных ручных порогов отключите автокалибровку.':'Используются введённые пороги. Между ночным и дневным порогами нужно не менее 200 отсчётов ADC.';
@@ -427,7 +477,7 @@ function drawGaugePreview(){
  const fc=gas?boost:amber;x.fillStyle='#101c1a';x.strokeStyle=fc;x.lineWidth=1;x.beginPath();if(x.roundRect)x.roundRect(73,202,39,18,8);else x.rect(73,202,39,18);x.fill();x.stroke();x.fillStyle=fc;x.font='700 9px "H2 Golos",system-ui';x.fillText(gas?'LPG':'95',92,215);x.fillStyle=boost;x.beginPath();x.arc(131,211,3,0,Math.PI*2);x.fill();x.textAlign='left';x.fillStyle='#7f938c';x.font='10px "H2 Golos",system-ui';x.fillText('OBD',139,215);x.restore();$('previewBoostOut').textContent=(value>=0?'+':'')+value.toFixed(2)+' bar'
 }
 async function load(){try{const saved=await api('/api/config');apply(saved);$('save').disabled=false;$('msg').textContent='Сохранённая конфигурация ESP32 загружена'}catch(e){$('msg').textContent='Нет ответа ESP32 — показаны заводские настройки: '+e.message}}
-$('save').onclick=async()=>{const lightError=brightnessFormError();if(lightError){$('msg').textContent=lightError;return}const q=config(),b=q.boost;if(!Number.isFinite(b.boostMinBar)||!Number.isFinite(b.boostMaxBar)||!Number.isFinite(b.boostWarningBar)||!Number.isFinite(b.boostDangerBar)||!(b.boostMinBar<0&&b.boostWarningBar>0&&b.boostWarningBar<b.boostDangerBar&&b.boostDangerBar<=b.boostMaxBar)){$('msg').textContent='Ошибка: требуется min < 0 < предупреждение < опасность ≤ max';return}try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(q)});$('msg').textContent='Сохранено. День / Ночь применяются по режиму; временная яркость остаётся отдельной до перезагрузки. Оформление — после выхода из сервиса.';await status()}catch(e){$('msg').textContent='Ошибка: '+e.message}};
+$('save').onclick=async()=>{const lightError=brightnessFormError();if(lightError){$('msg').textContent=lightError;return}const tripsError=tripsFormError();if(tripsError){$('msg').textContent=tripsError;return}const q=config(),b=q.boost;if(!Number.isFinite(b.boostMinBar)||!Number.isFinite(b.boostMaxBar)||!Number.isFinite(b.boostWarningBar)||!Number.isFinite(b.boostDangerBar)||!(b.boostMinBar<0&&b.boostWarningBar>0&&b.boostWarningBar<b.boostDangerBar&&b.boostDangerBar<=b.boostMaxBar)){$('msg').textContent='Ошибка: требуется min < 0 < предупреждение < опасность ≤ max';return}try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(q)});$('msg').textContent='Сохранено. День / Ночь применяются по режиму; временная яркость остаётся отдельной до перезагрузки. Оформление — после выхода из сервиса.';await status()}catch(e){$('msg').textContent='Ошибка: '+e.message}};
 // Выгрузка и восстановление настроек. Всё делается здесь, на странице:
 // /api/config уже отдаёт весь набор полей, а receiveConfig сливает присланное
 // с текущим, проверяет диапазоны и откатывается в памяти, если NVS отказал
@@ -569,7 +619,10 @@ $('restoreApply').onclick=async()=>{
 };
 
 $('captureBaro').onclick=()=>api('/api/baro/capture',{method:'POST'}).then(()=>$('msg').textContent='Текущее MAP принято').catch(e=>$('msg').textContent=e.message);
-$('resetTrip').onclick=()=>confirm('Сбросить обычную поездку? Отдельный бензиновый интервал калибровки сохранится.')&&api('/api/trip/reset',{method:'POST'}).then(()=>$('msg').textContent='Поездка сброшена; калибровочный интервал не изменён');
+async function closeTripAction(){if(!confirm('Завершить текущую поездку, записать её в архив и начать отсчёт новой?'))return;try{const r=await api('/api/trip/close',{method:'POST'});$('msg').textContent=`Поездка завершена и записана в архив (#${r?.sequence??'—'})`;await status();await refreshTripsAll()}catch(e){$('msg').textContent='Завершение поездки: '+e.message}}
+$('closeTripFuel').onclick=closeTripAction;
+$('closeTripBtn').onclick=closeTripAction;
+$('resetTrip').onclick=()=>confirm('Сбросить обычную поездку? Отдельный бензиновый интервал калибровки сохранится.')&&api('/api/trip/reset',{method:'POST'}).then(async()=>{$('msg').textContent='Поездка сброшена; калибровочный интервал не изменён';await status()}).catch(e=>$('msg').textContent=e.message);
 $('calcLpg').onclick=()=>{const calc=n('lpgCalculated'),actual=n('lpgActual');if(calc>0&&actual>0){set('lpgCorrection',(n('lpgCorrection')*actual/calc).toFixed(3));$('msg').textContent='Новый коэффициент LPG рассчитан. Нажмите «Сохранить».'}};
 let petrolCalActive=false;
 async function loadPetrolCalibration(){if(otaActive)return;try{const s=await api('/api/fuel/petrol-calibration');petrolCalActive=!!s.active;$('petrolCalState').textContent=s.active?'Идёт интервал':'Остановлена';$('petrolCalCalculated').textContent=Number(s.calculatedLiters||0).toFixed(2)+' л';$('petrolCalDistance').textContent=Number(s.distanceKm||0).toFixed(1)+' км';$('petrolCalCorrection').textContent=Number(s.currentCorrection||1).toFixed(3);$('applyPetrolCal').disabled=!s.active;$('petrolCalLast').value=s.calibrationCount?`${Number(s.lastCalculatedLiters).toFixed(2)} → ${Number(s.lastActualLiters).toFixed(2)} л; K ${Number(s.lastOldCorrection).toFixed(3)} → ${Number(s.lastNewCorrection).toFixed(3)}`:'—'}catch(e){$('petrolCalState').textContent='Нет данных'}}
@@ -616,15 +669,22 @@ function fuelStatus(s){
  const speedDensity=s.fuelSource===5?`; SD: MAP ${s.mapKpa==null?'—':Number(s.mapKpa).toFixed(0)+' kPa'}, IAT ${s.intakeAirC==null?'—':Number(s.intakeAirC).toFixed(0)+' °C'}, воздух ${s.speedDensityAirflowGps==null?'—':Number(s.speedDensityAirflowGps).toFixed(2)+' g/s'}, ${s.speedDensityAirflowGps==null?'нет свежего набора сигналов':'входы свежие'}`:'';
  $('sFuelDetail').textContent=`Вход ГБО ${input}; режим ${modeNames[s.fuelMode]||s.fuelMode||'—'} (${reasonNames[s.fuelModeReason]||'причина не указана'}); ${rpm}${extra}${speedDensity}.`;
 }
+function fmtDurSec(sec){const s=Math.max(0,Math.round(Number(sec||0)));if(s<60)return s+' с';const h=Math.floor(s/3600),m=Math.round((s%3600)/60);return h>0?`${h} ч ${String(m).padStart(2,'0')} мин`:`${(s/60).toFixed(1)} мин`}
 function tripStatus(s){
  const fmt=(v,d=2,u='')=>v==null?'—':Number(v).toFixed(d)+u;
- if(!s){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph'])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';return}
+ const extraIds=['tripPreMove','tripInTripIdle','tripAvgSpeed','tripMaxSpeed'];
+ if(!s){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph',...extraIds])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';clockAndHistoryStatus(null);return}
+ clockAndHistoryStatus(s);
  const b=s.tripBreakdown;
- if(!b){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph'])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';return}
+ if(!b){for(const id of ['tripDistance','tripActiveFuel','tripIdleShare','tripIdleLph',...extraIds])$(id).textContent='—';$('tripRows').innerHTML='<tr><td colspan="8">Нет данных о поездке</td></tr>';return}
  $('tripDistance').textContent=fmt(b.distanceKm,1,' км');
  $('tripActiveFuel').textContent=b.activeFuel==='lpg'?'Газ':'Бензин';
  $('tripIdleShare').textContent=fmt(s.tripIdleSharePercent,0,'%');
  $('tripIdleLph').textContent=fmt(s.tripIdleLitersPerHour,2,' л/ч');
+ $('tripPreMove').textContent=b.preMoveLiters!=null?`${Number(b.preMoveLiters).toFixed(2)} л · ${fmtDurSec(b.preMoveSeconds)}`:'—';
+ $('tripInTripIdle').textContent=b.inTripIdleLiters!=null?`${Number(b.inTripIdleLiters).toFixed(2)} л · ${fmtDurSec(b.inTripIdleSeconds)}`:'—';
+ $('tripAvgSpeed').textContent=b.avgMovingSpeedKph!=null&&Number(b.distanceKm)>0?fmt(b.avgMovingSpeedKph,1,' км/ч'):'—';
+ $('tripMaxSpeed').textContent=b.maxSpeedKnown&&b.maxSpeedKph!=null?fmt(b.maxSpeedKph,1,' км/ч'):'—';
  const rows=[['Бензин',b.petrol],['Газ',b.lpg]].filter(([,f])=>f);
  const name=b.activeFuel==='lpg'?'Газ':'Бензин';
  $('tripRows').innerHTML=rows.map(([label,f])=>{
@@ -634,6 +694,71 @@ function tripStatus(s){
   return `<tr${mark}><td>${label}</td><td>${fmt(f.liters)} л</td><td>${fmt(f.idleLiters)} л</td><td>${fmt(f.distanceKm,1)} км</td><td>${fmt(f.averageL100,1)}</td><td>${fmt(f.movingAverageL100,1)}</td><td>${fmt(f.idleSharePercent,0,'%')}</td><td>${fmt((Number(f.engineSeconds||0)/60),1)} мин</td></tr>`;
  }).join('')||'<tr><td colspan="8">Нет данных о поездке</td></tr>';
 }
+let tripsLoadedItems=[],tripsNextOffset=0,tripsHasMore=false,tripsBusy=false;
+function clockAndHistoryStatus(s){
+ if(!s){for(const id of ['clockLocal','clockState','historyState','historyOpenPeak'])if($(id))$(id).textContent='—';return}
+ const cl=s.clock||{},hi=s.tripHistory||{},b=s.tripBreakdown||{};
+ const tz=formatUtcOffsetLabel(cl.utcOffsetMin??n('utcOffsetMin'));
+ $('clockLocal').textContent=cl.synced&&cl.localDate?`${cl.localDate} ${cl.localTime||''} (${tz})`:'Не синхронизировано';
+ $('clockState').textContent=cl.synced?`UTC синхронизирован${cl.storageHealthy===false?' · NVS ошибка':''}`:'Ждём синхронизации с браузером';
+ $('clockState').style.color=cl.synced?'var(--g)':'var(--a)';
+ const cap=hi.capacity||2048,seq=hi.headSequence||0,shown=Math.min(seq,cap);
+ $('historyState').textContent=hi.ready?`${shown} / ${cap}${hi.healthy===false?' · внимание':''}`:'Недоступен';
+ $('historyOpenPeak').textContent=b.maxSpeedKnown&&b.maxSpeedKph!=null?`${Number(b.maxSpeedKph).toFixed(1)} км/ч`:'—';
+}
+function renderTripsRows(){
+ const tb=$('tripsHistoryRows');if(!tb)return;
+ if(!tripsLoadedItems.length){tb.innerHTML='<tr><td colspan="7">Архив поездок пока пуст</td></tr>';return}
+ const f=(v,d=1,u='')=>v==null?'—':Number(v).toFixed(d)+u;
+ tb.innerHTML=tripsLoadedItems.map(r=>{
+  const dt=r.dateUnknown||!r.localDate?'<span style="color:var(--a)">Дата неизвестна</span>':`${r.localDate} ${r.localTime||''}`;
+  const badge=r.merged?'<br><small style="color:var(--a)">объединена</small>':'';
+  const tz=`<br><small>${formatUtcOffsetLabel(r.utcOffsetMin??180)}</small>`;
+  const p=r.petrol||{},g=r.lpg||{};
+  const fuelParts=[];
+  if(Number(p.liters||0)>0||Number(g.liters||0)===0)fuelParts.push(`95: ${f(p.liters,2,' л')} <small>(K=${f(r.petrolCorrection,3)})</small>`);
+  if(Number(g.liters||0)>0)fuelParts.push(`LPG: ${f(g.liters,2,' л')} <small>(K=${f(r.lpgCorrection,3)}, ${f(r.lpgSharePercent,0,'%')})</small>`);
+  return `<tr><td><b>#${r.sequence}</b><br>${dt}${tz}${badge}</td><td><b>${f(r.distanceKm,2,' км')}</b><br><small>двиг. ${fmtDurSec(r.engineSeconds)} · всего ${fmtDurSec(r.wallDurationSec)}</small></td><td><b>${f(r.totalLiters,2,' л')}</b><br>${fuelParts.join('<br>')}</td><td><b>${f(r.averageL100,1)}</b> л/100<br><small>в движ.: ${f(r.movingAverageL100,1)}</small></td><td><b>${f(r.preMoveLiters,2,' л')}</b><br><small>${fmtDurSec(r.preMoveSeconds)}</small></td><td><b>${f(r.inTripIdleLiters,2,' л')}</b><br><small>${fmtDurSec(r.inTripIdleSeconds)} · доля ХХ ${f(r.idleSharePercent,0,'%')} · ${f(r.idleLitersPerHour,2,' л/ч')}</small></td><td><b>Макс.: ${r.maxSpeedKnown&&r.maxSpeedKph!=null?f(r.maxSpeedKph,1,' км/ч'):'—'}</b><br><small>средн. движ.: ${f(r.avgMovingSpeedKph,1,' км/ч')}</small></td></tr>`;
+ }).join('');
+}
+async function loadTripsPage(reset=false){
+ if(otaActive||tripsBusy)return;tripsBusy=true;
+ try{
+  const off=reset?0:tripsNextOffset;
+  const res=await api(`/api/trips?offset=${off}&limit=25`);
+  const list=res?.trips||[];
+  tripsLoadedItems=reset?list:tripsLoadedItems.concat(list);
+  tripsNextOffset=off+list.length;
+  tripsHasMore=!!res?.hasMore;
+  renderTripsRows();
+  $('moreTripsBtn').hidden=!tripsHasMore;
+  $('tripsMeta').textContent=`Показано ${tripsLoadedItems.length} из ${res?.total??0} записей (ёмкость ${res?.capacity||2048}, seq ${res?.headSequence??0})${res?.corruptTail?' · обнаружены пропущенные слоты':''}.`;
+ }catch(e){$('tripsMeta').textContent='Архив поездок: '+e.message}finally{tripsBusy=false}
+}
+async function loadTripDays(){
+ if(otaActive)return;
+ try{
+  const res=await api('/api/trips/days?limit=60');
+  const days=res?.days||[];
+  const f=(v,d=1,u='')=>v==null?'—':Number(v).toFixed(d)+u;
+  $('tripDaysRows').innerHTML=days.length?days.map(d=>{
+   const label=d.dateUnknown?'<span style="color:var(--a)">Дата неизвестна</span>':`<b>${d.date}</b>`;
+   const mergedNote=d.mergedCount?`<br><small style="color:var(--a)">объед.: ${d.mergedCount}</small>`:'';
+   const fuelSub=Number(d.lpgLiters||0)>0?`<small>95: ${f(d.petrolLiters,2,' л')} · LPG: ${f(d.lpgLiters,2,' л')} (${f(d.lpgSharePercent,0,'%')})</small>`:`<small>95: ${f(d.petrolLiters,2,' л')}</small>`;
+   return `<tr><td>${label}</td><td><b>${d.tripCount}</b>${mergedNote}</td><td><b>${f(d.distanceKm,2,' км')}</b><br><small>двиг. ${fmtDurSec(d.engineSeconds)}</small></td><td><b>${f(d.totalLiters,2,' л')}</b><br>${fuelSub}</td><td><b>${f(d.averageL100,1)}</b> л/100<br><small>в движ.: ${f(d.movingAverageL100,1)}</small></td><td><b>${f(d.preMoveLiters,2,' л')}</b><br><small>${fmtDurSec(d.preMoveSeconds)}</small></td><td><b>${f(d.inTripIdleLiters,2,' л')}</b><br><small>${fmtDurSec(d.inTripIdleSeconds)} · доля ХХ ${f(d.idleSharePercent,0,'%')} · ${f(d.idleLitersPerHour,2,' л/ч')}</small></td><td><b>Макс.: ${d.maxSpeedKnown&&d.maxSpeedKph!=null?f(d.maxSpeedKph,1,' км/ч'):'—'}</b><br><small>средн. движ.: ${f(d.avgMovingSpeedKph,1,' км/ч')}</small></td></tr>`;
+  }).join(''):'<tr><td colspan="8">Нет завершённых поездок для дневной сводки</td></tr>';
+  $('tripDaysMeta').textContent=`Дней в сводке: ${days.length} из ${res?.totalDays??0} (всего поездок: ${res?.totalTrips??0})${res?.corruptTail?' · есть пропущенные слоты':''}. Все средние рассчитаны взвешенно из дневных сумм.`;
+ }catch(e){$('tripDaysMeta').textContent='Сводка по дням: '+e.message}
+}
+async function refreshTripsAll(){await loadTripsPage(true);await loadTripDays()}
+$('tripsModeTrips').onclick=()=>{$('tripsListView').hidden=false;$('tripsDaysView').hidden=true;$('tripsModeTrips').classList.add('primary');$('tripsModeDays').classList.remove('primary')};
+$('tripsModeDays').onclick=()=>{$('tripsListView').hidden=true;$('tripsDaysView').hidden=false;$('tripsModeDays').classList.add('primary');$('tripsModeTrips').classList.remove('primary');loadTripDays()};
+$('moreTripsBtn').onclick=()=>loadTripsPage(false);
+$('refreshTripsBtn').onclick=refreshTripsAll;
+$('syncClockBtn').onclick=async()=>{try{const r=await api('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({epochSec:Math.floor(Date.now()/1000)})});$('msg').textContent=`Время UTC синхронизировано: ${r?.localDate||''} ${r?.localTime||''} (${formatUtcOffsetLabel(r?.utcOffsetMin??n('utcOffsetMin'))})`;await status()}catch(e){$('msg').textContent='Синхронизация времени: '+e.message}};
+$('clearTripsBtn').onclick=async()=>{if(!confirm('Безвозвратно очистить весь архив завершённых поездок (/trips.bin)? Текущая открытая поездка и настройки сохранятся.'))return;try{await api('/api/trips/clear',{method:'POST',headers:{'X-H2G-Action':'trips-clear'}});$('msg').textContent='Архив поездок очищен';await refreshTripsAll();await status()}catch(e){$('msg').textContent='Очистка архива: '+e.message}};
+$('exportTripsBtn').onclick=async()=>{try{const all=[];let off=0;for(let guard=0;guard<90;guard++){const r=await api(`/api/trips?offset=${off}&limit=50`);const chunk=r?.trips||[];all.push(...chunk);off+=chunk.length;if(!r?.hasMore||!chunk.length)break}const days=await api('/api/trips/days?limit=366');const blob=new Blob([JSON.stringify({schema:'h2-trips-export-v1',exportedAt:new Date().toISOString(),total:all.length,trips:all,days:days?.days||[]},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`h2-gauge-trips-${diagStamp()}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500);$('msg').textContent=`Выгружено поездок: ${all.length}`}catch(e){$('msg').textContent='Выгрузка архива: '+e.message}};
+$('utcOffsetMin').addEventListener('input',updateUtcOffsetLabel);
 function lpgTrimStatus(s){
  const ids=['lpgTrimShort','lpgTrimLong','lpgTrimSum','lpgTrimVerdict'];
  if(!s||!s.lpgEnabled){for(const id of ids)$(id).textContent='—';$('lpgTrimNote').textContent='ГБО выключено в настройках — коррекции не запрашиваются.';$('lpgTrimVerdict').style.color='';return}
@@ -660,6 +785,8 @@ const DIAG_SOURCES=[
  {id:'ota',file:'ota-slots',path:'/api/ota/status',need:false,what:'Разделы A/B, текущая и загрузочная прошивки, состояние образа'},
  {id:'assets',file:'assets',path:'/api/assets/status',need:false,what:'Пользовательские картинки: размеры, контрольные суммы, активный фон'},
  {id:'pids',file:'pid-support',path:'/api/pid-support',need:false,what:'Какие блоки отвечают на шине и какие PID каждый поддерживает, поразборно'},
+ {id:'trips',file:'trips',path:'/api/trips',need:false,what:'Архив завершённых поездок: прогрев, холостой ход, скорости и коэффициенты K'},
+ {id:'trip-days',file:'trip-days',path:'/api/trips/days',need:false,what:'Сводка поездок по дням с взвешенными средними'},
 ];
 let diagBusy=false;
 // Whether this firmware serves the trace at all. Set by the status poll, which

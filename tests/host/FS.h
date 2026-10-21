@@ -57,7 +57,10 @@ class File {
     if (hostfs::failFlush && bytes_ && writable_ && !bytes_->empty()) {
       // Simulate a power-loss/flash failure that is visible only during the
       // mandatory close-and-readback verification.
-      bytes_->back() ^= 0x80U;
+      const size_t target =
+          position_ > 0 && position_ <= bytes_->size() ? position_ - 1
+                                                       : bytes_->size() - 1;
+      (*bytes_)[target] ^= 0x80U;
     }
   }
   void close() { bytes_ = nullptr; position_ = 0; writable_ = false; }

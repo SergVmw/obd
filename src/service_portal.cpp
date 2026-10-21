@@ -13,6 +13,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <math.h>
+#include <memory>
+#include <stdlib.h>
 #include <string.h>
 #include "version.h"
 #ifdef H2G_DIAGNOSTIC_BUILD
@@ -26,6 +28,9 @@ constexpr const char* kTag = "WEB";
 constexpr const char* kActionHeader = "X-H2G-Action";
 constexpr const char* kFilenameHeader = "X-H2G-Filename";
 constexpr const char* kContentTypeHeader = "Content-Type";
+constexpr const char* kEpochHeader = "X-H2G-Epoch";
+constexpr uint32_t kClockSyncIntervalMs = 30000UL;
+constexpr uint32_t kTripsClearCooldownMs = 5000UL;
 constexpr size_t kMinOtaImageBytes = 4096;
 constexpr size_t kMaxOtaImageBytes = 4U * 1024U * 1024U;
 constexpr uint32_t kFactoryResetCooldownMs = 10000;
@@ -330,7 +335,32 @@ bool ServicePortal::begin() {
 }
 
 
-void ServicePortal::touch() { lastActivityAt_ = millis(); }
+void ServicePortal::syncClockFromHeader(uint32_t now, bool force) {
+  const String header = server_.header(kEpochHeader);
+  if (header.length() == 0) return;
+  char* endPtr = nullptr;
+  const unsigned long parsed = strtoul(header.c_str(), &endPtr, 10);
+  if (endPtr == header.c_str() || *endPtr != '\0' ||
+      parsed < TripClock::kMinPlausibleEpochSec || parsed > 0xFFFFFFFFUL) {
+    return;
+  }
+  const bool due = !tripClock_.synced() || force || lastClockSyncAt_ == 0 ||
+                   (now - lastClockSyncAt_) >= kClockSyncIntervalMs;
+  if (!due) return;
+  const uint32_t rtcSec = currentRtcSec();
+  if (tripClock_.sync(static_cast<uint32_t>(parsed), rtcSec)) {
+    lastClockSyncAt_ = now;
+    tripContext_.update(now, rtcSec, tripClock_.nowEpochSec(rtcSec), false,
+                        false, 0.0f, engine_.trip(),
+                        tripBoundary_.heldOpenAcrossPause());
+  }
+}
+
+void ServicePortal::touch() {
+  const uint32_t now = millis();
+  lastActivityAt_ = now;
+  syncClockFromHeader(now, false);
+}
 
 bool ServicePortal::requireAction(const char* action,
                                   uint32_t& lastAcceptedAt,
@@ -378,6 +408,7 @@ void ServicePortal::loop() {
   if (rebootAt_ != 0 && static_cast<int32_t>(now - rebootAt_) >= 0) {
     persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                             configStore_.data().saveTrip, true);
+    tripContext_.checkpoint(now, true);
     brightness_.checkpoint();
     delay(50);
     ESP.restart();
@@ -387,6 +418,7 @@ void ServicePortal::loop() {
     ESP_LOGI(kTag, "Service timeout; rebooting");
     persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                             configStore_.data().saveTrip, true);
+    tripContext_.checkpoint(now, true);
     brightness_.checkpoint();
     ESP.restart();
   }
@@ -394,8 +426,8 @@ void ServicePortal::loop() {
 
 void ServicePortal::setupRoutes() {
   static const char* kCollectedHeaders[] = {
-      kActionHeader, kFilenameHeader, kContentTypeHeader};
-  server_.collectHeaders(kCollectedHeaders, 3);
+      kActionHeader, kFilenameHeader, kContentTypeHeader, kEpochHeader};
+  server_.collectHeaders(kCollectedHeaders, 4);
 
   server_.on("/", HTTP_GET, [this]() { sendIndex(); });
   server_.on("/generate_204", HTTP_GET, [this]() { sendIndex(); });
@@ -403,6 +435,9 @@ void ServicePortal::setupRoutes() {
 
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
   server_.on("/api/config", HTTP_POST, [this]() { receiveConfig(); });
+  server_.on("/api/time", HTTP_POST, [this]() { receiveTime(); });
+  server_.on("/api/trips", HTTP_GET, [this]() { sendTrips(); });
+  server_.on("/api/trips/days", HTTP_GET, [this]() { sendTripDays(); });
   server_.on("/api/status", HTTP_GET, [this]() { sendStatus(); });
 #ifdef H2G_DIAGNOSTIC_BUILD
   server_.on("/api/diagnostics/trace", HTTP_GET,
@@ -461,9 +496,14 @@ void ServicePortal::setupRoutes() {
 
   server_.on("/api/trip/reset", HTTP_POST, [this]() {
     touch();
+    const uint32_t now = millis();
+    const uint32_t rtcSec = currentRtcSec();
     engine_.resetTrip();
+    tripBoundary_.reset();
+    const bool ctxOk = tripContext_.resetForNewTrip(
+        now, rtcSec, tripClock_.nowEpochSec(rtcSec));
     const bool legacyOk = tripStore_.save(engine_.trip());
-    if (!legacyOk ||
+    if (!ctxOk || !legacyOk ||
         !persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                                  true, true)) {
       server_.send(500, "application/json",
@@ -472,6 +512,8 @@ void ServicePortal::setupRoutes() {
     }
     server_.send(200, "application/json", "{\"ok\":true}");
   });
+  server_.on("/api/trip/close", HTTP_POST, [this]() { closeCurrentTrip(); });
+  server_.on("/api/trips/clear", HTTP_POST, [this]() { clearTripHistory(); });
 
   server_.on("/api/fuel/petrol-calibration", HTTP_GET,
              [this]() { sendPetrolCalibration(); });
@@ -503,8 +545,14 @@ void ServicePortal::setupRoutes() {
     const bool dtcHistoryOk =
         dtcHistoryPersistence_.factoryReset(resetDtcHistory);
     obdClient_.restoreDtcHistory(resetDtcHistory);
+    tripBoundary_.reset();
+    const bool clockOk = tripClock_.factoryReset();
+    const bool tripCtxOk =
+        tripContext_.factoryReset(millis(), currentRtcSec());
+    const bool tripHistOk = tripHistory_.factoryReset();
     if (!configOk || !lightOk || !legacyTripOk ||
-        !legacyCalibrationOk || !runtimeOk || !dtcHistoryOk) {
+        !legacyCalibrationOk || !runtimeOk || !dtcHistoryOk ||
+        !clockOk || !tripCtxOk || !tripHistOk) {
       server_.send(500, "application/json",
                    "{\"error\":\"factory reset storage failure\"}");
       return;
@@ -650,14 +698,20 @@ void ServicePortal::sendConfig() {
   service["apName"] = c.apName;
   service["apPassword"] = c.apPassword;
 
+  JsonObject trips = doc["trips"].to<JsonObject>();
+  trips["tripGapMin"] = c.tripGapMin;
+  trips["tripMinDistanceM"] = c.tripMinDistanceM;
+  trips["utcOffsetMin"] = c.utcOffsetMin;
+
   String output;
-  output.reserve(2000);
+  output.reserve(2200);
   serializeJson(doc, output);
   server_.send(200, "application/json", output);
 }
 
 void ServicePortal::receiveConfig() {
   touch();
+  syncClockFromHeader(millis(), true);
   if (!server_.hasArg("plain")) {
     server_.send(400, "text/plain", "JSON body required");
     return;
@@ -926,6 +980,27 @@ void ServicePortal::receiveConfig() {
     if (strlen(deviceName) > 0) strlcpy(c.deviceName, deviceName, sizeof(c.deviceName));
     if (strlen(apName) > 0) strlcpy(c.apName, apName, sizeof(c.apName));
     if (strlen(password) >= 8) strlcpy(c.apPassword, password, sizeof(c.apPassword));
+  }
+
+  JsonObjectConst trips = doc["trips"];
+  if (!trips.isNull()) {
+    const IntegerField integerFields[] = {{"tripGapMin", 1, 60},
+                                          {"tripMinDistanceM", 10, 10000},
+                                          {"utcOffsetMin", -720, 840}};
+    const char* invalid = invalidIntegerField(
+        trips, integerFields,
+        sizeof(integerFields) / sizeof(integerFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid,
+                             "an integer within the allowed range");
+      return;
+    }
+    c.tripGapMin = static_cast<uint8_t>(
+        clampValue<int>(trips["tripGapMin"] | c.tripGapMin, 1, 60));
+    c.tripMinDistanceM = static_cast<uint16_t>(clampValue<int>(
+        trips["tripMinDistanceM"] | c.tripMinDistanceM, 10, 10000));
+    c.utcOffsetMin = static_cast<int16_t>(
+        clampValue<int>(trips["utcOffsetMin"] | c.utcOffsetMin, -720, 840));
   }
 
   const bool finiteValues =
@@ -1314,6 +1389,70 @@ void ServicePortal::sendStatus() {
     } else {
       lpg["idleSharePercent"] = nullptr;
     }
+
+    const uint32_t openRtcSec = currentRtcSec();
+    const TripRecord openRecord =
+        tripContext_.buildRecord(0, openRtcSec, trip, gasConfig);
+    const TripComputedMetrics openMetrics =
+        TripRecordCodec::computeMetrics(openRecord);
+    const TripContextData& openCtx = tripContext_.data();
+    breakdown["preMoveSeconds"] = openMetrics.preMoveSeconds;
+    breakdown["preMoveLiters"] = static_cast<float>(openMetrics.preMoveLiters);
+    breakdown["preMovePetrolLiters"] =
+        static_cast<float>(openMetrics.petrolPreMoveLiters);
+    breakdown["preMoveLpgLiters"] =
+        static_cast<float>(openMetrics.lpgPreMoveLiters);
+    breakdown["inTripIdleSeconds"] = openMetrics.inTripIdleSeconds;
+    breakdown["inTripIdleLiters"] =
+        static_cast<float>(openMetrics.inTripIdleLiters);
+    if (openMetrics.hasAvgMovingSpeedKph) {
+      breakdown["avgMovingSpeedKph"] =
+          static_cast<float>(openMetrics.avgMovingSpeedKph);
+    } else {
+      breakdown["avgMovingSpeedKph"] = nullptr;
+    }
+    const bool openMaxKnown = tripContext_.maxSpeedKnown();
+    breakdown["maxSpeedKnown"] = openMaxKnown;
+    if (openMaxKnown) {
+      breakdown["maxSpeedKph"] = openCtx.maxSpeedKph;
+    } else {
+      breakdown["maxSpeedKph"] = nullptr;
+    }
+    breakdown["merged"] = tripContext_.merged();
+    breakdown["dateUnknown"] = tripContext_.dateUnknown();
+    breakdown["startEpochSec"] = openCtx.startEpochSec;
+  }
+
+  {
+    const uint32_t rtcNow = currentRtcSec();
+    const uint32_t epochNow = tripClock_.nowEpochSec(rtcNow);
+    JsonObject clockObj = doc["clock"].to<JsonObject>();
+    clockObj["synced"] = tripClock_.synced();
+    clockObj["epochSec"] = epochNow;
+    clockObj["utcOffsetMin"] = config.utcOffsetMin;
+    clockObj["storageHealthy"] = tripClock_.storageHealthy();
+    if (epochNow != 0) {
+      const TripLocalDateTime ldt =
+          epochToLocalDateTime(epochNow, config.utcOffsetMin);
+      char dateText[12];
+      char timeText[8];
+      formatLocalDateIso(ldt, dateText);
+      snprintf(timeText, sizeof(timeText), "%02u:%02u", ldt.hour, ldt.minute);
+      clockObj["localDate"] = dateText;
+      clockObj["localTime"] = timeText;
+    } else {
+      clockObj["localDate"] = "";
+      clockObj["localTime"] = "";
+    }
+
+    JsonObject histObj = doc["tripHistory"].to<JsonObject>();
+    histObj["ready"] = tripHistory_.ready();
+    histObj["healthy"] = tripHistory_.healthy();
+    histObj["headSequence"] = tripHistory_.headSequence();
+    histObj["badSlots"] = tripHistory_.badSlotCount();
+    histObj["writes"] = tripHistory_.writeCount();
+    histObj["failures"] = tripHistory_.failureCount();
+    histObj["capacity"] = TripHistory::kCapacity;
   }
   doc["tripIdleSharePercent"] = engine_.idleShareOfTrip();
   doc["tripIdleLitersPerHour"] = engine_.idleLitersPerHour(config);
@@ -3674,4 +3813,357 @@ void ServicePortal::handleOtaFinished() {
   // The response is already complete. No user action is required; the normal
   // service loop performs one controlled software reset after the TCP reply.
   rebootAt_ = millis() + 1500;
+}
+
+void ServicePortal::receiveTime() {
+  touch();
+  uint32_t epochSec = 0;
+  if (server_.hasArg("plain") && server_.arg("plain").length() > 0) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, server_.arg("plain"))) {
+      const JsonVariantConst val = doc["epochSec"];
+      if (val.is<uint32_t>()) {
+        epochSec = val.as<uint32_t>();
+      } else if (val.is<int64_t>()) {
+        const int64_t raw = val.as<int64_t>();
+        if (raw > 0 && raw <= 0xFFFFFFFFLL) epochSec = static_cast<uint32_t>(raw);
+      }
+    }
+  }
+  if (epochSec == 0) {
+    const String header = server_.header(kEpochHeader);
+    if (header.length() > 0) {
+      char* endPtr = nullptr;
+      const unsigned long parsed = strtoul(header.c_str(), &endPtr, 10);
+      if (endPtr != header.c_str() && *endPtr == '\0' &&
+          parsed <= 0xFFFFFFFFUL) {
+        epochSec = static_cast<uint32_t>(parsed);
+      }
+    }
+  }
+  if (epochSec < TripClock::kMinPlausibleEpochSec) {
+    server_.send(400, "application/json",
+                 "{\"error\":\"valid UTC epochSec required\"}");
+    return;
+  }
+
+  const uint32_t now = millis();
+  const uint32_t rtcSec = currentRtcSec();
+  if (!tripClock_.sync(epochSec, rtcSec)) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"clock NVS save failed\"}");
+    return;
+  }
+  lastClockSyncAt_ = now;
+  tripContext_.update(now, rtcSec, tripClock_.nowEpochSec(rtcSec), false, false,
+                      0.0f, engine_.trip(),
+                      tripBoundary_.heldOpenAcrossPause());
+
+  const ConfigData& cfg = configStore_.data();
+  const TripLocalDateTime ldt =
+      epochToLocalDateTime(epochSec, cfg.utcOffsetMin);
+  char dateText[12];
+  char timeText[8];
+  formatLocalDateIso(ldt, dateText);
+  snprintf(timeText, sizeof(timeText), "%02u:%02u", ldt.hour, ldt.minute);
+
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["synced"] = true;
+  resp["epochSec"] = epochSec;
+  resp["utcOffsetMin"] = cfg.utcOffsetMin;
+  resp["localDate"] = dateText;
+  resp["localTime"] = timeText;
+  String output;
+  serializeJson(resp, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendTrips() {
+  touch();
+  size_t offset = 0;
+  size_t limit = TripHistory::kDefaultPageLimit;
+  if (server_.hasArg("offset")) {
+    const long v = server_.arg("offset").toInt();
+    if (v > 0) offset = static_cast<size_t>(v);
+  }
+  if (server_.hasArg("limit")) {
+    const long v = server_.arg("limit").toInt();
+    limit = static_cast<size_t>(clampValue<int>(
+        static_cast<int>(v), 1, static_cast<int>(TripHistory::kMaxPageLimit)));
+  }
+
+  TripHistoryPage page;
+  tripHistory_.readPage(offset, limit, page);
+
+  JsonDocument doc;
+  doc["ready"] = tripHistory_.ready();
+  doc["healthy"] = tripHistory_.healthy();
+  doc["headSequence"] = tripHistory_.headSequence();
+  doc["capacity"] = TripHistory::kCapacity;
+  doc["offset"] = page.offset;
+  doc["limit"] = page.limit;
+  doc["total"] = page.total;
+  doc["hasMore"] = page.hasMore;
+  doc["corruptTail"] = page.corruptTail;
+
+  JsonArray arr = doc["trips"].to<JsonArray>();
+  for (size_t i = 0; i < page.trips.size(); ++i) {
+    const TripRecord& r = page.trips[i];
+    const TripComputedMetrics m = TripRecordCodec::computeMetrics(r);
+
+    JsonObject item = arr.add<JsonObject>();
+    item["sequence"] = r.sequence;
+    item["startEpochSec"] = r.startEpochSec;
+    item["utcOffsetMin"] = r.utcOffsetMin;
+    item["dateUnknown"] = m.dateUnknown;
+    item["merged"] = m.merged;
+    if (!m.dateUnknown) {
+      char timeText[8];
+      snprintf(timeText, sizeof(timeText), "%02u:%02u", m.startHour,
+               m.startMinute);
+      item["localDate"] = m.localDate;
+      item["localTime"] = timeText;
+    } else {
+      item["localDate"] = "";
+      item["localTime"] = "";
+    }
+
+    item["wallDurationSec"] = m.wallDurationSec;
+    item["engineSeconds"] = m.engineSeconds;
+    item["movingSeconds"] = m.movingSeconds;
+    item["idleSeconds"] = m.idleSeconds;
+    item["preMoveSeconds"] = m.preMoveSeconds;
+    item["inTripIdleSeconds"] = m.inTripIdleSeconds;
+    item["distanceKm"] = static_cast<float>(m.distanceKm);
+    item["totalLiters"] = static_cast<float>(m.totalLiters);
+    item["preMoveLiters"] = static_cast<float>(m.preMoveLiters);
+    item["inTripIdleLiters"] = static_cast<float>(m.inTripIdleLiters);
+    item["idleLiters"] = static_cast<float>(m.idleLiters);
+    item["movingLiters"] = static_cast<float>(m.movingLiters);
+    if (m.hasAverageL100) {
+      item["averageL100"] = static_cast<float>(m.averageL100);
+    } else {
+      item["averageL100"] = nullptr;
+    }
+    if (m.hasMovingAverageL100) {
+      item["movingAverageL100"] = static_cast<float>(m.movingAverageL100);
+    } else {
+      item["movingAverageL100"] = nullptr;
+    }
+    if (m.hasLpgSharePercent) {
+      item["lpgSharePercent"] = static_cast<float>(m.lpgSharePercent);
+    } else {
+      item["lpgSharePercent"] = nullptr;
+    }
+    if (m.hasIdleSharePercent) {
+      item["idleSharePercent"] = static_cast<float>(m.idleSharePercent);
+    } else {
+      item["idleSharePercent"] = nullptr;
+    }
+    if (m.hasIdleLitersPerHour) {
+      item["idleLitersPerHour"] = static_cast<float>(m.idleLitersPerHour);
+    } else {
+      item["idleLitersPerHour"] = nullptr;
+    }
+    if (m.hasAvgMovingSpeedKph) {
+      item["avgMovingSpeedKph"] = static_cast<float>(m.avgMovingSpeedKph);
+    } else {
+      item["avgMovingSpeedKph"] = nullptr;
+    }
+    item["maxSpeedKnown"] = m.maxSpeedKnown;
+    if (m.maxSpeedKnown) {
+      item["maxSpeedKph"] = static_cast<float>(m.maxSpeedKph);
+    } else {
+      item["maxSpeedKph"] = nullptr;
+    }
+    item["petrolCorrection"] = r.petrolCorrection;
+    item["lpgCorrection"] = r.lpgCorrection;
+
+    JsonObject p = item["petrol"].to<JsonObject>();
+    p["rawLiters"] = static_cast<float>(r.trip.rawPetrolLiters);
+    p["liters"] = static_cast<float>(m.petrolLiters);
+    p["preMoveLiters"] = static_cast<float>(m.petrolPreMoveLiters);
+    p["inTripIdleLiters"] = static_cast<float>(m.petrolInTripIdleLiters);
+    p["idleLiters"] = static_cast<float>(m.petrolIdleLiters);
+    p["movingLiters"] = static_cast<float>(m.petrolMovingLiters);
+    p["distanceKm"] = static_cast<float>(m.petrolDistanceKm);
+    p["engineSeconds"] = r.trip.petrolSeconds;
+    p["standingSeconds"] = r.trip.petrolIdleSeconds;
+    if (r.trip.petrolDistanceKm >= 0.1) {
+      p["averageL100"] =
+          static_cast<float>(m.petrolLiters * 100.0 / r.trip.petrolDistanceKm);
+      p["movingAverageL100"] = static_cast<float>(
+          m.petrolMovingLiters * 100.0 / r.trip.petrolDistanceKm);
+    } else {
+      p["averageL100"] = nullptr;
+      p["movingAverageL100"] = nullptr;
+    }
+
+    JsonObject g = item["lpg"].to<JsonObject>();
+    g["rawLiters"] = static_cast<float>(r.trip.rawLpgLiters);
+    g["liters"] = static_cast<float>(m.lpgLiters);
+    g["preMoveLiters"] = static_cast<float>(m.lpgPreMoveLiters);
+    g["inTripIdleLiters"] = static_cast<float>(m.lpgInTripIdleLiters);
+    g["idleLiters"] = static_cast<float>(m.lpgIdleLiters);
+    g["movingLiters"] = static_cast<float>(m.lpgMovingLiters);
+    g["distanceKm"] = static_cast<float>(m.lpgDistanceKm);
+    g["engineSeconds"] = r.trip.lpgSeconds;
+    g["standingSeconds"] = r.trip.lpgIdleSeconds;
+    if (r.trip.lpgDistanceKm >= 0.1) {
+      g["averageL100"] =
+          static_cast<float>(m.lpgLiters * 100.0 / r.trip.lpgDistanceKm);
+      g["movingAverageL100"] =
+          static_cast<float>(m.lpgMovingLiters * 100.0 / r.trip.lpgDistanceKm);
+    } else {
+      g["averageL100"] = nullptr;
+      g["movingAverageL100"] = nullptr;
+    }
+  }
+
+  String output;
+  output.reserve(512 + page.trips.size() * 640);
+  serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::sendTripDays() {
+  touch();
+  size_t limit = TripHistory::kDefaultDaysLimit;
+  if (server_.hasArg("limit")) {
+    const long v = server_.arg("limit").toInt();
+    limit = static_cast<size_t>(clampValue<int>(
+        static_cast<int>(v), 1, static_cast<int>(TripHistory::kMaxDaysLimit)));
+  }
+
+  TripHistoryDaysResult res;
+  tripHistory_.readDays(limit, res);
+
+  JsonDocument doc;
+  doc["ready"] = tripHistory_.ready();
+  doc["healthy"] = tripHistory_.healthy();
+  doc["limit"] = res.limit;
+  doc["totalDays"] = res.totalDays;
+  doc["totalTrips"] = res.totalTrips;
+  doc["hasMore"] = res.hasMore;
+  doc["corruptTail"] = res.corruptTail;
+
+  JsonArray arr = doc["days"].to<JsonArray>();
+  for (size_t i = 0; i < res.days.size(); ++i) {
+    const TripDaySummary& d = res.days[i];
+    JsonObject item = arr.add<JsonObject>();
+    item["date"] = d.date;
+    item["dateUnknown"] = d.dateUnknown;
+    item["tripCount"] = d.tripCount;
+    item["mergedCount"] = d.mergedCount;
+    item["wallDurationSec"] = d.wallDurationSec;
+    item["engineSeconds"] = d.engineSeconds;
+    item["movingSeconds"] = d.movingSeconds;
+    item["idleSeconds"] = d.idleSeconds;
+    item["preMoveSeconds"] = d.preMoveSeconds;
+    item["inTripIdleSeconds"] = d.inTripIdleSeconds;
+    item["distanceKm"] = static_cast<float>(d.distanceKm);
+    item["petrolDistanceKm"] = static_cast<float>(d.petrolDistanceKm);
+    item["lpgDistanceKm"] = static_cast<float>(d.lpgDistanceKm);
+    item["totalLiters"] = static_cast<float>(d.totalLiters);
+    item["petrolLiters"] = static_cast<float>(d.petrolLiters);
+    item["lpgLiters"] = static_cast<float>(d.lpgLiters);
+    item["preMoveLiters"] = static_cast<float>(d.preMoveLiters);
+    item["petrolPreMoveLiters"] = static_cast<float>(d.petrolPreMoveLiters);
+    item["lpgPreMoveLiters"] = static_cast<float>(d.lpgPreMoveLiters);
+    item["inTripIdleLiters"] = static_cast<float>(d.inTripIdleLiters);
+    item["idleLiters"] = static_cast<float>(d.idleLiters);
+    item["movingLiters"] = static_cast<float>(d.movingLiters);
+    if (d.hasAverageL100) {
+      item["averageL100"] = static_cast<float>(d.averageL100);
+    } else {
+      item["averageL100"] = nullptr;
+    }
+    if (d.hasMovingAverageL100) {
+      item["movingAverageL100"] = static_cast<float>(d.movingAverageL100);
+    } else {
+      item["movingAverageL100"] = nullptr;
+    }
+    if (d.hasLpgSharePercent) {
+      item["lpgSharePercent"] = static_cast<float>(d.lpgSharePercent);
+    } else {
+      item["lpgSharePercent"] = nullptr;
+    }
+    if (d.hasIdleSharePercent) {
+      item["idleSharePercent"] = static_cast<float>(d.idleSharePercent);
+    } else {
+      item["idleSharePercent"] = nullptr;
+    }
+    if (d.hasIdleLitersPerHour) {
+      item["idleLitersPerHour"] = static_cast<float>(d.idleLitersPerHour);
+    } else {
+      item["idleLitersPerHour"] = nullptr;
+    }
+    if (d.hasAvgMovingSpeedKph) {
+      item["avgMovingSpeedKph"] = static_cast<float>(d.avgMovingSpeedKph);
+    } else {
+      item["avgMovingSpeedKph"] = nullptr;
+    }
+    item["maxSpeedKnown"] = d.hasMaxSpeed;
+    if (d.hasMaxSpeed) {
+      item["maxSpeedKph"] = static_cast<float>(d.maxSpeedKph);
+    } else {
+      item["maxSpeedKph"] = nullptr;
+    }
+  }
+
+  String output;
+  output.reserve(512 + res.days.size() * 480);
+  serializeJson(doc, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::closeCurrentTrip() {
+  touch();
+  const uint32_t now = millis();
+  const uint32_t rtcSec = currentRtcSec();
+  TripRecord rec = tripContext_.buildRecord(0, rtcSec, engine_.trip(),
+                                            configStore_.data());
+  if (!tripHistory_.append(rec)) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"trip history append failed\"}");
+    return;
+  }
+  engine_.resetTrip();
+  tripBoundary_.reset();
+  const bool ctxOk = tripContext_.resetForNewTrip(
+      now, rtcSec, tripClock_.nowEpochSec(rtcSec));
+  const bool legacyOk = tripStore_.save(engine_.trip());
+  if (!ctxOk || !legacyOk ||
+      !persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                               true, true)) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"trip reset after close failed\"}");
+    return;
+  }
+  JsonDocument resp;
+  resp["ok"] = true;
+  resp["sequence"] = rec.sequence;
+  String output;
+  serializeJson(resp, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+void ServicePortal::clearTripHistory() {
+  touch();
+  if (!requireAction("trips-clear", lastTripsClearAt_,
+                     kTripsClearCooldownMs)) {
+    return;
+  }
+  if (!tripHistory_.clear()) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"trip history clear failed\"}");
+    return;
+  }
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", "{\"ok\":true}");
 }

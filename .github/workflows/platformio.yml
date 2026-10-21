@@ -1,4 +1,4 @@
-﻿name: ESP32-S3 N16R8 firmware
+name: ESP32-S3 N16R8 firmware
 
 on:
   push:
@@ -40,6 +40,7 @@ jobs:
           python tools/test_telemetry.py
           python tools/test_obd_trace.py
           python tools/test_screen_gate.py
+          python tools/test_trip_history.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
@@ -58,6 +59,7 @@ jobs:
           python tools/check_trace_schema.py
           python tools/check_pid_support_report.py
           python tools/check_pid_names.py
+          python tools/check_trip_history_integration.py
           python tools/check_ci_coverage.py
 
       - name: Run browser OTA/UI regression
@@ -69,6 +71,7 @@ jobs:
           NODE_PATH="$PWD/node_modules" node tests/web/pidsupport_ui.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/config_roundtrip.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/config_first_load.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/trip_history_ui.cjs
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8
