@@ -750,8 +750,12 @@ void DashboardUi::drawMainCell(int16_t x, MainCellValue cell,
     case MainCellValue::IdleConsumption: {
       const float perHour = engine.idleLitersPerHour(config);
       valid = perHour > 0.0f;
-      if (valid) snprintf(value, sizeof(value), "%.2f", perHour);
-      unit = translated(config, "ПРОСТОЙ Л/Ч", "IDLE L/H");
+      // The unit rides on the value for the same reason the temperature's
+      // does: measured against the glyph advances, "ПРОСТОЙ Л/Ч" is 93 of the
+      // 104 px the cell has, so two cells with this label would meet in the
+      // middle. "ПРОСТОЙ" is 66, and the value has room for both.
+      if (valid) snprintf(value, sizeof(value), "%.2f л/ч", perHour);
+      unit = translated(config, "ПРОСТОЙ", "IDLE L/H");
       break;
     }
     case MainCellValue::IdleShare: {

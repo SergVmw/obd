@@ -218,6 +218,12 @@ bool ConfigStore::valid(const ConfigData& config) {
          // valid(), so choosing the last one was offered and then thrown away.
          config.displayStartPage() <= 4 &&
          static_cast<uint8_t>(config.mainCenterValue()) <= 3 &&
+         // The two main-screen cells, bounded like every other enumeration in
+         // the record. Both are unsigned, so the lower bound is structural and
+         // only the upper one is written; an unknown value would otherwise be
+         // accepted here and quietly drawn as boost by the screen.
+         static_cast<uint8_t>(config.mainCellLeft()) <= 10 &&
+         static_cast<uint8_t>(config.mainCellRight()) <= 10 &&
          static_cast<uint8_t>(config.uiLanguage()) <= 1 &&
          config.autoReturnSec <= 120 &&
          static_cast<uint8_t>(config.baroSource) <= 4 &&

@@ -344,6 +344,49 @@ void testStartPageAndCellsSurviveASaveAtTheCurrentSchema() {
   CHECK(reloaded.data().mainCellRight() == MainCellValue::IdleShare);
 }
 
+// A record at the current schema with a sound checksum and a cell choice the
+// enumeration does not know. The portal clamps what it writes, but it is not
+// the only thing that can put a number here, and valid() is the last gate
+// before a record is trusted: without the bound, an unknown value is accepted
+// and the screen draws boost in its place, which reads as a setting rather than
+// as corruption.
+std::vector<uint8_t> v10Record(uint8_t rightCell) {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = H2G_CONFIG_SCHEMA;
+  c.brightnessDay = 57;
+  c.lpgCorrection = 1.25f;
+  c.setMainCellLeft(MainCellValue::Rpm);
+  c.cellRightValue = rightCell;
+  std::vector<uint8_t> result(sizeof(ConfigData));
+  std::memcpy(result.data(), &c, sizeof(c));
+  const uint32_t hash = fnv(result.data(), 216);
+  std::memcpy(result.data() + 216, &hash, 4);
+  return result;
+}
+
+void testUnknownCellValueIsRefusedAtTheCurrentSchema() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v10Record(11);
+  ConfigStore refused;
+  CHECK(refused.begin());
+  // The whole record is refused rather than drawn half-way: a config that fails
+  // valid() is never trusted field by field.
+  CHECK(refused.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(refused.data().mainCellLeft() == MainCellValue::CurrentConsumption);
+  CHECK(refused.data().mainCellRight() == MainCellValue::AverageConsumption);
+
+  // Control: the last value the enumeration does know is accepted, so the bound
+  // is the enumeration and not something narrower.
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v10Record(10);
+  ConfigStore accepted;
+  CHECK(accepted.begin());
+  CHECK(accepted.data().brightnessDay == 57);
+  CHECK(near(accepted.data().lpgCorrection, 1.25f));
+  CHECK(accepted.data().mainCellLeft() == MainCellValue::Rpm);
+  CHECK(accepted.data().mainCellRight() == MainCellValue::IdleShare);
+}
+
 void testSchema9RecordWithBrokenChecksumFallsBackToFactory() {
   Preferences::storage.clear();
   std::vector<uint8_t> record = v9Record();
@@ -849,6 +892,9 @@ int main() {
   });
   test("a schema-9 record whose checksum does not match falls back to factory", [] {
     testSchema9RecordWithBrokenChecksumFallsBackToFactory();
+  });
+  test("a cell value outside the enumeration is refused by valid()", [] {
+    testUnknownCellValueIsRefusedAtTheCurrentSchema();
   });
   test("the switch-on delay survives a save and reload, and the range is enforced", [] {
     ConfigStore store; CHECK(store.begin());
