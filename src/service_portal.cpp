@@ -600,6 +600,11 @@ void ServicePortal::sendConfig() {
   JsonObject boost = doc["boost"].to<JsonObject>();
   boost["baroSource"] = static_cast<uint8_t>(c.baroSource);
   boost["boostArcStyle"] = static_cast<uint8_t>(c.boostArcStyle);
+  boost["boostPointerMode"] = static_cast<uint8_t>(c.boostPointerMode());
+  boost["boostPointerColor"] = static_cast<uint8_t>(c.boostPointerColor());
+  boost["boostPointerTipRadius"] = c.boostPointerTipRadius();
+  boost["boostPointerBaseRadius"] = c.boostPointerBaseRadius();
+  boost["boostPointerHalfAngleTenths"] = c.boostPointerHalfAngleTenths();
   boost["fixedBaroKpa"] = c.fixedBaroKpa;
   boost["boostOffsetBar"] = c.boostOffsetBar;
   boost["boostMinBar"] = c.boostMinBar;
@@ -748,6 +753,10 @@ void ServicePortal::receiveConfig() {
   if (!b.isNull()) {
     const IntegerField integerFields[] = {
         {"baroSource", 0, 4}, {"boostArcStyle", 0, 1},
+        {"boostPointerMode", 0, 3}, {"boostPointerColor", 0, 2},
+        {"boostPointerTipRadius", 86, 108},
+        {"boostPointerBaseRadius", 72, 106},
+        {"boostPointerHalfAngleTenths", 15, 70},
         {"smoothingMs", 0, 2000}};
     const char* invalid = invalidIntegerField(
         b, integerFields, sizeof(integerFields) / sizeof(integerFields[0]));
@@ -776,6 +785,17 @@ void ServicePortal::receiveConfig() {
     c.boostMaxBar = clampValue<float>(b["boostMaxBar"] | c.boostMaxBar, 0.5f, 2.5f);
     c.boostWarningBar = clampValue<float>(b["boostWarningBar"] | c.boostWarningBar, 0.2f, 2.0f);
     c.boostDangerBar = clampValue<float>(b["boostDangerBar"] | c.boostDangerBar, 0.3f, 2.5f);
+    c.setBoostPointerMode(static_cast<BoostPointerMode>(clampValue<int>(
+        b["boostPointerMode"] | static_cast<int>(c.boostPointerMode()), 0, 3)));
+    c.setBoostPointerColor(static_cast<BoostPointerColor>(clampValue<int>(
+        b["boostPointerColor"] | static_cast<int>(c.boostPointerColor()), 0, 2)));
+    c.setBoostPointerTipRadius(clampValue<int>(
+        b["boostPointerTipRadius"] | c.boostPointerTipRadius(), 86, 108));
+    c.setBoostPointerBaseRadius(clampValue<int>(
+        b["boostPointerBaseRadius"] | c.boostPointerBaseRadius(), 72, 106));
+    c.setBoostPointerHalfAngleTenths(clampValue<int>(
+        b["boostPointerHalfAngleTenths"] | c.boostPointerHalfAngleTenths(), 15,
+        70));
     c.smoothingMs = clampValue<int>(b["smoothingMs"] | c.smoothingMs, 0, 2000);
   }
 

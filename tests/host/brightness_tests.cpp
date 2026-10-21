@@ -350,23 +350,151 @@ void testStartPageAndCellsSurviveASaveAtTheCurrentSchema() {
 // before a record is trusted: without the bound, an unknown value is accepted
 // and the screen draws boost in its place, which reads as a setting rather than
 // as corruption.
-std::vector<uint8_t> v10Record(uint8_t rightCell) {
+// A record at the current schema, built by hand so a field can be set to a
+// value the form would never send.
+std::vector<uint8_t> currentRecord(uint8_t rightCell, uint8_t tipRadius = 99,
+                                   uint8_t mode = 0) {
   ConfigData c = ConfigStore::defaults();
   c.schemaVersion = H2G_CONFIG_SCHEMA;
   c.brightnessDay = 57;
   c.lpgCorrection = 1.25f;
   c.setMainCellLeft(MainCellValue::Rpm);
   c.cellRightValue = rightCell;
+  c.setBoostPointerTipRadius(tipRadius);
+  c.pointerMode = mode;
   std::vector<uint8_t> result(sizeof(ConfigData));
   std::memcpy(result.data(), &c, sizeof(c));
+  // The checksum covers everything before it, wherever the current layout puts
+  // it: hard-coding the offset would make this helper quietly build an invalid
+  // record the moment a field is appended.
+  const size_t checksumOffset = offsetof(ConfigData, checksum);
+  const uint32_t hash = fnv(result.data(), checksumOffset);
+  std::memcpy(result.data() + checksumOffset, &hash, 4);
+  return result;
+}
+
+// A schema-10 record is what 0.4.28 and 0.4.29 wrote: 220 bytes, the two
+// main-screen cells in the padding schema 9 left there, and the checksum at
+// 216 where the pointer's first byte now lives. It is the record an upgrade in
+// the car meets today, so it is the one that must survive.
+std::vector<uint8_t> v10Record(uint8_t leftCell = 2) {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = 10;
+  c.brightnessDay = 64;
+  c.lpgEnabled = true;
+  c.lpgCorrection = 1.22f;
+  c.setMainCellLeft(static_cast<MainCellValue>(leftCell));
+  c.setMainCellRight(MainCellValue::Voltage);
+  strlcpy(c.apPassword, "schema-ten-password", sizeof(c.apPassword));
+  std::vector<uint8_t> result(220);
+  std::memcpy(result.data(), &c, 216);
   const uint32_t hash = fnv(result.data(), 216);
   std::memcpy(result.data() + 216, &hash, 4);
   return result;
 }
 
+// The pointer's geometry is stored, so it can arrive out of range the same way
+// any other byte can: a torn write, or a future release with a wider range that
+// the owner then downgrades. valid() is the last gate before the record is
+// trusted, and a triangle drawn from a slipped byte is not a setting.
+// The same for the mode: an enumeration the drawing code has no branch for.
+// Without the bound the record is accepted and the switch falls through to the
+// branch that draws nothing, so a corrupt byte reads as a setting that was
+// deliberately turned off.
+void testPointerModeOutsideTheEnumerationIsRefused() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = currentRecord(10, 99, 9);
+  ConfigStore refused;
+  CHECK(refused.begin());
+  CHECK(refused.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(refused.data().boostPointerMode() == BoostPointerMode::None);
+
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = currentRecord(10, 99, 3);
+  ConfigStore accepted;
+  CHECK(accepted.begin());
+  CHECK(accepted.data().brightnessDay == 57);
+  CHECK(accepted.data().boostPointerMode() == BoostPointerMode::Both);
+}
+
+void testPointerGeometryOutsideItsRangeIsRefused() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = currentRecord(10, 200);
+  ConfigStore refused;
+  CHECK(refused.begin());
+  CHECK(refused.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(refused.data().boostPointerTipRadius() == 99);
+
+  // Control: the last radius the range allows is accepted, so the bound is the
+  // range and not something narrower.
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = currentRecord(10, 108);
+  ConfigStore accepted;
+  CHECK(accepted.begin());
+  CHECK(accepted.data().brightnessDay == 57);
+  CHECK(accepted.data().boostPointerTipRadius() == 108);
+}
+
+void testSchema10RecordKeepsSettingsAndTakesTheFactoryPointer() {
+  Preferences::storage.clear();
+  Preferences::storage["h2gauge/config"] = v10Record(2);  // Rpm
+  ConfigStore store;
+  CHECK(store.begin());
+  const ConfigData& c = store.data();
+  CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA);
+  // Everything the record held, the two cell choices included: they are bytes a
+  // schema-11 build keeps in the same place.
+  CHECK(c.brightnessDay == 64);
+  CHECK(c.lpgEnabled && near(c.lpgCorrection, 1.22f));
+  CHECK(c.mainCellLeft() == MainCellValue::Rpm);
+  CHECK(c.mainCellRight() == MainCellValue::Voltage);
+  CHECK(std::strcmp(c.apPassword, "schema-ten-password") == 0);
+  // What the record predates takes the approved geometry, so switching the mode
+  // on needs no measuring - and the mode itself stays off, because an upgrade
+  // must not put a new figure on the screen by itself.
+  CHECK(c.boostPointerMode() == BoostPointerMode::None);
+  CHECK(c.boostPointerColor() == BoostPointerColor::Zone);
+  CHECK(c.boostPointerTipRadius() == 99);
+  CHECK(c.boostPointerBaseRadius() == 86);
+  CHECK(c.boostPointerHalfAngleTenths() == 35);
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
+void testSchema10RecordWithBrokenChecksumFallsBackToFactory() {
+  Preferences::storage.clear();
+  std::vector<uint8_t> record = v10Record();
+  record[216] ^= 0xFF;
+  Preferences::storage["h2gauge/config"] = record;
+  ConfigStore store;
+  CHECK(store.begin());
+  CHECK(store.data().schemaVersion == H2G_CONFIG_SCHEMA);
+  CHECK(store.data().brightnessDay == ConfigStore::defaults().brightnessDay);
+  CHECK(!store.data().lpgEnabled);
+}
+
+void testThePointerSurvivesASaveAtTheCurrentSchema() {
+  Preferences::storage.clear();
+  ConfigStore store;
+  CHECK(store.begin());
+  store.data().setBoostPointerMode(BoostPointerMode::Both);
+  store.data().setBoostPointerColor(BoostPointerColor::White);
+  store.data().setBoostPointerTipRadius(104);
+  store.data().setBoostPointerBaseRadius(78);
+  store.data().setBoostPointerHalfAngleTenths(50);
+  CHECK(store.save());
+  ConfigStore reloaded;
+  CHECK(reloaded.begin());
+  CHECK(reloaded.data().boostPointerMode() == BoostPointerMode::Both);
+  CHECK(reloaded.data().boostPointerColor() == BoostPointerColor::White);
+  CHECK(reloaded.data().boostPointerTipRadius() == 104);
+  CHECK(reloaded.data().boostPointerBaseRadius() == 78);
+  CHECK(reloaded.data().boostPointerHalfAngleTenths() == 50);
+  CHECK(near(reloaded.data().boostPointerHalfAngleDeg(), 5.0f));
+}
+
 void testUnknownCellValueIsRefusedAtTheCurrentSchema() {
   Preferences::storage.clear();
-  Preferences::storage["h2gauge/config"] = v10Record(11);
+  Preferences::storage["h2gauge/config"] = currentRecord(11);
   ConfigStore refused;
   CHECK(refused.begin());
   // The whole record is refused rather than drawn half-way: a config that fails
@@ -378,7 +506,7 @@ void testUnknownCellValueIsRefusedAtTheCurrentSchema() {
   // Control: the last value the enumeration does know is accepted, so the bound
   // is the enumeration and not something narrower.
   Preferences::storage.clear();
-  Preferences::storage["h2gauge/config"] = v10Record(10);
+  Preferences::storage["h2gauge/config"] = currentRecord(10);
   ConfigStore accepted;
   CHECK(accepted.begin());
   CHECK(accepted.data().brightnessDay == 57);
@@ -895,6 +1023,21 @@ int main() {
   });
   test("a cell value outside the enumeration is refused by valid()", [] {
     testUnknownCellValueIsRefusedAtTheCurrentSchema();
+  });
+  test("a schema-10 record keeps its settings and takes the factory pointer", [] {
+    testSchema10RecordKeepsSettingsAndTakesTheFactoryPointer();
+  });
+  test("a schema-10 record whose checksum does not match falls back to factory", [] {
+    testSchema10RecordWithBrokenChecksumFallsBackToFactory();
+  });
+  test("the pointer and its geometry survive a save at the current schema", [] {
+    testThePointerSurvivesASaveAtTheCurrentSchema();
+  });
+  test("pointer geometry outside its range is refused by valid()", [] {
+    testPointerGeometryOutsideItsRangeIsRefused();
+  });
+  test("a pointer mode outside the enumeration is refused by valid()", [] {
+    testPointerModeOutsideTheEnumerationIsRefused();
   });
   test("the switch-on delay survives a save and reload, and the range is enforced", [] {
     ConfigStore store; CHECK(store.begin());

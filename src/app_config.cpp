@@ -39,6 +39,19 @@ constexpr size_t kV9ChecksumOffset = 216;
 // copying the whole prefix would read whatever the compiler left there as a
 // choice of what the main screen shows.
 constexpr size_t kV9FieldsEnd = 214;
+// Everything a schema-10 record holds. Its checksum sits at 216, which is where
+// the two cell bytes now live, so the copy stops there and the rest comes from
+// defaults().
+constexpr size_t kV10FieldsEnd = 216;
+// Schema 9 and schema 10 are both 220 bytes, so the stored version is the only
+// thing that says whether bytes 214..215 are a choice of what the main screen
+// shows or padding a schema-9 build never wrote. They share one branch in
+// begin() for that reason.
+constexpr size_t kV10RecordSize = 220;
+// Schema 11 appends the boost pointer: five bytes, which the compiler pads to
+// keep the uint32_t checksum aligned, so the checksum moves from 216 to 224 and
+// the record from 220 to 228.
+constexpr size_t kV11ChecksumOffset = 224;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -52,11 +65,13 @@ static_assert(offsetof(ConfigData, mainDigitSize) == kV7FieldsEnd,
               "Schema-7 prefix changed; update the migration explicitly");
 static_assert(offsetof(ConfigData, lpgOnDelayMs) == kV8ChecksumOffset,
               "Schema-8 prefix changed; update the migration explicitly");
-static_assert(offsetof(ConfigData, checksum) == kV9ChecksumOffset,
-              "Schema-9 checksum offset");
+static_assert(offsetof(ConfigData, checksum) == kV11ChecksumOffset,
+              "Schema-11 checksum offset");
 static_assert(offsetof(ConfigData, cellLeftValue) == kV9FieldsEnd,
               "Schema-9 prefix changed; update the migration explicitly");
-static_assert(kV9ChecksumOffset + 4 == sizeof(ConfigData),
+static_assert(offsetof(ConfigData, pointerMode) == kV10FieldsEnd,
+              "Schema-10 prefix changed; update the migration explicitly");
+static_assert(kV11ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
 
@@ -97,6 +112,15 @@ ConfigData ConfigStore::defaults() {
   // What the first screen has always drawn, so an upgrade looks identical.
   c.setMainCellLeft(MainCellValue::CurrentConsumption);
   c.setMainCellRight(MainCellValue::AverageConsumption);
+  // The pointer is off by default, for the same reason the cells default to the
+  // pair the screen always drew: an upgrade must not put a new figure on the
+  // screen by itself. The geometry is the approved one, so switching the mode
+  // on needs no measuring afterwards.
+  c.setBoostPointerMode(BoostPointerMode::None);
+  c.setBoostPointerColor(BoostPointerColor::Zone);
+  c.setBoostPointerTipRadius(99);
+  c.setBoostPointerBaseRadius(86);
+  c.setBoostPointerHalfAngleTenths(35);
   c.setUiLanguage(UiLanguage::Russian);
   c.setFuelTrimEnabled(true);
   c.setDfcoEnabled(true);
@@ -224,6 +248,17 @@ bool ConfigStore::valid(const ConfigData& config) {
          // accepted here and quietly drawn as boost by the screen.
          static_cast<uint8_t>(config.mainCellLeft()) <= 10 &&
          static_cast<uint8_t>(config.mainCellRight()) <= 10 &&
+         static_cast<uint8_t>(config.boostPointerMode()) <= 3 &&
+         static_cast<uint8_t>(config.boostPointerColor()) <= 2 &&
+         // The pointer's geometry, bounded at both ends so a slipped byte is
+         // refused with the whole record rather than drawn as a sliver across
+         // the arc. The portal declares the same ranges.
+         config.boostPointerTipRadius() >= 86 &&
+         config.boostPointerTipRadius() <= 108 &&
+         config.boostPointerBaseRadius() >= 72 &&
+         config.boostPointerBaseRadius() <= 106 &&
+         config.boostPointerHalfAngleTenths() >= 15 &&
+         config.boostPointerHalfAngleTenths() <= 70 &&
          static_cast<uint8_t>(config.uiLanguage()) <= 1 &&
          config.autoReturnSec <= 120 &&
          static_cast<uint8_t>(config.baroSource) <= 4 &&
@@ -378,6 +413,25 @@ bool ConfigStore::migrateV9(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
+bool ConfigStore::migrateV10(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV9ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 10 ||
+      storedChecksum != fnv1a(record, kV9ChecksumOffset)) return false;
+
+  destination = defaults();
+  // Everything the record holds, which is every field schema 11 keeps in the
+  // same place. No start-page remap here: a schema-10 record was written by a
+  // build that already knows the page order 0.4.28 introduced.
+  memcpy(static_cast<void*>(&destination), record, kV10FieldsEnd);
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -411,6 +465,19 @@ bool ConfigStore::begin() {
       } else {
         loaded = false;
       }
+    }
+  } else if (storedLength == kV10RecordSize) {
+    // Schema 9 and schema 10 are both this long, so the stored version says
+    // which layout bytes 214..215 hold.
+    uint8_t record[kV10RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record);
+    if (loaded) {
+      uint16_t schema = 0;
+      memcpy(&schema, record + 4, sizeof(schema));
+      loaded = (schema == 10) ? migrateV10(record, config_)
+                              : migrateV9(record, config_);
+      needsSave = loaded;
     }
   } else if (storedLength == kV8RecordSize) {
     // Schema 7 and schema 8 are both this long, so the size cannot tell them

@@ -65,7 +65,11 @@ class DashboardUi {
   int16_t drawDirectText(const char* text, int16_t x, int16_t y,
                          uint8_t datum, uint16_t color, FontRole role,
                          const GFXfont* fallbackFont);
-  void drawGaugeArc(float value, const ConfigData& config);
+  void drawGaugeArc(float value, bool valueValid, const ConfigData& config);
+  // A triangle marking a value on the boost arc: filled for the current value,
+  // an outline for the peak.
+  void drawBoostPointer(float value, const ConfigData& config, bool filled);
+  uint16_t boostPointerColor(float value, const ConfigData& config);
   void drawStatusRow(const TelemetryData& data, const ConfigData& config,
                      uint32_t now);
   void drawValueCell(int16_t x, int16_t y, const char* value,

@@ -57,6 +57,31 @@ enum class MainCellValue : uint8_t {
   IdleShare = 10,
 };
 
+// What the boost arc marks with a triangle. Two values can be marked at once,
+// so the shapes differ rather than the colours: the current value is filled and
+// the peak is an outline, which keeps them apart even where both land in the
+// same zone and share its colour. When they coincide, the outline lies exactly
+// on the fill, which is what "the current value is the peak" looks like.
+//
+// None is the factory value, as the cells' factory pair is the one the screen
+// always drew: an upgrade must not put a new figure on the screen by itself.
+enum class BoostPointerMode : uint8_t {
+  None = 0,
+  Current = 1,
+  Peak = 2,
+  Both = 3,
+};
+
+// The colour of the current-value triangle. Zone is the arc's own colour for
+// that value, which follows the owner's four colour settings; text is the
+// colour every figure on the screen uses; white is fixed at full brightness
+// and follows nothing, which is why it is a choice and not the default.
+enum class BoostPointerColor : uint8_t {
+  Zone = 0,
+  White = 1,
+  Text = 2,
+};
+
 // Height of the large number in the centre of the first screen. Large is the
 // size the gauge has always drawn, so it stays the default and an upgrade looks
 // identical; Small is the 28 px alternative for a dashboard that shows more
@@ -170,6 +195,34 @@ struct ConfigData {
   void setMainCellRight(MainCellValue value) {
     cellRightValue = static_cast<uint8_t>(value);
   }
+  BoostPointerMode boostPointerMode() const {
+    return static_cast<BoostPointerMode>(pointerMode);
+  }
+  void setBoostPointerMode(BoostPointerMode value) {
+    pointerMode = static_cast<uint8_t>(value);
+  }
+  BoostPointerColor boostPointerColor() const {
+    return static_cast<BoostPointerColor>(pointerColor);
+  }
+  void setBoostPointerColor(BoostPointerColor value) {
+    pointerColor = static_cast<uint8_t>(value);
+  }
+  uint8_t boostPointerTipRadius() const { return pointerTipRadius; }
+  void setBoostPointerTipRadius(uint8_t radius) { pointerTipRadius = radius; }
+  uint8_t boostPointerBaseRadius() const { return pointerBaseRadius; }
+  void setBoostPointerBaseRadius(uint8_t radius) { pointerBaseRadius = radius; }
+  // Tenths of a degree: 35 is three and a half degrees either side of the
+  // value. Tenths rather than degrees because half a degree is a visible step
+  // at this radius and a whole degree is a coarse one.
+  uint8_t boostPointerHalfAngleTenths() const {
+    return pointerHalfAngleTenths;
+  }
+  float boostPointerHalfAngleDeg() const {
+    return static_cast<float>(pointerHalfAngleTenths) / 10.0f;
+  }
+  void setBoostPointerHalfAngleTenths(uint8_t tenths) {
+    pointerHalfAngleTenths = tenths;
+  }
   UiLanguage uiLanguage() const { return language; }
   void setUiLanguage(UiLanguage value) { language = value; }
   bool fuelTrimEnabled() const { return fuelTrimPollingEnabled; }
@@ -223,6 +276,18 @@ struct ConfigData {
   uint8_t cellLeftValue;
   uint8_t cellRightValue;
 
+  // The boost pointer: a triangle on the arc marking the current value, the
+  // peak, or both. The factory geometry is the one approved on the mock-up —
+  // apex at 99 px, base at 86 px, 3.5 degrees either side — and every number
+  // is stored, so the shape can be tuned without a reflash. Ranges are checked
+  // at both ends: a byte that slips is refused with the whole record rather
+  // than drawn as a sliver across the arc.
+  uint8_t pointerMode;
+  uint8_t pointerColor;
+  uint8_t pointerTipRadius;
+  uint8_t pointerBaseRadius;
+  uint8_t pointerHalfAngleTenths;
+
   uint32_t checksum;
 };
 
@@ -244,6 +309,7 @@ class ConfigStore {
   static bool migrateV7(const uint8_t* record, ConfigData& destination);
   static bool migrateV8(const uint8_t* record, ConfigData& destination);
   static bool migrateV9(const uint8_t* record, ConfigData& destination);
+  static bool migrateV10(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

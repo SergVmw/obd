@@ -538,7 +538,8 @@ uint16_t DashboardUi::boostColor(float boost, const ConfigData& config) {
   return config.colorBoost;
 }
 
-void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
+void DashboardUi::drawGaugeArc(float value, bool valueValid,
+                                const ConfigData& config) {
   const float minValue = config.boostMinBar;
   const float maxValue = max(config.boostMaxBar, minValue + 0.2f);
   const float shown = clampFloat(value, minValue, maxValue);
@@ -600,15 +601,75 @@ void DashboardUi::drawGaugeArc(float value, const ConfigData& config) {
     sprite_.drawLine(x1, y1, x2, y2, kMuted);
   }
 
+  // The pointer: a triangle standing on the arc. Two values can be marked at
+  // once, so the shape carries the meaning and not the colour - the current
+  // value is filled, the peak is only an outline, and where they coincide the
+  // outline lies on the fill, which is what "the current value is the peak"
+  // looks like. A colour shared by both would not survive the zone changing
+  // under them.
+  const BoostPointerMode pointer = config.boostPointerMode();
+  const bool peakAsTriangle = pointer == BoostPointerMode::Peak ||
+                              pointer == BoostPointerMode::Both;
   if (config.peakEnabled && peakBoost_ > config.boostMinBar) {
     const float peak = clampFloat(peakBoost_, minValue, maxValue);
-    const float ratio = (peak - minValue) / (maxValue - minValue);
-    const float angle = 135.0f + ratio * 270.0f;
-    int16_t x1, y1, x2, y2;
-    pointOnCircle(angle, 94, x1, y1);
-    pointOnCircle(angle, 106, x2, y2);
-    sprite_.drawLine(x1, y1, x2, y2, config.colorText);
-    sprite_.drawLine(x1 + 1, y1, x2 + 1, y2, config.colorText);
+    if (peakAsTriangle) {
+      drawBoostPointer(peak, config, false);
+    } else {
+      // The thin radial line every release before this one drew.
+      const float ratio = (peak - minValue) / (maxValue - minValue);
+      const float angle = 135.0f + ratio * 270.0f;
+      int16_t x1, y1, x2, y2;
+      pointOnCircle(angle, 94, x1, y1);
+      pointOnCircle(angle, 106, x2, y2);
+      sprite_.drawLine(x1, y1, x2, y2, config.colorText);
+      sprite_.drawLine(x1 + 1, y1, x2 + 1, y2, config.colorText);
+    }
+  }
+  // Nothing to point at when the manifold pressure has gone stale: a triangle
+  // frozen at the last value would read as a measurement.
+  if (valueValid && (pointer == BoostPointerMode::Current ||
+                     pointer == BoostPointerMode::Both)) {
+    drawBoostPointer(shown, config, true);
+  }
+}
+
+// One triangle on the boost arc, at the angle the value maps to, in the
+// geometry the owner stored. Filled is the current value and an outline is the
+// peak; see drawGaugeArc() for why.
+void DashboardUi::drawBoostPointer(float value, const ConfigData& config,
+                                   bool filled) {
+  const float minValue = config.boostMinBar;
+  const float maxValue = max(config.boostMaxBar, minValue + 0.2f);
+  const float point = clampFloat(value, minValue, maxValue);
+  const float angle =
+      135.0f + (point - minValue) / (maxValue - minValue) * 270.0f;
+  const float half = config.boostPointerHalfAngleDeg();
+  int16_t ax, ay, bx, by, cx, cy;
+  pointOnCircle(angle, config.boostPointerTipRadius(), ax, ay);
+  pointOnCircle(angle - half, config.boostPointerBaseRadius(), bx, by);
+  pointOnCircle(angle + half, config.boostPointerBaseRadius(), cx, cy);
+  if (filled) {
+    sprite_.fillTriangle(ax, ay, bx, by, cx, cy,
+                         boostPointerColor(point, config));
+  } else {
+    // The peak takes the colour of the zone it stands in: the arc beside it
+    // says the same thing, and where the peak is says the rest.
+    sprite_.drawTriangle(ax, ay, bx, by, cx, cy, boostColor(point, config));
+  }
+}
+
+uint16_t DashboardUi::boostPointerColor(float value, const ConfigData& config) {
+  switch (config.boostPointerColor()) {
+    case BoostPointerColor::White:
+      // Fixed at full brightness and following no setting, which is why it is a
+      // choice and not the default: nothing on the screen should outshine the
+      // figure it belongs to.
+      return 0xFFFF;
+    case BoostPointerColor::Text:
+      return config.colorText;
+    case BoostPointerColor::Zone:
+    default:
+      return boostColor(value, config);
   }
 }
 
@@ -619,7 +680,7 @@ void DashboardUi::drawMain(const TelemetryData& data,
   if (data.mapKpa.valid(now) && data.filteredBoostBar > peakBoost_) {
     peakBoost_ = data.filteredBoostBar;
   }
-  drawGaugeArc(data.filteredBoostBar, config);
+  drawGaugeArc(data.filteredBoostBar, data.mapKpa.valid(now), config);
 
   char buffer[24];
   if (data.ecuVoltage.valid(now)) {
