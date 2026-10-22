@@ -19,8 +19,8 @@
 | Config schema | **13** (`migrateV12`: `232 B -> 348 B`, по умолчанию `staEnabled = false`) |
 | App-образ | `h2-gauge-v0.4.33-esp32s3-n16r8.bin`, 1 379 168 байт, смещение `0x1d564` |
 | Factory-образ | `h2-gauge-v0.4.33-esp32s3-n16r8-factory.bin`, 1 444 704 байта, offset `0x0` |
-| SHA-256 (app) | `f3d544979cf956f967f61536540c061bf0cfb244b73d47e2a8a64e94b57bfc36` |
-| SHA-256 (factory) | `fd142fb9facc99afde90f8247853992607ee618769c6104cc9ea27ba051fecaa` |
+| SHA-256 (app) | `f969d99fe913b065164a71714d3f10851fb62d791b54e155cab5488eb8a838ad` |
+| SHA-256 (factory) | `b0b02244ee5544d910b1bf5f769940560081c46adc13cd968571c9a87e424f2e` |
 
 Прошивка OTA — только **app**-образ (`…n16r8.bin`, без `factory`).
 
