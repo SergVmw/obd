@@ -22,6 +22,9 @@
 #include "power_manager.h"
 #include "runtime_persistence.h"
 #include "service_portal.h"
+#include "sta_client_logic.h"
+#include "sta_readonly.h"
+#include "storage_mutex.h"
 #include "telemetry.h"
 #include "trip_boundary.h"
 #include "trip_clock.h"
@@ -62,6 +65,7 @@ TripContextStore tripContext;
 TripBoundary tripBoundary;
 TripHistory tripHistory;
 TripHistoryView historyView;
+StaReadOnlyRuntime staRuntime;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
                             dtcHistoryPersistence, assetStore, littleFsStorage,
@@ -81,8 +85,11 @@ bool engineWasRunning = false;
 bool rollbackSelector = false;
 bool rollbackArmed = false;
 uint32_t lastMemoryLogAt = 0;
+uint32_t lastStaSnapshotAt = 0;
+float staPeakBoostBar = 0.0f;
 
 void closeOpenTripToHistory(uint32_t now, uint32_t rtcSec) {
+  StorageLock lock;
   TripRecord rec = tripContext.buildRecord(0, rtcSec, trip, configStore.data());
   if (!tripHistory.append(rec)) {
     ESP_LOGE(kTag, "Trip history append failed");
@@ -100,6 +107,7 @@ void closeOpenTripToHistory(uint32_t now, uint32_t rtcSec) {
 }
 
 void serviceDtcPersistence(uint32_t now) {
+  StorageLock lock;
   dtcHistoryPersistence.periodic(now, obdClient.dtcHistory());
   if (obdClient.diagnosticsState().operation ==
       DtcOperation::PreserveBeforeClear) {
@@ -234,17 +242,23 @@ void captureDiagnosticTrace(uint32_t now) {
 [[noreturn]] void enterLowVoltageSleep() {
   ESP_LOGW(kTag, "Entering low-voltage deep sleep at %.2f V",
            telemetry.ecuVoltage.value);
-  const bool legacyTripOk = tripStore.save(trip);
-  const bool legacyCalibrationOk = petrolCalibrationStore.save(petrolCalibration);
-  if (!legacyTripOk || !legacyCalibrationOk ||
-      !persistence.checkpoint(trip, petrolCalibration, true, true)) {
-    ESP_LOGE(kTag, "Forced LittleFS/NVS runtime checkpoint failed");
-  }
-  if (!tripContext.checkpoint(millis(), true)) {
-    ESP_LOGE(kTag, "Forced trip context checkpoint failed");
-  }
-  if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
-    ESP_LOGE(kTag, "Forced DTC history checkpoint failed");
+  staRuntime.shutdownForService();
+  tripClock.flushPendingPersist();
+  {
+    StorageLock lock;
+    const bool legacyTripOk = tripStore.save(trip);
+    const bool legacyCalibrationOk =
+        petrolCalibrationStore.save(petrolCalibration);
+    if (!legacyTripOk || !legacyCalibrationOk ||
+        !persistence.checkpoint(trip, petrolCalibration, true, true)) {
+      ESP_LOGE(kTag, "Forced LittleFS/NVS runtime checkpoint failed");
+    }
+    if (!tripContext.checkpoint(millis(), true)) {
+      ESP_LOGE(kTag, "Forced trip context checkpoint failed");
+    }
+    if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
+      ESP_LOGE(kTag, "Forced DTC history checkpoint failed");
+    }
   }
 
   brightnessManager.checkpoint();
@@ -268,6 +282,17 @@ void enterServiceMode() {
   if (serviceMode) return;
   historyView.close();
   serviceMode = true;
+  // Permanently lock out and terminate any Core 0 STA HTTP worker before
+  // ServicePortal switches the radio into AP mode on 192.168.4.1:80.
+  if (!staRuntime.shutdownForService()) {
+    ESP_LOGE(kTag, "Timed out waiting for STA worker shutdown; forcing WIFI_OFF");
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+  }
+  telemetry.staRadioOn = false;
+  telemetry.staConnected = false;
+  telemetry.staIp[0] = '\0';
+  tripClock.flushPendingPersist();
   // A fresh session starts with no half-made rollback decision behind it.
   rollbackSelector = false;
   rollbackArmed = false;
@@ -278,20 +303,24 @@ void enterServiceMode() {
   // Keep the ordinary Mode 01 discovery/poller alive in the portal so live MAP
   // and fuel-input state can be inspected. Auto DTC scans remain paused.
   obdClient.setServicePollingEnabled(true);
-  const bool legacyTripOk =
-      !configStore.data().saveTrip || tripStore.save(trip);
-  const bool legacyCalibrationOk =
-      !petrolCalibration.active || petrolCalibrationStore.save(petrolCalibration);
-  if (!legacyTripOk || !legacyCalibrationOk ||
-      !persistence.checkpoint(trip, petrolCalibration,
-                              configStore.data().saveTrip, true)) {
-    ESP_LOGE(kTag, "Service-entry runtime checkpoint failed");
-  }
-  if (!tripContext.checkpoint(millis(), true)) {
-    ESP_LOGE(kTag, "Service-entry trip context checkpoint failed");
-  }
-  if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
-    ESP_LOGE(kTag, "Service-entry DTC history checkpoint failed");
+  {
+    StorageLock lock;
+    const bool legacyTripOk =
+        !configStore.data().saveTrip || tripStore.save(trip);
+    const bool legacyCalibrationOk =
+        !petrolCalibration.active ||
+        petrolCalibrationStore.save(petrolCalibration);
+    if (!legacyTripOk || !legacyCalibrationOk ||
+        !persistence.checkpoint(trip, petrolCalibration,
+                                configStore.data().saveTrip, true)) {
+      ESP_LOGE(kTag, "Service-entry runtime checkpoint failed");
+    }
+    if (!tripContext.checkpoint(millis(), true)) {
+      ESP_LOGE(kTag, "Service-entry trip context checkpoint failed");
+    }
+    if (!dtcHistoryPersistence.checkpoint(obdClient.dtcHistory())) {
+      ESP_LOGE(kTag, "Service-entry DTC history checkpoint failed");
+    }
   }
   brightnessManager.checkpoint();
   dashboard.releaseFramebuffer();
@@ -408,6 +437,10 @@ void setup() {
     ESP_LOGE(kTag, "CAN/OBD initialization failed");
   }
 #endif
+  // Attach TripHistory pointer only; never spawn STA tasks or touch Wi-Fi in
+  // setup(), so power-on button hold (bootService) enters ServicePortal with
+  // zero STA code executed.
+  staRuntime.attach(tripHistory);
   if (bootService) enterServiceMode();
 
   lastMemoryLogAt = millis();
@@ -483,6 +516,19 @@ void loop() {
                               ? 0.0f
                               : brightnessManager.state().currentPercent());
 
+  {
+    const ConfigData& cfgNow = configStore.data();
+    const bool allowStaRadio = StaClientLogic::shouldRunRadio(
+        serviceMode, cfgNow.staEnabled, cfgNow.staSsid, screenGate.dark());
+    staRuntime.setDesiredPolicy(allowStaRadio, cfgNow.staSsid,
+                                cfgNow.staPassword, cfgNow.staHostname);
+    const StaRuntimeStatus staStat = staRuntime.status();
+    telemetry.staRadioOn = staStat.radioOn;
+    telemetry.staConnected = staStat.connected;
+    telemetry.staNtpSynced = staStat.ntpSynced;
+    strlcpy(telemetry.staIp, staStat.ip, sizeof(telemetry.staIp));
+  }
+
   if (serviceMode) {
 #ifndef H2G_DEMO_MODE
     // Requests are paused, but RX stays active for the bounded CAN Monitor.
@@ -532,16 +578,22 @@ void loop() {
           break;
       }
     } else if (rollbackArmed && event == ButtonEvent::ServiceHold) {
-      if (!persistence.checkpoint(trip, petrolCalibration,
-                                  configStore.data().saveTrip, true)) {
-        ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+      {
+        StorageLock lock;
+        if (!persistence.checkpoint(trip, petrolCalibration,
+                                    configStore.data().saveTrip, true)) {
+          ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+        }
+        tripContext.checkpoint(now, true);
       }
-      tripContext.checkpoint(now, true);
       brightnessManager.checkpoint();
       ESP.restart();
     }
     if (event == ButtonEvent::ServiceHold) {
-      tripContext.checkpoint(now, true);
+      {
+        StorageLock lock;
+        tripContext.checkpoint(now, true);
+      }
       brightnessManager.checkpoint();
       ESP.restart();
     }
@@ -557,6 +609,17 @@ void loop() {
   serviceDtcPersistence(now);
 
   const uint32_t rtcNowSec = currentRtcSec();
+  {
+    const uint32_t syncedUtc = staRuntime.consumeSyncedUtcEpochSec();
+    if (syncedUtc != 0) {
+      tripClock.syncRamOnly(syncedUtc, rtcNowSec);
+    }
+    const bool vehicleMoving = telemetry.rawSpeedKph.valid(now) &&
+                               telemetry.rawSpeedKph.value >= kParkedRawSpeedKph;
+    if (!vehicleMoving && tripClock.hasPendingPersist()) {
+      tripClock.flushPendingPersist();
+    }
+  }
   if (tripBoundary.update(rtcNowSec, telemetry.rpm.valid(now),
                           telemetry.rpm.value, telemetry.rawSpeedKph.valid(now),
                           telemetry.rawSpeedKph.value, trip.totalDistanceKm,
@@ -568,12 +631,15 @@ void loop() {
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
-  tripContext.update(
-      now, rtcNowSec, tripClock.nowEpochSec(rtcNowSec),
-      telemetry.rpm.valid(now) &&
-          telemetry.rpm.value >= TripBoundary::kEngineRunningRpm,
-      telemetry.rawSpeedKph.valid(now), telemetry.rawSpeedKph.value, trip,
-      tripBoundary.heldOpenAcrossPause());
+  {
+    StorageLock lock;
+    tripContext.update(
+        now, rtcNowSec, tripClock.nowEpochSec(rtcNowSec),
+        telemetry.rpm.valid(now) &&
+            telemetry.rpm.value >= TripBoundary::kEngineRunningRpm,
+        telemetry.rawSpeedKph.valid(now), telemetry.rawSpeedKph.value, trip,
+        tripBoundary.heldOpenAcrossPause());
+  }
 #ifdef H2G_DIAGNOSTIC_BUILD
   captureDiagnosticTrace(now);
 #endif
@@ -581,6 +647,7 @@ void loop() {
     const bool engineRunning = telemetry.rpm.value > 200.0f;
     const bool engineStopped = telemetry.rpm.value < 50.0f;
     if (engineWasRunning && engineStopped) {
+      StorageLock lock;
       const bool legacyTripOk =
           !configStore.data().saveTrip || tripStore.save(trip);
       const bool legacyCalibrationOk =
@@ -603,7 +670,10 @@ void loop() {
     enterLowVoltageSleep();
   }
 
-  historyView.syncIfNeeded(tripHistory);
+  {
+    StorageLock lock;
+    historyView.syncIfNeeded(tripHistory);
+  }
   if (historyView.tick(now)) {
     dashboard.touchInteraction(now);
   }
@@ -649,8 +719,18 @@ void loop() {
   dashboard.render(now, telemetry, telemetryEngine, configStore.data(),
                    historyCardPtr);
 
-  persistence.periodic(now, trip, petrolCalibration,
-                       configStore.data().saveTrip);
+  if (now - lastStaSnapshotAt >= 200UL) {
+    lastStaSnapshotAt = now;
+    staRuntime.publishSnapshot(StaReadOnly::buildLiveSnapshot(
+        now, rtcNowSec, configStore.data(), telemetry, telemetryEngine,
+        tripContext, tripClock, staPeakBoostBar));
+  }
+
+  {
+    StorageLock lock;
+    persistence.periodic(now, trip, petrolCalibration,
+                         configStore.data().saveTrip);
+  }
 
   if (now - lastMemoryLogAt >= 30000UL) {
     ESP_LOGI(kTag, "heap=%u min=%u OBD=%s responses=%lu timeouts=%lu",

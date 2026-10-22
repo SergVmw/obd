@@ -1,5 +1,7 @@
 #include "app_config.h"
 
+#include "sta_client_logic.h"
+
 #include <cstddef>
 #include <cmath>
 #include <cstring>
@@ -57,7 +59,13 @@ constexpr size_t kV11ChecksumOffset = 224;
 constexpr size_t kV11RecordSize = 228;
 // Schema 12 places tripGapMin (1 B @ 221), tripMinDistanceM (2 B @ 222) and
 // utcOffsetMin (2 B @ 224), moving checksum to 228 and sizeof(ConfigData) to 232.
+constexpr size_t kV12FieldsEnd = 226;
 constexpr size_t kV12ChecksumOffset = 228;
+constexpr size_t kV12RecordSize = 232;
+// Schema 13 appends the optional STA client fields at byte 226:
+// staEnabled (1 B @ 226), staSsid (33 B @ 227..259), staPassword (65 B @ 260..324),
+// staHostname (17 B @ 325..341), moving checksum to 344 and sizeof(ConfigData) to 348.
+constexpr size_t kV13ChecksumOffset = 344;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -81,9 +89,17 @@ static_assert(offsetof(ConfigData, tripMinDistanceM) == 222,
               "Schema-12 tripMinDistanceM offset");
 static_assert(offsetof(ConfigData, utcOffsetMin) == 224,
               "Schema-12 utcOffsetMin offset");
-static_assert(offsetof(ConfigData, checksum) == kV12ChecksumOffset,
-              "Schema-12 checksum offset");
-static_assert(kV12ChecksumOffset + 4 == sizeof(ConfigData),
+static_assert(offsetof(ConfigData, staEnabled) == kV12FieldsEnd,
+              "Schema-12 defined prefix changed; update migrateV12 explicitly");
+static_assert(offsetof(ConfigData, staSsid) == 227,
+              "Schema-13 staSsid offset");
+static_assert(offsetof(ConfigData, staPassword) == 260,
+              "Schema-13 staPassword offset");
+static_assert(offsetof(ConfigData, staHostname) == 325,
+              "Schema-13 staHostname offset");
+static_assert(offsetof(ConfigData, checksum) == kV13ChecksumOffset,
+              "Schema-13 checksum offset");
+static_assert(kV13ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
 
@@ -211,6 +227,11 @@ ConfigData ConfigStore::defaults() {
   c.tripMinDistanceM = 100;
   c.utcOffsetMin = 180;
 
+  c.staEnabled = false;
+  c.staSsid[0] = '\0';
+  c.staPassword[0] = '\0';
+  strlcpy(c.staHostname, "h2", sizeof(c.staHostname));
+
   c.checksum = checksum(c);
   return c;
 }
@@ -318,7 +339,12 @@ bool ConfigStore::valid(const ConfigData& config) {
          deviceNameLength > 0 && deviceNameLength < sizeof(config.deviceName) &&
          apNameLength > 0 && apNameLength < sizeof(config.apName) &&
          apPasswordLength >= 8 &&
-         apPasswordLength < sizeof(config.apPassword);
+         apPasswordLength < sizeof(config.apPassword) &&
+         StaClientLogic::isValidSsid(config.staSsid, sizeof(config.staSsid)) &&
+         StaClientLogic::isValidPassword(config.staPassword,
+                                         sizeof(config.staPassword)) &&
+         StaClientLogic::isValidHostname(config.staHostname,
+                                         sizeof(config.staHostname));
 }
 
 bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
@@ -473,6 +499,28 @@ bool ConfigStore::migrateV11(const uint8_t* record, ConfigData& destination) {
   return valid(destination);
 }
 
+bool ConfigStore::migrateV12(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV12ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 12 ||
+      storedChecksum != fnv1a(record, kV12ChecksumOffset)) return false;
+
+  destination = defaults();
+  // Copy only the 226 defined bytes of schema 12: bytes 226..227 were trailing
+  // compiler padding before schema 12's checksum at 228 and must not overwrite
+  // staEnabled (226) or staSsid[0] (227).
+  memcpy(static_cast<void*>(&destination), record, kV12FieldsEnd);
+  if (destination.brightnessNight > destination.brightnessDay) {
+    destination.brightnessNight = destination.brightnessDay;
+  }
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
 bool ConfigStore::begin() {
   if (!preferences_.begin("h2gauge", false)) {
     config_ = defaults();
@@ -497,6 +545,11 @@ bool ConfigStore::begin() {
         loaded = false;
       }
     }
+  } else if (storedLength == kV12RecordSize) {
+    uint8_t record[kV12RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+                 sizeof(record) && migrateV12(record, config_);
+    needsSave = loaded;
   } else if (storedLength == kV11RecordSize) {
     uint8_t record[kV11RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==

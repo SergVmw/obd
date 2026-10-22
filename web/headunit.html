@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<link rel="icon" href="data:,">
+<title>H2 Gauge — Панель магнитолы</title>
+<style>
+:root {
+  --bg: #070a0f;
+  --panel: #101620;
+  --panel2: #151d2a;
+  --line: #202c3d;
+  --txt: #f6faf6;
+  --muted: #8b9bb2;
+  --petrol: #5acaee;
+  --lpg: #5af2ac;
+  --warn: #ffbe5a;
+  --danger: #ff5d6a;
+  --radius: 14px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums lining-nums;
+  height: 100%;
+  overflow-x: hidden;
+}
+#app {
+  width: 100%;
+  min-height: 100vh;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #0b1018;
+  border-bottom: 1px solid var(--line);
+  min-height: 60px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 8px; margin-right: 2px; }
+.brand-title { font-size: 18px; font-weight: 800; letter-spacing: .04em; white-space: nowrap; }
+.pill {
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.pill-lpg { background: rgba(90,242,172,.14); color: var(--lpg); border-color: rgba(90,242,172,.38); }
+.pill-petrol { background: rgba(90,202,238,.14); color: var(--petrol); border-color: rgba(90,202,238,.38); }
+.pill-idle { background: rgba(139,155,178,.14); color: var(--muted); border-color: rgba(139,155,178,.32); }
+.pill-ok { background: rgba(90,242,172,.10); color: var(--lpg); border-color: rgba(90,242,172,.28); }
+.pill-fault { background: rgba(255,93,106,.2); color: var(--danger); border-color: var(--danger); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .62; } }
+
+.tabs { display: flex; gap: 6px; flex: 1; justify-content: center; flex-wrap: wrap; }
+.tab, .mode-btn {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 0 14px;
+  min-height: 44px;
+  height: 44px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: .12s;
+  white-space: nowrap;
+}
+.tab.active {
+  background: #1a2638;
+  color: var(--txt);
+  border-color: var(--petrol);
+  box-shadow: inset 0 -2px 0 var(--petrol);
+}
+.mode-btn {
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--petrol);
+  border-color: rgba(90,202,238,.4);
+}
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--lpg); display: inline-block; transition: .2s; }
+.dot.stale { background: var(--warn); }
+.dot.offline { background: var(--danger); }
+.clock { font-size: 16px; font-weight: 700; color: var(--txt); }
+
+.main {
+  flex: 1;
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.view { display: none; flex-direction: column; gap: 12px; flex: 1; }
+.view.active { display: flex; }
+
+.hero-grid { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 12px; flex: 1.25; }
+.sub-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; flex: 0.95; }
+.sensor-grid { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, minmax(150px, 1fr)); gap: 12px; flex: 1; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 15px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  min-width: 0;
+}
+.card.accent-lpg { border-color: rgba(90,242,172,.35); }
+.card.accent-danger { border-color: var(--danger); background: rgba(255,93,106,.08); }
+
+.lbl {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.big { font-size: 48px; font-weight: 800; line-height: 1.04; margin: 4px 0; }
+.big .u { font-size: 18px; font-weight: 600; color: var(--muted); margin-left: 6px; }
+.mid { font-size: 30px; font-weight: 800; line-height: 1.12; margin: 4px 0; }
+.mid .u { font-size: 15px; font-weight: 600; color: var(--muted); margin-left: 4px; }
+.sub {
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sub b { color: var(--txt); font-weight: 700; }
+.c-petrol { color: var(--petrol) !important; }
+.c-lpg { color: var(--lpg) !important; }
+.c-warn { color: var(--warn) !important; }
+.c-danger { color: var(--danger) !important; }
+
+.dial-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  margin: 2px 0;
+}
+.dial-svg {
+  width: 100%;
+  max-width: 245px;
+  max-height: 152px;
+  overflow: visible;
+}
+.hero-grid .dial-svg {
+  max-width: 290px;
+  max-height: 175px;
+}
+.needle-grp {
+  transition: transform .22s cubic-bezier(.22, .68, .36, 1);
+  transform-origin: 100px 104px;
+}
+.marker-grp {
+  transition: transform .28s ease-out;
+  transform-origin: 100px 104px;
+}
+.dial-val {
+  font-size: 27px;
+  font-weight: 800;
+  fill: var(--txt);
+  text-anchor: middle;
+}
+.dial-unit {
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--muted);
+  text-anchor: middle;
+  letter-spacing: .05em;
+}
+.dial-scale {
+  font-size: 10px;
+  font-weight: 600;
+  fill: #6f8098;
+}
+
+body.digits-only .dial-only { display: none !important; }
+body:not(.digits-only) .digits-alt { display: none !important; }
+
+.bar-wrap {
+  height: 10px;
+  background: #090d14;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #1d2838;
+  position: relative;
+  margin: 6px 0 2px;
+}
+.bar-split { display: flex; height: 100%; width: 100%; }
+
+.table-wrap {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.tbl-head, .tbl-row {
+  display: grid;
+  grid-template-columns: 56px 142px 92px 84px 96px 96px 96px 104px 72px 1fr;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+}
+.tbl-head {
+  height: 40px;
+  background: #0c111a;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+.tbl-body { overflow-y: auto; flex: 1; }
+.tbl-row {
+  min-height: 54px;
+  border-bottom: 1px solid #182230;
+  font-size: 14.5px;
+  cursor: pointer;
+}
+.tbl-row:hover { background: var(--panel2); }
+.tbl-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+.tbl-detail {
+  display: none;
+  padding: 12px 16px;
+  background: #0b1018;
+  border-bottom: 1px solid var(--line);
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  font-size: 13.5px;
+}
+.tbl-detail.open { display: grid; }
+.det-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.days-grid .tbl-head, .days-grid .tbl-row {
+  grid-template-columns: 140px 76px 106px 124px 106px 106px 98px 102px 1fr;
+}
+
+@media (max-width: 1140px) {
+  .big { font-size: 38px; }
+  .mid { font-size: 24px; }
+  .card { padding: 9px 11px; }
+  .main { padding: 8px 10px; gap: 8px; }
+  .dial-svg { max-height: 118px; }
+  .hero-grid .dial-svg { max-height: 142px; }
+  .tbl-head, .tbl-row {
+    grid-template-columns: 46px 120px 80px 74px 78px 78px 82px 86px 58px 1fr;
+    font-size: 13px;
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .days-grid .tbl-head, .days-grid .tbl-row {
+    grid-template-columns: 118px 62px 90px 110px 90px 90px 82px 84px 1fr;
+  }
+}
+@media (max-width: 900px) {
+  .hero-grid, .sub-grid, .sensor-grid, .tbl-detail { grid-template-columns: 1fr 1fr; }
+  .sensor-grid { grid-template-rows: auto; }
+  .tbl-head { display: none; }
+  .tbl-row, .days-grid .tbl-row { grid-template-columns: 1fr 1fr; padding: 10px 12px; gap: 4px; }
+}
+@media (max-width: 560px) {
+  .top { padding: 8px 10px; gap: 6px; }
+  .tabs { order: 3; flex-basis: 100%; justify-content: space-between; }
+  .tab { flex: 1; padding: 0 6px; font-size: 13px; }
+  .hero-grid { grid-template-columns: 1fr; }
+  .sub-grid, .sensor-grid, .tbl-detail { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header class="top">
+    <div class="brand">
+      <span class="brand-title">H2 GAUGE</span>
+      <span id="fuelPill" class="pill pill-idle">OBD</span>
+      <span id="milPill" class="pill pill-ok">ДВС OK</span>
+    </div>
+
+    <nav class="tabs" aria-label="Разделы">
+      <button class="tab active" data-tab="cur">Текущая</button>
+      <button class="tab" data-tab="live">Двигатель</button>
+      <button class="tab" data-tab="hist" id="tabHist">Поездки (0)</button>
+      <button class="tab" data-tab="days" id="tabDays">По дням (0)</button>
+    </nav>
+
+    <button id="modeToggle" class="mode-btn" type="button" title="Переключение вида приборов">Вид: Стрелки</button>
+
+    <div class="meta">
+      <span><i class="dot" id="linkDot"></i> <span id="linkLabel">h2.local · 4 Гц</span></span>
+      <span class="clock" id="topClock">--:--</span>
+    </div>
+  </header>
+
+  <main class="main">
+    <section id="view-cur" class="view active">
+      <div class="hero-grid">
+        <div class="card">
+          <div class="lbl">
+            <span>Экономайзер сейчас</span>
+            <span id="curSpdBadge" class="c-petrol">ОЖИДАНИЕ OBD</span>
+          </div>
+          <div class="dial-wrap dial-only" id="dial-econ"></div>
+          <div class="big digits-alt"><span id="curInstDig">—</span><span class="u" id="curInstUnit">л/100 км</span></div>
+          <div class="sub">
+            <span>Окно: <b id="curWin">—</b></span>
+            <span>Метка в движ: <b class="c-warn" id="curMovMark">▲ —</b></span>
+          </div>
+        </div>
+
+        <div class="card accent-lpg">
+          <div class="lbl"><span>Средний в движении</span><span class="c-lpg">БЕЗ ПРОСТОЕВ</span></div>
+          <div class="big"><span id="curMovAvg">—</span><span class="u">л/100 км</span></div>
+          <div class="sub">
+            <span>Бензин: <b class="c-petrol" id="curPetMov">—</b></span>
+            <span>ГБО: <b class="c-lpg" id="curLpgMov">—</b></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Общий средний</span><span>ВЕСЬ РАСХОД</span></div>
+          <div class="big"><span id="curTotalAvg">—</span><span class="u">л/100 км</span></div>
+          <div class="sub">
+            <span>Всего: <b id="curTotalL">0.00 л</b></span>
+            <span><b class="c-petrol" id="curPetL">0.00 Б</b> + <b class="c-lpg" id="curLpgL">0.00 Г</b></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sub-grid">
+        <div class="card">
+          <div class="lbl"><span>Пробег и доля ГБО</span><b class="c-lpg" id="curLpgShare">—</b></div>
+          <div class="mid"><span id="curDist">0.00</span><span class="u">км</span></div>
+          <div class="bar-wrap">
+            <div class="bar-split">
+              <div id="barPet" style="width:0%;background:var(--petrol)"></div>
+              <div id="barLpg" style="width:0%;background:var(--lpg)"></div>
+            </div>
+          </div>
+          <div class="sub"><span>Бенз: <b id="curPetKm">0.00 км</b></span><span>ГБО: <b id="curLpgKm">0.00 км</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Время и скорость</span><span id="curStartLbl">НАРАБОТКА</span></div>
+          <div class="mid"><span id="curDur">0:00</span><span class="u">мин:с</span></div>
+          <div class="sub"><span>В движ: <b id="curMovDur">0:00</b></span><span>Ср: <b id="curAvgSpd">—</b> · Макс: <b id="curMaxSpd">—</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Прогрев до движения</span><span class="c-petrol">НА МЕСТЕ</span></div>
+          <div class="mid"><span id="curPreDur">0:00</span><span class="u">мин:с</span></div>
+          <div class="sub"><span>Потрачено: <b id="curPreL">0.00 л</b></span><span>Бензин: <b class="c-petrol" id="curPrePetL">0.00 л</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Простой в пути</span><span>СВЕТОФОРЫ / ПРОБКИ</span></div>
+          <div class="mid"><span id="curIdleDur">0:00</span><span class="u">мин:с</span></div>
+          <div class="sub"><span>Потрачено: <b id="curIdleL">0.00 л</b></span><span>Доля простоев: <b class="c-warn" id="curIdleShare">—</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-live" class="view">
+      <div class="sensor-grid">
+        <div class="card">
+          <div class="lbl"><span>Наддув / Коллектор</span><span id="lvMapTxt">MAP —</span></div>
+          <div class="dial-wrap dial-only" id="dial-boost"></div>
+          <div class="mid digits-alt"><span id="lvBoostDig">—</span><span class="u">бар</span></div>
+          <div class="sub"><span>Баро: <b id="lvBaro">—</b></span><span>Пик: <b class="c-warn" id="lvPeakBoost">▲ +0.00 бар</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Тахометр и скорость</span><span>PID 0C · 0D</span></div>
+          <div class="dial-wrap dial-only" id="dial-rpm"></div>
+          <div class="mid digits-alt"><span id="lvRpmDig">—</span><span class="u">об/мин</span></div>
+          <div class="sub"><span>Скорость CAN: <b id="lvSpd">—</b></span><span>ЭБУ: <b id="lvEcu">—</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Охлаждающая жидкость</span><span>PID 05</span></div>
+          <div class="dial-wrap dial-only" id="dial-coolant"></div>
+          <div class="mid digits-alt"><span id="lvCoolantDig">—</span><span class="u">°C</span></div>
+          <div class="sub"><span>Норма 12 ч: <b>90 °C</b></span><span id="lvCoolantState" class="c-lpg">—</span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Бортсеть ЭБУ</span><span>PID 42</span></div>
+          <div class="dial-wrap dial-only" id="dial-volt"></div>
+          <div class="mid digits-alt"><span id="lvVoltDig">—</span><span class="u">В</span></div>
+          <div class="sub"><span>Зелёная зона: <b>13.4–14.7 В</b></span><span id="lvVoltState" class="c-lpg">—</span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Сумма коррекций</span><span>STFT + LTFT</span></div>
+          <div class="dial-wrap dial-only" id="dial-trim"></div>
+          <div class="mid digits-alt"><span id="lvTrimDig">—</span><span class="u">%</span></div>
+          <div class="sub"><span>STFT: <b id="lvStft">—</b> · LTFT: <b id="lvLtft">—</b></span><b id="lvTrimState" class="c-lpg">—</b></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Впуск и расход воздуха</span><span>PID 0F · SD</span></div>
+          <div class="mid"><span id="lvIat">—</span><span class="u">°C</span></div>
+          <div class="sub"><span>Воздух: <b id="lvAir">—</b></span><span>Нагрузка: <b id="lvLoad">—</b></span></div>
+        </div>
+
+        <div class="card">
+          <div class="lbl"><span>Топливная петля</span><span>PID 03 · 14</span></div>
+          <div class="mid"><span id="lvFuelMain" class="c-lpg">—</span><span class="u" id="lvFuelLoop">—</span></div>
+          <div class="sub"><span>ДК1 (PID 14): <b id="lvO2">—</b></span><span>ПХХ (DFCO): <b id="lvDfco">нет</b></span></div>
+        </div>
+
+        <div class="card" id="cardDtc">
+          <div class="lbl"><span>Диагностика ДВС</span><span>MODE 03 / 07 / 0A</span></div>
+          <div class="mid" id="lvDtcMain"><span class="c-lpg">Ошибок нет</span></div>
+          <div class="sub" id="lvDtcSub"><span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>0</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-hist" class="view">
+      <div class="table-wrap">
+        <div class="tbl-head">
+          <div>#</div><div>Дата и время</div><div>Пробег</div><div>Время</div>
+          <div>В движ.</div><div>Общий</div><div>Прогрев</div><div>Простой</div>
+          <div>ГБО</div><div>Скорость ср/макс</div>
+        </div>
+        <div class="tbl-body" id="tripsBody"><div class="tbl-empty">Загрузка истории поездок…</div></div>
+      </div>
+    </section>
+
+    <section id="view-days" class="view">
+      <div class="table-wrap days-grid">
+        <div class="tbl-head">
+          <div>Дата</div><div>Поездок</div><div>Пробег</div><div>Топливо (Б / Г)</div>
+          <div>В движ.</div><div>Общий</div><div>Прогрев</div><div>Простой</div><div>Макс. скор.</div>
+        </div>
+        <div class="tbl-body" id="daysBody"><div class="tbl-empty">Загрузка суточных сводок…</div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const DIALS = {};
+const A0 = -115, A1 = 115;
+
+function polar(cx, cy, r, deg) {
+  const rad = (deg - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+}
+function arcPath(r, d0, d1) {
+  const [x0, y0] = polar(100, 104, r, d0);
+  const [x1, y1] = polar(100, 104, r, d1);
+  const large = (d1 - d0) > 180 ? 1 : 0;
+  return `M${x0.toFixed(1)},${y0.toFixed(1)} A${r},${r} 0 ${large},1 ${x1.toFixed(1)},${y1.toFixed(1)}`;
+}
+function valToDeg(cfg, v) {
+  const cl = Math.max(cfg.min, Math.min(cfg.max, v));
+  return A0 + ((cl - cfg.min) / (cfg.max - cfg.min)) * (A1 - A0);
+}
+function createDial(id, cfg) {
+  let arcs = `<path d="${arcPath(82, A0, A1)}" fill="none" stroke="#1b2636" stroke-width="10" stroke-linecap="round"/>`;
+  cfg.zones.forEach(([z0, z1, col]) => {
+    arcs += `<path d="${arcPath(82, valToDeg(cfg, z0), valToDeg(cfg, z1))}" fill="none" stroke="${col}" stroke-width="10"/>`;
+  });
+  let ticks = '';
+  for (let i = 0; i <= cfg.steps; i++) {
+    const v = cfg.min + (cfg.max - cfg.min) * (i / cfg.steps);
+    const d = valToDeg(cfg, v);
+    const major = i % 2 === 0;
+    const [x0, y0] = polar(100, 104, major ? 66 : 70, d);
+    const [x1, y1] = polar(100, 104, 75, d);
+    ticks += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${major ? '#9fb0c7' : '#41536b'}" stroke-width="${major ? 1.8 : 1}"/>`;
+    if (major) {
+      const [lx, ly] = polar(100, 104, 54, d);
+      const lbl = cfg.fmtTick ? cfg.fmtTick(v) : Math.round(v);
+      ticks += `<text x="${lx.toFixed(1)}" y="${(ly + 3.5).toFixed(1)}" text-anchor="middle" class="dial-scale">${lbl}</text>`;
+    }
+  }
+  const marker = cfg.marker !== undefined
+    ? `<g class="marker-grp" id="${id}-mk" style="transform:rotate(${valToDeg(cfg, cfg.marker).toFixed(1)}deg)">
+         <polygon points="100,15 95,25 105,25" fill="none" stroke="#ffbe5a" stroke-width="2"/>
+       </g>` : '';
+  document.getElementById(id).innerHTML = `
+    <svg viewBox="0 0 200 132" class="dial-svg">
+      ${arcs}${ticks}${marker}
+      <g class="needle-grp" id="${id}-nd" style="transform:rotate(${A0}deg)">
+        <polygon points="100,24 96.8,104 103.2,104" fill="#f6faf6"/>
+        <polygon points="100,24 98.4,56 101.6,56" fill="${cfg.tip || '#5af2ac'}"/>
+      </g>
+      <circle cx="100" cy="104" r="8.5" fill="#1b2636" stroke="#8b9bb2" stroke-width="2"/>
+      <text x="100" y="92" class="dial-val" id="${id}-txt">—</text>
+      <text x="100" y="125" class="dial-unit" id="${id}-unit">${cfg.unit}</text>
+    </svg>`;
+  DIALS[id] = cfg;
+}
+function setDial(id, val, text, unitText) {
+  const cfg = DIALS[id];
+  const nd = document.getElementById(id + '-nd');
+  const tx = document.getElementById(id + '-txt');
+  const un = document.getElementById(id + '-unit');
+  if (nd) nd.style.transform = `rotate(${valToDeg(cfg, val === null || val === undefined ? cfg.min : val).toFixed(1)}deg)`;
+  if (tx) tx.textContent = text;
+  if (un && unitText) un.textContent = unitText;
+}
+function setDialMarker(id, val) {
+  const cfg = DIALS[id];
+  const mk = document.getElementById(id + '-mk');
+  if (mk && val !== null && val !== undefined && Number.isFinite(val)) {
+    mk.style.transform = `rotate(${valToDeg(cfg, val).toFixed(1)}deg)`;
+  }
+}
+
+createDial('dial-econ', {
+  min: 0, max: 30, steps: 6, unit: 'Л / 100 КМ', marker: 12.0, tip: '#5acaee',
+  zones: [[0, 15, '#5af2ac'], [15, 22, '#5acaee'], [22, 30, '#ffbe5a']]
+});
+createDial('dial-boost', {
+  min: -1.0, max: 1.5, steps: 10, unit: 'БАР НАДДУВА', marker: 0.0,
+  fmtTick: v => (v > 0 ? '+' : '') + v.toFixed(1),
+  zones: [[-1.0, 0, '#5acaee'], [0, 0.9, '#5af2ac'], [0.9, 1.15, '#ffbe5a'], [1.15, 1.5, '#ff5d6a']]
+});
+createDial('dial-rpm', {
+  min: 0, max: 6000, steps: 6, unit: 'ОБ/МИН (×1000)',
+  fmtTick: v => (v / 1000).toFixed(0),
+  zones: [[0, 4500, '#5af2ac'], [4500, 5400, '#ffbe5a'], [5400, 6000, '#ff5d6a']]
+});
+createDial('dial-coolant', {
+  min: 50, max: 130, steps: 8, unit: 'ОЖ °C',
+  zones: [[50, 75, '#5acaee'], [75, 102, '#5af2ac'], [102, 108, '#ffbe5a'], [108, 130, '#ff5d6a']]
+});
+createDial('dial-volt', {
+  min: 11.0, max: 15.5, steps: 6, unit: 'ВОЛЬТ',
+  fmtTick: v => v.toFixed(1),
+  zones: [[11.0, 12.2, '#ff5d6a'], [12.2, 13.4, '#ffbe5a'], [13.4, 14.7, '#5af2ac'], [14.7, 15.5, '#ff5d6a']]
+});
+createDial('dial-trim', {
+  min: -25, max: 25, steps: 10, unit: 'STFT + LTFT %',
+  fmtTick: v => (v > 0 ? '+' : '') + Math.round(v),
+  zones: [[-25, -15, '#ff5d6a'], [-15, -10, '#ffbe5a'], [-10, 10, '#5af2ac'], [10, 15, '#ffbe5a'], [15, 25, '#ff5d6a']]
+});
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtClock = sec => {
+  const s = Math.max(0, Math.round(sec || 0));
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h + ':' + String(m).padStart(2, '0') + ' ч';
+  }
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+};
+const fmtDur = sec => {
+  const m = Math.round((sec || 0) / 60);
+  return m < 60 ? m + ' мин' : (Math.floor(m / 60) + ' ч ' + String(m % 60).padStart(2, '0') + ' м');
+};
+const fmtRuDate = iso => {
+  if (!iso || typeof iso !== 'string' || iso.length < 10) return 'Без даты';
+  return iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' + iso.slice(0, 4);
+};
+const signed = (v, d) => (v >= 0 ? '+' : '') + v.toFixed(d);
+
+let lastHeadSeq = null;
+let openDetailSeq = null;
+let pollInFlight = false;
+let lastOkAt = 0;
+
+function applyViewMode(digits) {
+  document.body.classList.toggle('digits-only', digits);
+  $('modeToggle').textContent = digits ? 'Вид: Цифры' : 'Вид: Стрелки';
+  try { localStorage.setItem('h2_view_mode', digits ? 'digits' : 'dials'); } catch (_) {}
+}
+try {
+  if (localStorage.getItem('h2_view_mode') === 'digits') applyViewMode(true);
+} catch (_) {}
+
+$('modeToggle').addEventListener('click', () => {
+  applyViewMode(!document.body.classList.contains('digits-only'));
+});
+
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    btn.classList.add('active');
+    $('view-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'hist' || btn.dataset.tab === 'days') {
+      loadHistory();
+    }
+  });
+});
+
+function renderLive(d) {
+  const host = (d.hostname || 'h2') + '.local · 4 Гц';
+  $('linkLabel').textContent = host;
+
+  if (d.clock && d.clock.localTime) {
+    $('topClock').textContent = d.clock.localTime;
+  } else {
+    const now = new Date();
+    $('topClock').textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+  }
+
+  const fp = $('fuelPill');
+  if (!d.obdConnected || !d.rpmFresh) {
+    fp.className = 'pill pill-idle';
+    fp.textContent = d.obdConnected ? 'ДВС СТОП' : 'OBD ЖДЁТ';
+  } else if (d.dfco) {
+    fp.className = 'pill pill-petrol';
+    fp.textContent = 'ПХХ 0.0';
+  } else if (d.lpgEnabled && d.lpgActive) {
+    fp.className = 'pill pill-lpg';
+    fp.textContent = 'ГБО';
+  } else {
+    fp.className = 'pill pill-petrol';
+    fp.textContent = 'БЕНЗИН';
+  }
+
+  const dtc = d.dtc || {};
+  const mil = $('milPill');
+  const cardDtc = $('cardDtc');
+  if (dtc.milOn || (dtc.stored || 0) > 0) {
+    const code = dtc.firstCode || 'ENGINE';
+    mil.className = 'pill pill-fault';
+    mil.textContent = 'CHECK ' + code;
+    cardDtc.classList.add('accent-danger');
+    $('lvDtcMain').innerHTML = `<span class="c-danger">${esc(code)} · Check Engine</span>`;
+    $('lvDtcSub').innerHTML = `<span>MIL: <b class="c-danger">${dtc.milOn ? 'ВКЛ' : 'выкл'}</b></span><span>Сохр: <b>${dtc.stored || 0}</b> · Ожид: <b>${dtc.pending || 0}</b></span>`;
+  } else if ((dtc.pending || 0) > 0) {
+    mil.className = 'pill pill-ok';
+    mil.textContent = 'ДВС OK';
+    cardDtc.classList.remove('accent-danger');
+    $('lvDtcMain').innerHTML = `<span class="c-warn">${esc(dtc.firstCode || 'Ожид.')} · Ожидаемая</span>`;
+    $('lvDtcSub').innerHTML = `<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>${dtc.pending}</b></span>`;
+  } else {
+    mil.className = 'pill pill-ok';
+    mil.textContent = 'ДВС OK';
+    cardDtc.classList.remove('accent-danger');
+    $('lvDtcMain').innerHTML = '<span class="c-lpg">Ошибок нет</span>';
+    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>0</b></span>';
+  }
+
+  const c = d.cur || {};
+  if (d.fuelValid && d.consumption !== null && d.consumption !== undefined) {
+    const valTxt = d.consumption.toFixed(1);
+    if (d.perHour) {
+      setDial('dial-econ', d.consumption * 4.0, valTxt, 'Л / ЧАС (ХХ)');
+      $('curInstDig').textContent = valTxt;
+      $('curInstUnit').textContent = 'л/ч';
+    } else {
+      setDial('dial-econ', d.consumption, valTxt, 'Л / 100 КМ');
+      $('curInstDig').textContent = valTxt;
+      $('curInstUnit').textContent = 'л/100 км';
+    }
+  } else {
+    setDial('dial-econ', 0, '—', 'Л / 100 КМ');
+    $('curInstDig').textContent = '—';
+    $('curInstUnit').textContent = 'л/100 км';
+  }
+
+  if (c.movingAverageL100 !== null && c.movingAverageL100 !== undefined) {
+    setDialMarker('dial-econ', c.movingAverageL100);
+    $('curMovMark').textContent = '▲ ' + c.movingAverageL100.toFixed(1);
+    $('curMovAvg').textContent = c.movingAverageL100.toFixed(1);
+  } else {
+    $('curMovMark').textContent = '▲ —';
+    $('curMovAvg').textContent = '—';
+  }
+
+  $('curSpdBadge').textContent = d.speedKph !== null && d.speedKph !== undefined
+    ? Math.round(d.speedKph) + ' КМ/Ч · МАРКЕР = В ДВИЖ.'
+    : (d.obdConnected ? 'НА МЕСТЕ' : 'ОЖИДАНИЕ OBD');
+  $('curWin').textContent = d.windowL100 !== null && d.windowL100 !== undefined ? d.windowL100.toFixed(1) + ' л/100' : '—';
+  $('curPetMov').textContent = c.petrolMovingL100 !== null && c.petrolMovingL100 !== undefined ? c.petrolMovingL100.toFixed(1) : '—';
+  $('curLpgMov').textContent = c.lpgMovingL100 !== null && c.lpgMovingL100 !== undefined ? c.lpgMovingL100.toFixed(1) : '—';
+  $('curTotalAvg').textContent = c.averageL100 !== null && c.averageL100 !== undefined ? c.averageL100.toFixed(1) : '—';
+  $('curTotalL').textContent = (c.totalLiters || 0).toFixed(2) + ' л';
+  $('curPetL').textContent = (c.petrolLiters || 0).toFixed(2) + ' Б';
+  $('curLpgL').textContent = (c.lpgLiters || 0).toFixed(2) + ' Г';
+
+  $('curDist').textContent = (c.distanceKm || 0).toFixed(2);
+  $('curPetKm').textContent = (c.petrolDistanceKm || 0).toFixed(2) + ' км';
+  $('curLpgKm').textContent = (c.lpgDistanceKm || 0).toFixed(2) + ' км';
+  if (c.lpgSharePercent !== null && c.lpgSharePercent !== undefined) {
+    const lpgPct = Math.max(0, Math.min(100, c.lpgSharePercent));
+    $('curLpgShare').textContent = lpgPct.toFixed(1) + '% ГБО';
+    $('barPet').style.width = (100 - lpgPct).toFixed(1) + '%';
+    $('barLpg').style.width = lpgPct.toFixed(1) + '%';
+  } else {
+    $('curLpgShare').textContent = '0% ГБО';
+    $('barPet').style.width = '0%';
+    $('barLpg').style.width = '0%';
+  }
+
+  $('curStartLbl').textContent = c.localTime ? ('НАЧАЛО ' + c.localTime) : 'НАРАБОТКА';
+  $('curDur').textContent = fmtClock(c.wallDurationSec || c.engineSeconds || 0);
+  $('curMovDur').textContent = fmtClock(c.movingSeconds || 0);
+  $('curAvgSpd').textContent = c.avgMovingSpeedKph !== null && c.avgMovingSpeedKph !== undefined ? c.avgMovingSpeedKph.toFixed(1) : '—';
+  $('curMaxSpd').textContent = c.maxSpeedKnown && c.maxSpeedKph !== null ? Math.round(c.maxSpeedKph) + ' км/ч' : '—';
+
+  $('curPreDur').textContent = fmtClock(c.preMoveSeconds || 0);
+  $('curPreL').textContent = (c.preMoveLiters || 0).toFixed(2) + ' л';
+  $('curPrePetL').textContent = (c.petrolPreMoveLiters || 0).toFixed(2) + ' л';
+
+  $('curIdleDur').textContent = fmtClock(c.inTripIdleSeconds || 0);
+  $('curIdleL').textContent = (c.inTripIdleLiters || 0).toFixed(2) + ' л';
+  $('curIdleShare').textContent = c.idleSharePercent !== null && c.idleSharePercent !== undefined
+    ? c.idleSharePercent.toFixed(1) + '%' : '—';
+
+  if (d.boostBar !== null && d.boostBar !== undefined) {
+    const bt = signed(d.boostBar, 2);
+    setDial('dial-boost', d.boostBar, bt);
+    $('lvBoostDig').textContent = bt;
+  } else {
+    setDial('dial-boost', -1.0, '—');
+    $('lvBoostDig').textContent = '—';
+  }
+  const peak = d.peakBoostBar || 0;
+  setDialMarker('dial-boost', peak);
+  $('lvPeakBoost').textContent = '▲ ' + signed(peak, 2) + ' бар';
+  $('lvMapTxt').textContent = d.mapKpa !== null && d.mapKpa !== undefined ? 'MAP ' + Math.round(d.mapKpa) + ' кПа' : 'MAP —';
+  $('lvBaro').textContent = (d.baroKpa || 100).toFixed(1) + ' кПа';
+
+  if (d.rpm !== null && d.rpm !== undefined) {
+    const r = Math.round(d.rpm);
+    setDial('dial-rpm', r, String(r));
+    $('lvRpmDig').textContent = String(r);
+  } else {
+    setDial('dial-rpm', 0, '—');
+    $('lvRpmDig').textContent = '—';
+  }
+  $('lvSpd').textContent = d.rawSpeedKph !== null && d.rawSpeedKph !== undefined ? Math.round(d.rawSpeedKph) + ' км/ч' : '—';
+  $('lvEcu').textContent = d.ecuId || '—';
+
+  if (d.coolantC !== null && d.coolantC !== undefined) {
+    const tc = Math.round(d.coolantC);
+    setDial('dial-coolant', tc, tc + '°');
+    $('lvCoolantDig').textContent = String(tc);
+    const st = $('lvCoolantState');
+    if (tc >= 108) { st.className = 'c-danger'; st.textContent = 'ПЕРЕГРЕВ'; }
+    else if (tc >= 102) { st.className = 'c-warn'; st.textContent = 'ВНИМАНИЕ'; }
+    else if (tc >= 75) { st.className = 'c-lpg'; st.textContent = 'НОРМА'; }
+    else { st.className = 'c-petrol'; st.textContent = 'ПРОГРЕВ'; }
+  } else {
+    setDial('dial-coolant', 50, '—');
+    $('lvCoolantDig').textContent = '—';
+    $('lvCoolantState').textContent = '—';
+  }
+
+  if (d.voltageV !== null && d.voltageV !== undefined) {
+    const vt = d.voltageV.toFixed(2);
+    setDial('dial-volt', d.voltageV, vt);
+    $('lvVoltDig').textContent = vt;
+    const vs = $('lvVoltState');
+    if (d.voltageV < 12.2 || d.voltageV > 14.8) { vs.className = 'c-danger'; vs.textContent = d.voltageV < 12.2 ? 'НИЗКОЕ' : 'ПЕРЕЗАРЯД'; }
+    else if (d.voltageV < 13.4) { vs.className = 'c-warn'; vs.textContent = 'ОТ АКБ'; }
+    else { vs.className = 'c-lpg'; vs.textContent = 'ЗАРЯД OK'; }
+  } else {
+    setDial('dial-volt', 11.0, '—');
+    $('lvVoltDig').textContent = '—';
+    $('lvVoltState').textContent = '—';
+  }
+
+  if (d.trimSumPct !== null && d.trimSumPct !== undefined) {
+    const tt = signed(d.trimSumPct, 1);
+    setDial('dial-trim', d.trimSumPct, tt + '%');
+    $('lvTrimDig').textContent = tt;
+    const ts = $('lvTrimState');
+    ts.className = d.trimWarn ? 'c-warn' : 'c-lpg';
+    ts.textContent = d.trimWarn ? 'ОТКЛОНЕНИЕ' : 'НОРМА';
+  } else {
+    setDial('dial-trim', 0, '—');
+    $('lvTrimDig').textContent = '—';
+    $('lvTrimState').textContent = '—';
+  }
+  $('lvStft').textContent = d.stftPct !== null && d.stftPct !== undefined ? signed(d.stftPct, 1) + '%' : '—';
+  $('lvLtft').textContent = d.ltftPct !== null && d.ltftPct !== undefined ? signed(d.ltftPct, 1) + '%' : '—';
+
+  $('lvIat').textContent = d.iatC !== null && d.iatC !== undefined ? Math.round(d.iatC) : '—';
+  $('lvAir').textContent = d.airflowGps !== null && d.airflowGps !== undefined ? d.airflowGps.toFixed(2) + ' г/с' : '—';
+  $('lvLoad').textContent = d.loadPct !== null && d.loadPct !== undefined ? Math.round(d.loadPct) + '%' : '—';
+
+  const fm = $('lvFuelMain');
+  if (d.lpgEnabled && d.lpgActive) { fm.className = 'c-lpg'; fm.textContent = 'ГБО'; }
+  else { fm.className = 'c-petrol'; fm.textContent = 'Бензин'; }
+  $('lvFuelLoop').textContent = d.fuelLoop || '—';
+  $('lvO2').textContent = d.o2V !== null && d.o2V !== undefined ? d.o2V.toFixed(2) + ' В' : '—';
+  $('lvDfco').textContent = d.dfco ? 'активен' : 'нет';
+
+  const seq = d.history ? d.history.headSequence : null;
+  if (seq !== null && seq !== lastHeadSeq) {
+    lastHeadSeq = seq;
+    loadHistory();
+  }
+}
+
+function renderTrips(data) {
+  const list = (data && data.trips) || [];
+  $('tabHist').textContent = `Поездки (${data.total ?? list.length})`;
+  if (!list.length) {
+    $('tripsBody').innerHTML = '<div class="tbl-empty">Завершённых поездок в журнале пока нет</div>';
+    return;
+  }
+  $('tripsBody').innerHTML = list.map((t, idx) => {
+    const p = t.petrol || {}, g = t.lpg || {};
+    const dateStr = t.dateUnknown ? 'Без даты' : fmtRuDate(t.localDate);
+    const timeStr = t.dateUnknown ? 'до синхр.' : (t.localTime || '');
+    const isOpen = openDetailSeq !== null ? openDetailSeq === t.sequence : idx === 0;
+    return `
+      <div class="tbl-row" data-seq="${t.sequence}">
+        <div><b>#${t.sequence}</b></div>
+        <div><b>${esc(dateStr)}</b> <span style="color:var(--muted);font-size:12.5px">${esc(timeStr)}</span></div>
+        <div><b>${(t.distanceKm || 0).toFixed(2)} км</b></div>
+        <div>${fmtDur(t.wallDurationSec || t.engineSeconds)}</div>
+        <div><b class="c-lpg">${t.movingAverageL100 !== null ? t.movingAverageL100.toFixed(1) : '—'}</b></div>
+        <div><b>${t.averageL100 !== null ? t.averageL100.toFixed(1) : '—'}</b></div>
+        <div>${fmtDur(t.preMoveSeconds)} <span style="color:var(--muted)">(${(t.preMoveLiters || 0).toFixed(2)}л)</span></div>
+        <div>${fmtDur(t.inTripIdleSeconds)} <span style="color:var(--muted)">(${(t.inTripIdleLiters || 0).toFixed(2)}л)</span></div>
+        <div class="c-lpg"><b>${t.lpgSharePercent !== null ? t.lpgSharePercent.toFixed(0) + '%' : '—'}</b></div>
+        <div>${t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(0) : '—'} / <b>${t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : '—'}</b></div>
+      </div>
+      <div class="tbl-detail ${isOpen ? 'open' : ''}" id="det-${t.sequence}">
+        <div class="det-box">
+          <div class="lbl"><span class="c-petrol">Бензин (K = ${(t.petrolCorrection || 1).toFixed(2)})</span><span>${(p.distanceKm || 0).toFixed(2)} км</span></div>
+          <div>Всего: <b>${(p.liters || 0).toFixed(2)} л</b> · В движ: <b>${p.movingAverageL100 !== null && p.movingAverageL100 !== undefined ? p.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b></div>
+          <div style="color:var(--muted)">Прогрев: ${(p.preMoveLiters || 0).toFixed(2)} л · В пути стоя: ${(p.inTripIdleLiters || 0).toFixed(2)} л</div>
+        </div>
+        <div class="det-box">
+          <div class="lbl"><span class="c-lpg">ГБО (K = ${(t.lpgCorrection || 1).toFixed(2)})</span><span>${(g.distanceKm || 0).toFixed(2)} км</span></div>
+          <div>Всего: <b>${(g.liters || 0).toFixed(2)} л</b> <span style="color:var(--muted)">(сырой ${(g.rawLiters || 0).toFixed(2)} л)</span></div>
+          <div style="color:var(--muted)">В движ: <b class="c-lpg">${g.movingAverageL100 !== null && g.movingAverageL100 !== undefined ? g.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b> · Простой: ${(g.inTripIdleLiters || 0).toFixed(2)} л</div>
+        </div>
+        <div class="det-box">
+          <div class="lbl"><span>Сводка записи #${t.sequence}</span><span>НАРАБОТКА ${fmtDur(t.engineSeconds)}</span></div>
+          <div>Ср. скор. в движ: <b>${t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(1) + ' км/ч' : '—'}</b></div>
+          <div style="color:var(--muted)">Макс. скор.: <b>${t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : 'неизв.'}</b></div>
+        </div>
+      </div>`;
+  }).join('');
+
+  $('tripsBody').querySelectorAll('.tbl-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const seq = Number(row.dataset.seq);
+      const det = $('det-' + seq);
+      if (!det) return;
+      const open = det.classList.toggle('open');
+      openDetailSeq = open ? seq : -1;
+    });
+  });
+}
+
+function renderDays(data) {
+  const list = (data && data.days) || [];
+  $('tabDays').textContent = `По дням (${data.totalDays ?? list.length})`;
+  if (!list.length) {
+    $('daysBody').innerHTML = '<div class="tbl-empty">Суточных сводок пока нет</div>';
+    return;
+  }
+  $('daysBody').innerHTML = list.map(d => `
+    <div class="tbl-row">
+      <div><b>${esc(d.dateUnknown ? 'Без даты (архив)' : fmtRuDate(d.date))}</b></div>
+      <div><b>${d.tripCount}</b></div>
+      <div><b>${(d.distanceKm || 0).toFixed(2)} км</b></div>
+      <div><b class="c-petrol">${(d.petrolLiters || 0).toFixed(2)} Б</b> + <b class="c-lpg">${(d.lpgLiters || 0).toFixed(2)} Г</b></div>
+      <div><b class="c-lpg">${d.movingAverageL100 !== null ? d.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b></div>
+      <div><b>${d.averageL100 !== null ? d.averageL100.toFixed(1) + ' л/100' : '—'}</b></div>
+      <div>${fmtDur(d.preMoveSeconds)}</div>
+      <div>${fmtDur(d.inTripIdleSeconds)}</div>
+      <div><b>${d.maxSpeedKnown && d.maxSpeedKph !== null ? Math.round(d.maxSpeedKph) + ' км/ч' : '—'}</b></div>
+    </div>`).join('');
+}
+
+async function loadHistory() {
+  try {
+    const [tr, dy] = await Promise.all([
+      fetch('/api/ro/trips?limit=50', { cache: 'no-store' }),
+      fetch('/api/ro/trips/days?limit=31', { cache: 'no-store' })
+    ]);
+    if (tr.ok) renderTrips(await tr.json());
+    if (dy.ok) renderDays(await dy.json());
+  } catch (_) {}
+}
+
+async function pollLive() {
+  if (pollInFlight) return;
+  pollInFlight = true;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 900);
+  try {
+    const res = await fetch('/api/ro/live', { cache: 'no-store', signal: ctrl.signal });
+    if (res.ok) {
+      const data = await res.json();
+      lastOkAt = Date.now();
+      $('linkDot').className = 'dot';
+      renderLive(data);
+    }
+  } catch (_) {
+    const age = Date.now() - lastOkAt;
+    $('linkDot').className = age > 2500 ? 'dot offline' : 'dot stale';
+  } finally {
+    clearTimeout(timer);
+    pollInFlight = false;
+  }
+}
+
+pollLive();
+loadHistory();
+setInterval(pollLive, 250);
+</script>
+</body>
+</html>

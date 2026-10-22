@@ -232,6 +232,22 @@ void TripContextStore::update(uint32_t nowMs, uint32_t rtcNowSec,
     dirty_ = true;
   }
 
+  // If the trip started before UTC synced (e.g. phone hotspot SNTP arrived
+  // seconds or minutes after ignition on the same hardware RTC clock),
+  // reconstruct the exact ignition UTC timestamp from elapsed RTC seconds.
+  // Pre-upgrade open trips lack kMaxSpeedKnown because their true startRtcSec
+  // predates TripContextStore; leave those honest as dateUnknown.
+  if ((data_.flags & TripContextFlags::kDateUnknown) != 0 &&
+      (data_.flags & TripContextFlags::kMaxSpeedKnown) != 0 &&
+      currentEpochSec != 0U && rtcNowSec >= data_.startRtcSec) {
+    const uint32_t elapsedSec = rtcNowSec - data_.startRtcSec;
+    if (currentEpochSec > elapsedSec) {
+      data_.startEpochSec = currentEpochSec - elapsedSec;
+      data_.flags &= static_cast<uint16_t>(~TripContextFlags::kDateUnknown);
+      dirty_ = true;
+    }
+  }
+
   if (boundaryHeldOpen &&
       (data_.flags & TripContextFlags::kPausedOnce) == 0) {
     data_.flags |= TripContextFlags::kPausedOnce;

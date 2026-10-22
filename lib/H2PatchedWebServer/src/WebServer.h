@@ -111,6 +111,7 @@ public:
 
   virtual void close();
   void stop();
+  boolean listening() { return static_cast<boolean>(_server); }
 
   bool authenticate(const char * username, const char * password);
   void requestAuthentication(HTTPAuthMethod mode = BASIC_AUTH, const char* realm = NULL, const String& authFailMsg = String("") );

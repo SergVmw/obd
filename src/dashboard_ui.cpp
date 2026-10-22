@@ -1252,19 +1252,39 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
            static_cast<unsigned long>(data.canErrorCount));
   drawText(line, 31, 183, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
-  // VIN, asked once at boot. This line replaces the old "DTC 03/07/0A · CLEAR
-  // IN WEB" hint, which measured 216 px into the 209 px available and was
-  // being clipped at the right edge; the VIN fits with room to spare and the
-  // hint about clearing codes lives in the web portal anyway.
-  if (data.vin[0] != '\0') {
-    snprintf(line, sizeof(line), "VIN: %s", data.vin);
+  // When the optional head-unit STA client is enabled, report its live IP or
+  // link state centered within the bottom chord (y = 208 -> 163 px chord);
+  // otherwise keep the VIN line unchanged.
+  if (config.staEnabled) {
+    uint16_t wifiColor = kMuted;
+    if (data.staConnected && data.staIp[0] != '\0') {
+      snprintf(line, sizeof(line), "IP %s", data.staIp);
+      wifiColor = config.colorBoost;
+    } else if (data.staRadioOn) {
+      strlcpy(line, translated(config, "WIFI: ПОИСК", "WIFI: SEARCH"),
+              sizeof(line));
+      wifiColor = config.colorWarning;
+    } else {
+      strlcpy(line, translated(config, "WIFI: ВЫКЛ", "WIFI: OFF"),
+              sizeof(line));
+    }
+    drawText(line, 120, 208, MC_DATUM, wifiColor, FontRole::Small,
+             labelFont(config));
   } else {
-    strlcpy(line, translated(config, "VIN: НЕТ ДАННЫХ", "VIN: NO DATA"),
-            sizeof(line));
+    // VIN, asked once at boot. This line replaces the old "DTC 03/07/0A · CLEAR
+    // IN WEB" hint, which measured 216 px into the 209 px available and was
+    // being clipped at the right edge; the VIN fits with room to spare and
+    // the hint about clearing codes lives in the web portal anyway.
+    if (data.vin[0] != '\0') {
+      snprintf(line, sizeof(line), "VIN: %s", data.vin);
+    } else {
+      strlcpy(line, translated(config, "VIN: НЕТ ДАННЫХ", "VIN: NO DATA"),
+              sizeof(line));
+    }
+    drawText(line, 31, 210, ML_DATUM,
+             data.vin[0] != '\0' ? config.colorText : kMuted, FontRole::Small,
+             labelFont(config));
   }
-  drawText(line, 31, 210, ML_DATUM,
-           data.vin[0] != '\0' ? config.colorText : kMuted, FontRole::Small,
-           labelFont(config));
 }
 
 void DashboardUi::drawTripHistory(const TripHistoryCardText& card,

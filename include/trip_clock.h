@@ -33,6 +33,12 @@ class TripClock {
 
   bool begin(uint32_t rtcNowSec);
   bool sync(uint32_t browserEpochSec, uint32_t rtcNowSec);
+  // Updates the live UTC anchor in RAM without touching NVS, so an NTP reply
+  // arriving mid-drive never stalls Core 1 on a flash sector erase; call
+  // flushPendingPersist() once stationary or at a runtime checkpoint.
+  bool syncRamOnly(uint32_t utcEpochSec, uint32_t rtcNowSec);
+  bool flushPendingPersist();
+  bool hasPendingPersist() const { return dirtyPersist_; }
   uint32_t nowEpochSec(uint32_t rtcNowSec);
   bool factoryReset();
 
@@ -53,6 +59,7 @@ class TripClock {
   bool nvsReady_ = false;
   bool storageHealthy_ = true;
   bool synced_ = false;
+  bool dirtyPersist_ = false;
   uint32_t epochAtSyncSec_ = 0;
   uint32_t rtcAtSyncSec_ = 0;
 };

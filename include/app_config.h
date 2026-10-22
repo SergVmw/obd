@@ -295,6 +295,13 @@ struct ConfigData {
   uint16_t tripMinDistanceM;
   int16_t utcOffsetMin;
 
+  // Schema 13: optional Wi-Fi station client for read-only head-unit panel.
+  // Appended at byte 226 (first alignment padding byte of schema 12).
+  bool staEnabled;
+  char staSsid[33];
+  char staPassword[65];
+  char staHostname[17];
+
   uint32_t checksum;
 };
 
@@ -318,6 +325,7 @@ class ConfigStore {
   static bool migrateV9(const uint8_t* record, ConfigData& destination);
   static bool migrateV10(const uint8_t* record, ConfigData& destination);
   static bool migrateV11(const uint8_t* record, ConfigData& destination);
+  static bool migrateV12(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};

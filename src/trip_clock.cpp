@@ -124,6 +124,7 @@ bool TripClock::writeRecord(uint32_t epochSec, uint32_t rtcSec) {
 
 void TripClock::invalidateAndPersist() {
   synced_ = false;
+  dirtyPersist_ = false;
   epochAtSyncSec_ = 0;
   rtcAtSyncSec_ = 0;
   if (nvsReady_) {
@@ -184,8 +185,32 @@ bool TripClock::sync(uint32_t browserEpochSec, uint32_t rtcNowSec) {
     return false;
   }
   synced_ = true;
+  dirtyPersist_ = false;
   epochAtSyncSec_ = browserEpochSec;
   rtcAtSyncSec_ = rtcNowSec;
+  return true;
+}
+
+bool TripClock::syncRamOnly(uint32_t utcEpochSec, uint32_t rtcNowSec) {
+  if (utcEpochSec < kMinPlausibleEpochSec) return false;
+  synced_ = true;
+  dirtyPersist_ = true;
+  epochAtSyncSec_ = utcEpochSec;
+  rtcAtSyncSec_ = rtcNowSec;
+  return true;
+}
+
+bool TripClock::flushPendingPersist() {
+  if (!dirtyPersist_) return true;
+  if (!synced_ || epochAtSyncSec_ < kMinPlausibleEpochSec) {
+    dirtyPersist_ = false;
+    return false;
+  }
+  nvsReady_ = true;
+  if (!writeRecord(epochAtSyncSec_, rtcAtSyncSec_)) {
+    return false;
+  }
+  dirtyPersist_ = false;
   return true;
 }
 
@@ -207,6 +232,7 @@ uint32_t TripClock::nowEpochSec(uint32_t rtcNowSec) {
 
 bool TripClock::factoryReset() {
   synced_ = false;
+  dirtyPersist_ = false;
   epochAtSyncSec_ = 0;
   rtcAtSyncSec_ = 0;
   return writeRecord(0, 0);

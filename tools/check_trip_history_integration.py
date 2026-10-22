@@ -34,14 +34,16 @@ def main() -> int:
     assert "kSchema = 1;" in snap_h, "PersistenceSnapshot::kSchema must stay 1"
     assert "sizeof(TripState) == 88" in app_cfg_h or "kTripSlotBytes = 88" in rec_h
 
-    # 2. Config Schema 12 invariants
-    assert "#define H2G_CONFIG_SCHEMA 12" in version_h
+    # 2. Config Schema 12 -> 13 invariants (preserving Schema 12 offsets & migration)
+    assert "#define H2G_CONFIG_SCHEMA 13" in version_h
+    assert "kV12FieldsEnd = 226" in app_cfg_cpp
     assert "kV12ChecksumOffset = 228" in app_cfg_cpp
-    assert "kV12ChecksumOffset + 4 == sizeof(ConfigData)" in app_cfg_cpp
+    assert "kV13ChecksumOffset = 344" in app_cfg_cpp
+    assert "kV13ChecksumOffset + 4 == sizeof(ConfigData)" in app_cfg_cpp
     assert "offsetof(ConfigData, tripGapMin) == kV11FieldsEnd" in app_cfg_cpp
     assert "offsetof(ConfigData, tripMinDistanceM) == 222" in app_cfg_cpp
     assert "offsetof(ConfigData, utcOffsetMin) == 224" in app_cfg_cpp
-    assert "offsetof(ConfigData, checksum) == kV12ChecksumOffset" in app_cfg_cpp
+    assert "offsetof(ConfigData, checksum) == kV13ChecksumOffset" in app_cfg_cpp
     assert "kV11FieldsEnd = 221" in app_cfg_cpp
 
     # 3. Storage layout sizes match design spec

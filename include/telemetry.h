@@ -232,6 +232,12 @@ struct TelemetryData {
   bool dfcoActive = false;
   float fuelTrimSumPercent = 0.0f;
   bool fuelTrimWarning = false;
+
+  // Live state of the optional read-only Wi-Fi station client (head-unit link).
+  bool staRadioOn = false;
+  bool staConnected = false;
+  bool staNtpSynced = false;
+  char staIp[16] = {0};
   bool lpgInputActive = false;
   FuelMode fuelMode = FuelMode::Unknown;
   // The fuel the engine was actually last running on. With the engine off or the

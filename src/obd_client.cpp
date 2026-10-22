@@ -26,7 +26,7 @@ bool ObdClient::begin() {
   twai_general_config_t general =
       TWAI_GENERAL_CONFIG_DEFAULT(Pins::CanTx, Pins::CanRx, TWAI_MODE_NORMAL);
   general.tx_queue_len = 10;
-  general.rx_queue_len = 20;
+  general.rx_queue_len = 64;
   // No TWAI_ALERT_BUS_ERROR: the controller's counters are read once a second and
   // carry the same numbers, so the alert added an interrupt, a queue entry and a
   // log line per error without adding data - paid exactly when the bus is

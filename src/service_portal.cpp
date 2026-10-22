@@ -1,6 +1,8 @@
 #include "service_portal.h"
 
 #include "pid_names.h"
+#include "sta_client_logic.h"
+#include "storage_mutex.h"
 
 #include <ArduinoJson.h>
 #include <esp_app_format.h>
@@ -302,6 +304,10 @@ bool ServicePortal::bringUpAccessPoint() {
   snprintf(suffixText, sizeof(suffixText), "-%04X", suffix);
   ssid_ = String(config.apName) + suffixText;
 
+  WiFi.persistent(false);
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+  delay(25);
   WiFi.mode(WIFI_AP);
   // Service mode prioritizes a stable local OTA stream over power saving.
   WiFi.setSleep(false);
@@ -309,8 +315,15 @@ bool ServicePortal::bringUpAccessPoint() {
                              ? config.apPassword
                              : "h2gauge18";
   if (!WiFi.softAP(ssid_.c_str(), password)) {
-    ESP_LOGE(kTag, "SoftAP start failed");
-    return false;
+    ESP_LOGW(kTag, "SoftAP first attempt failed; resetting radio and retrying");
+    WiFi.mode(WIFI_OFF);
+    delay(50);
+    WiFi.mode(WIFI_AP);
+    WiFi.setSleep(false);
+    if (!WiFi.softAP(ssid_.c_str(), password)) {
+      ESP_LOGE(kTag, "SoftAP start failed");
+      return false;
+    }
   }
 
   dns_.start(53, "*", WiFi.softAPIP());
@@ -324,8 +337,20 @@ bool ServicePortal::begin() {
 
   if (!bringUpAccessPoint()) return false;
 
+  server_.stop();
   setupRoutes();
-  server_.begin();
+  for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+    server_.begin();
+    if (server_.listening()) break;
+    ESP_LOGW(kTag, "HTTP server port 80 not listening on attempt %u",
+             static_cast<unsigned>(attempt + 1));
+    server_.stop();
+    delay(40);
+  }
+  if (!server_.listening()) {
+    ESP_LOGE(kTag, "Service portal HTTP server failed to listen on port 80");
+    return false;
+  }
   startedAt_ = lastActivityAt_ = millis();
   serviceSession_ = true;
 
@@ -542,6 +567,7 @@ void ServicePortal::setupRoutes() {
     const bool runtimeOk = persistence_.factoryReset(
         engine_.trip(), engine_.petrolCalibration());
     DtcHistoryData resetDtcHistory{};
+    StorageLock storageGuard;
     const bool dtcHistoryOk =
         dtcHistoryPersistence_.factoryReset(resetDtcHistory);
     obdClient_.restoreDtcHistory(resetDtcHistory);
@@ -697,6 +723,10 @@ void ServicePortal::sendConfig() {
   service["deviceName"] = c.deviceName;
   service["apName"] = c.apName;
   service["apPassword"] = c.apPassword;
+  service["staEnabled"] = c.staEnabled;
+  service["staSsid"] = c.staSsid;
+  service["staPassword"] = c.staPassword;
+  service["staHostname"] = c.staHostname;
 
   JsonObject trips = doc["trips"].to<JsonObject>();
   trips["tripGapMin"] = c.tripGapMin;
@@ -974,12 +1004,62 @@ void ServicePortal::receiveConfig() {
 
   JsonObjectConst service = doc["service"];
   if (!service.isNull()) {
+    const char* booleanFields[] = {"staEnabled"};
+    const char* invalid = invalidBooleanField(
+        service, booleanFields,
+        sizeof(booleanFields) / sizeof(booleanFields[0]));
+    if (invalid) {
+      sendInvalidConfigField(server_, invalid, "a boolean");
+      return;
+    }
     const char* deviceName = service["deviceName"] | c.deviceName;
     const char* apName = service["apName"] | c.apName;
     const char* password = service["apPassword"] | c.apPassword;
     if (strlen(deviceName) > 0) strlcpy(c.deviceName, deviceName, sizeof(c.deviceName));
     if (strlen(apName) > 0) strlcpy(c.apName, apName, sizeof(c.apName));
     if (strlen(password) >= 8) strlcpy(c.apPassword, password, sizeof(c.apPassword));
+
+    c.staEnabled = service["staEnabled"] | c.staEnabled;
+    if (!service["staSsid"].isNull()) {
+      if (!service["staSsid"].is<const char*>()) {
+        sendInvalidConfigField(server_, "staSsid", "a string of 0..32 characters");
+        return;
+      }
+      const char* ssid = service["staSsid"].as<const char*>();
+      if (!StaClientLogic::isValidSsid(ssid, 256)) {
+        sendInvalidConfigField(server_, "staSsid", "a string of 0..32 characters");
+        return;
+      }
+      strlcpy(c.staSsid, ssid, sizeof(c.staSsid));
+    }
+    if (!service["staPassword"].isNull()) {
+      if (!service["staPassword"].is<const char*>()) {
+        sendInvalidConfigField(server_, "staPassword",
+                               "an empty string or 8..63 characters");
+        return;
+      }
+      const char* staPass = service["staPassword"].as<const char*>();
+      if (!StaClientLogic::isValidPassword(staPass, 256)) {
+        sendInvalidConfigField(server_, "staPassword",
+                               "an empty string or 8..63 characters");
+        return;
+      }
+      strlcpy(c.staPassword, staPass, sizeof(c.staPassword));
+    }
+    if (!service["staHostname"].isNull()) {
+      if (!service["staHostname"].is<const char*>()) {
+        sendInvalidConfigField(server_, "staHostname",
+                               "1..16 characters of [a-zA-Z0-9-]");
+        return;
+      }
+      const char* staHost = service["staHostname"].as<const char*>();
+      if (!StaClientLogic::normalizeHostname(staHost, c.staHostname,
+                                             sizeof(c.staHostname))) {
+        sendInvalidConfigField(server_, "staHostname",
+                               "1..16 characters of [a-zA-Z0-9-]");
+        return;
+      }
+    }
   }
 
   JsonObjectConst trips = doc["trips"];
@@ -1446,13 +1526,25 @@ void ServicePortal::sendStatus() {
     }
 
     JsonObject histObj = doc["tripHistory"].to<JsonObject>();
-    histObj["ready"] = tripHistory_.ready();
-    histObj["healthy"] = tripHistory_.healthy();
-    histObj["headSequence"] = tripHistory_.headSequence();
-    histObj["badSlots"] = tripHistory_.badSlotCount();
-    histObj["writes"] = tripHistory_.writeCount();
-    histObj["failures"] = tripHistory_.failureCount();
-    histObj["capacity"] = TripHistory::kCapacity;
+    {
+      StorageLock lock;
+      histObj["ready"] = tripHistory_.ready();
+      histObj["healthy"] = tripHistory_.healthy();
+      histObj["headSequence"] = tripHistory_.headSequence();
+      histObj["badSlots"] = tripHistory_.badSlotCount();
+      histObj["writes"] = tripHistory_.writeCount();
+      histObj["failures"] = tripHistory_.failureCount();
+      histObj["capacity"] = TripHistory::kCapacity;
+    }
+
+    JsonObject staObj = doc["sta"].to<JsonObject>();
+    staObj["enabled"] = config.staEnabled;
+    staObj["ssid"] = config.staSsid;
+    staObj["hostname"] = config.staHostname;
+    staObj["radioOn"] = telemetry_.staRadioOn;
+    staObj["connected"] = telemetry_.staConnected;
+    staObj["ntpSynced"] = telemetry_.staNtpSynced;
+    staObj["ip"] = telemetry_.staIp;
   }
   doc["tripIdleSharePercent"] = engine_.idleShareOfTrip();
   doc["tripIdleLitersPerHour"] = engine_.idleLitersPerHour(config);
@@ -3895,12 +3987,21 @@ void ServicePortal::sendTrips() {
   }
 
   TripHistoryPage page;
-  tripHistory_.readPage(offset, limit, page);
+  bool histReady = false;
+  bool histHealthy = false;
+  uint32_t headSeq = 0;
+  {
+    StorageLock lock;
+    tripHistory_.readPage(offset, limit, page);
+    histReady = tripHistory_.ready();
+    histHealthy = tripHistory_.healthy();
+    headSeq = tripHistory_.headSequence();
+  }
 
   JsonDocument doc;
-  doc["ready"] = tripHistory_.ready();
-  doc["healthy"] = tripHistory_.healthy();
-  doc["headSequence"] = tripHistory_.headSequence();
+  doc["ready"] = histReady;
+  doc["healthy"] = histHealthy;
+  doc["headSequence"] = headSeq;
   doc["capacity"] = TripHistory::kCapacity;
   doc["offset"] = page.offset;
   doc["limit"] = page.limit;
@@ -4039,11 +4140,18 @@ void ServicePortal::sendTripDays() {
   }
 
   TripHistoryDaysResult res;
-  tripHistory_.readDays(limit, res);
+  bool histReady = false;
+  bool histHealthy = false;
+  {
+    StorageLock lock;
+    tripHistory_.readDays(limit, res);
+    histReady = tripHistory_.ready();
+    histHealthy = tripHistory_.healthy();
+  }
 
   JsonDocument doc;
-  doc["ready"] = tripHistory_.ready();
-  doc["healthy"] = tripHistory_.healthy();
+  doc["ready"] = histReady;
+  doc["healthy"] = histHealthy;
   doc["limit"] = res.limit;
   doc["totalDays"] = res.totalDays;
   doc["totalTrips"] = res.totalTrips;
@@ -4127,22 +4235,25 @@ void ServicePortal::closeCurrentTrip() {
   const uint32_t rtcSec = currentRtcSec();
   TripRecord rec = tripContext_.buildRecord(0, rtcSec, engine_.trip(),
                                             configStore_.data());
-  if (!tripHistory_.append(rec)) {
-    server_.send(500, "application/json",
-                 "{\"error\":\"trip history append failed\"}");
-    return;
-  }
-  engine_.resetTrip();
-  tripBoundary_.reset();
-  const bool ctxOk = tripContext_.resetForNewTrip(
-      now, rtcSec, tripClock_.nowEpochSec(rtcSec));
-  const bool legacyOk = tripStore_.save(engine_.trip());
-  if (!ctxOk || !legacyOk ||
-      !persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
-                               true, true)) {
-    server_.send(500, "application/json",
-                 "{\"error\":\"trip reset after close failed\"}");
-    return;
+  {
+    StorageLock lock;
+    if (!tripHistory_.append(rec)) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"trip history append failed\"}");
+      return;
+    }
+    engine_.resetTrip();
+    tripBoundary_.reset();
+    const bool ctxOk = tripContext_.resetForNewTrip(
+        now, rtcSec, tripClock_.nowEpochSec(rtcSec));
+    const bool legacyOk = tripStore_.save(engine_.trip());
+    if (!ctxOk || !legacyOk ||
+        !persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
+                                 true, true)) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"trip reset after close failed\"}");
+      return;
+    }
   }
   JsonDocument resp;
   resp["ok"] = true;
@@ -4159,10 +4270,13 @@ void ServicePortal::clearTripHistory() {
                      kTripsClearCooldownMs)) {
     return;
   }
-  if (!tripHistory_.clear()) {
-    server_.send(500, "application/json",
-                 "{\"error\":\"trip history clear failed\"}");
-    return;
+  {
+    StorageLock lock;
+    if (!tripHistory_.clear()) {
+      server_.send(500, "application/json",
+                   "{\"error\":\"trip history clear failed\"}");
+      return;
+    }
   }
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", "{\"ok\":true}");

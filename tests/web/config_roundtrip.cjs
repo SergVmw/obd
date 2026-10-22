@@ -129,9 +129,38 @@ const DEVICE = {
   await page.waitForFunction(() => document.getElementById('displaySpeedOffsetKph').value !== '');
   assert.equal(await page.inputValue('#displaySpeedOffsetKph'), '5');
 
+  // Optional Wi-Fi STA client fields under the system tab: verify validation on
+  // invalid short WPA password (<8 chars) AND full round-trip + reload survival.
+  await page.click('.tab[data-tab="system"]');
+  await page.waitForSelector('#staSsid', { state: 'visible' });
+  await page.check('#staEnabled');
+  await page.fill('#staSsid', 'Xiaomi 14');
+  await page.fill('#staPassword', 'short');
+  await page.fill('#staHostname', 'h2-car');
+  const postsBeforeInvalid = posts;
+  await page.click('#save');
+  assert.equal(posts, postsBeforeInvalid,
+    'a 5-character WPA password must be blocked client-side before POST');
+
+  await page.fill('#staPassword', 'xiaomi14pass');
+  await page.click('#save');
+  await page.waitForFunction(() => document.getElementById('msg').textContent.includes('Сохранено'));
+  assert.equal(postBody.service.staEnabled, true);
+  assert.equal(postBody.service.staSsid, 'Xiaomi 14');
+  assert.equal(postBody.service.staPassword, 'xiaomi14pass');
+  assert.equal(postBody.service.staHostname, 'h2-car');
+
+  await page.reload();
+  await page.waitForFunction(() => document.getElementById('staSsid').value !== '');
+  assert.equal(await page.isChecked('#staEnabled'), true);
+  assert.equal(await page.inputValue('#staSsid'), 'Xiaomi 14');
+  assert.equal(await page.inputValue('#staPassword'), 'xiaomi14pass');
+  assert.equal(await page.inputValue('#staHostname'), 'h2-car');
+
   console.log('  [ok] a field set on the first attempt is what gets saved');
   console.log('  [ok] unrelated settings are not dragged along');
   console.log('  [ok] saved values survive a reload');
+  console.log('  [ok] Wi-Fi STA credentials validate and round-trip cleanly');
   await browser.close();
 })().catch(err => {
   console.error(err);
