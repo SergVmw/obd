@@ -887,8 +887,15 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
       break;
     case 0x42:
       if (payloadLength >= 4) {
-        telemetry_.ecuVoltage.set(
-            ((static_cast<uint16_t>(a) << 8) | b) / 1000.0f, now);
+        // On this vehicle 0x7E8 does not advertise PID 0x42; only gearbox
+        // 0x7E9 advertises it and answers 0x0000 (0.000 V) when key-on / unlit.
+        // A live ESP32-S3 communicating on 500 kbit/s CAN cannot physically run
+        // outside [6.0 V, 20.0 V]; ignore sensorless / bogus module readings so
+        // they neither poison low-voltage sleep nor block OTA preflight.
+        const uint16_t rawMv = (static_cast<uint16_t>(a) << 8) | b;
+        if (rawMv >= 6000U && rawMv <= 20000U) {
+          telemetry_.ecuVoltage.set(rawMv / 1000.0f, now);
+        }
       }
       break;
     case 0x44:

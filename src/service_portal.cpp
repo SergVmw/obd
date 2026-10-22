@@ -3318,6 +3318,17 @@ bool ServicePortal::readOtherSlotVersion(const esp_partition_t* slot,
       descriptor.version[0] == '\0') {
     return false;
   }
+  // Prefer the embedded H2GM firmware manifest version (e.g. "0.4.32") over
+  // the SDK build string ("esp-idf: v4.4.7 ...") so both the round-screen
+  // rollback selector and POST /api/ota/rollback show the real release number.
+  for (size_t i = 0; i < firmwareSlots_.count(); ++i) {
+    const FirmwareSlots::SlotInfo& info = firmwareSlots_.at(i);
+    if (info.partition && info.partition->address == slot->address &&
+        info.versionKnown && info.version[0] != '\0') {
+      snprintf(out, capacity, "%s", info.version);
+      return true;
+    }
+  }
   snprintf(out, capacity, "%s", descriptor.version);
   return true;
 }

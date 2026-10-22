@@ -42,6 +42,7 @@ jobs:
           python tools/test_screen_gate.py
           python tools/test_trip_history.py
           python tools/test_sta_readonly.py
+          python tools/test_power_and_rollback.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |

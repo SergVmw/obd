@@ -6,16 +6,21 @@ void OneButton::begin() {
   rawPressed_ = digitalRead(Pins::Button) == LOW;
   stablePressed_ = rawPressed_;
   rawChangedAt_ = millis();
-  if (stablePressed_) pressedAt_ = rawChangedAt_;
+  if (stablePressed_) {
+    pressedAt_ = rawChangedAt_;
+    // A hold already active at begin() entered boot service mode; swallow its
+    // tail so releasing (or continuing to hold) does not emit a phantom click
+    // or immediately trigger a second ServiceHold reboot out of service mode.
+    serviceFired_ = true;
+  }
 }
 
 void OneButton::flushClicks() {
   const uint16_t total = queuedShorts_ + clickCount_;
-  // A two-press burst is one DoublePress where the caller asked for it, and still
-  // two page turns everywhere else. Emitting it eagerly on the second press would
-  // instead swallow the fourth press of the brightness gesture, because the
-  // counter would already have been reset by then.
-  if (doublePressEnabled_ && total == 2 && event_ == ButtonEvent::None) {
+  // A two-press (or three-press) burst in service mode opens the slot selector;
+  // everywhere else clicks stay individual page turns (with 4 = manual night).
+  if (doublePressEnabled_ && total >= 2 && total < 4 &&
+      event_ == ButtonEvent::None) {
     queuedShorts_ = 0;
     clickCount_ = 0;
     event_ = ButtonEvent::DoublePress;

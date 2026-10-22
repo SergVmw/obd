@@ -4,6 +4,7 @@
 
 #include "screen_gate.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 
 #include "app_config.h"
 #include "asset_store.h"
@@ -22,6 +23,7 @@
 #include "power_manager.h"
 #include "runtime_persistence.h"
 #include "service_portal.h"
+#include "service_rollback_ui.h"
 #include "sta_client_logic.h"
 #include "sta_readonly.h"
 #include "storage_mutex.h"
@@ -79,11 +81,8 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
 
 bool serviceMode = false;
 bool engineWasRunning = false;
-// Rollback-by-button state. Cleared on entry to service mode, not on leaving
-// it: the selector is only reachable from here, so a stale one from a previous
-// session has nothing to leak into.
-bool rollbackSelector = false;
-bool rollbackArmed = false;
+// Rollback-by-button state, cleared on every entry to service mode.
+ServiceRollbackController rollbackController;
 uint32_t lastMemoryLogAt = 0;
 uint32_t lastStaSnapshotAt = 0;
 float staPeakBoostBar = 0.0f;
@@ -266,9 +265,15 @@ void captureDiagnosticTrace(uint32_t now) {
   WiFi.mode(WIFI_OFF);
   dashboard.prepareForSleep();
 
-  // The configured button pin is RTC-capable (GPIO4 on ESP32-S3) and active LOW.
+  // The configured button pin is RTC-capable (GPIO4 on ESP32-S3) and active
+  // LOW, with no external pull-up on the board. Hold the RTC pull-up explicitly
+  // across deep sleep; digital INPUT_PULLUP powers down in deep sleep and
+  // floats GPIO4 low within a second, causing immediate false EXT0 wakeups.
+  const gpio_num_t wakeButton = static_cast<gpio_num_t>(Pins::Button);
+  rtc_gpio_pullup_en(wakeButton);
+  rtc_gpio_pulldown_dis(wakeButton);
   esp_sleep_enable_timer_wakeup(PowerManager::kTimerWakeupUs);
-  esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(Pins::Button), 0);
+  esp_sleep_enable_ext0_wakeup(wakeButton, 0);
 
   // Keep the display controller in reset for the whole deep-sleep interval.
   gpio_hold_en(static_cast<gpio_num_t>(Pins::TftReset));
@@ -294,8 +299,7 @@ void enterServiceMode() {
   telemetry.staIp[0] = '\0';
   tripClock.flushPendingPersist();
   // A fresh session starts with no half-made rollback decision behind it.
-  rollbackSelector = false;
-  rollbackArmed = false;
+  rollbackController.reset();
 #ifdef H2G_DIAGNOSTIC_BUILD
   diagnosticTrace.setCaptureActive(false);
 #endif
@@ -426,6 +430,9 @@ void setup() {
   historyView.syncIfNeeded(tripHistory);
   lpgInput.begin();
 
+  // Release RTC IO mux/pull-up if waking from deep sleep so digital GPIO reads
+  // and internal pull-up work cleanly on GPIO4.
+  rtc_gpio_deinit(static_cast<gpio_num_t>(Pins::Button));
   const bool bootService = OneButton::heldAtBoot(3000);
   button.begin();
   brightnessManager.begin(millis(), configStore.data());
@@ -538,64 +545,80 @@ void loop() {
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
     servicePortal.loop();
-    // Rollback without a laptop. Two presses open the selector, a long press
-    // points the next boot at the other slot, and a longer hold restarts. The
-    // versions are on the screen at each step because the whole point is that
-    // the owner can see what they are choosing before it happens.
-    if (event == ButtonEvent::DoublePress && !rollbackSelector) {
-      char version[33];
-      if (servicePortal.otherSlotVersion(version, sizeof(version))) {
-        rollbackSelector = true;
-        rollbackArmed = false;
-        dashboard.showMessage("ОТКАТ ПРОШИВКИ", version,
-                              configStore.data(), "ДЛИННОЕ - ВЫБОР СЛОТА");
-      } else {
-        dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "ВТОРОЙ СЛОТ ПУСТ",
-                              configStore.data(), "УСТАНОВИТЕ ПРОШИВКУ");
-      }
-    } else if (rollbackSelector && event == ButtonEvent::LongPress &&
-               !rollbackArmed) {
-      switch (servicePortal.selectOtherSlotForBoot()) {
-        case ServicePortal::RollbackResult::Ok:
-          rollbackArmed = true;
-          dashboard.showMessage("СЛОТ ВЫБРАН", "ПЕРЕЗАГРУЗКА ВЫБРАН",
-                                configStore.data(), "ДЛИННОЕ - ПЕРЕЗАПУСК");
-          break;
-        case ServicePortal::RollbackResult::NoOtherSlot:
-          rollbackSelector = rollbackArmed = false;
-          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "НЕТ ВТОРОГО СЛОТА",
-                                configStore.data(), "");
-          break;
-        case ServicePortal::RollbackResult::NoImage:
-          rollbackSelector = rollbackArmed = false;
-          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "СЛОТ БЕЗ ПРОШИВКИ",
-                                configStore.data(), "");
-          break;
-        case ServicePortal::RollbackResult::Failed:
-          rollbackSelector = rollbackArmed = false;
-          dashboard.showMessage("ОШИБКА ОТКАТА", "СЛОТ НЕ ВЫБРАН",
-                                configStore.data(), "");
-          break;
-      }
-    } else if (rollbackArmed && event == ButtonEvent::ServiceHold) {
-      {
-        StorageLock lock;
-        if (!persistence.checkpoint(trip, petrolCalibration,
-                                    configStore.data().saveTrip, true)) {
-          ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+    // Rollback without a laptop: double-click (either fast DoublePress or two
+    // normal taps within 1.5 s) opens the selector with the H2 Gauge manifest
+    // version, LongPress selects the slot, ShortPress cancels before arming,
+    // and either LongPress (matching "ДЛИННОЕ - ПЕРЕЗАПУСК") or ServiceHold
+    // checkpoints and reboots into the selected slot.
+    switch (rollbackController.handleEvent(now, event)) {
+      case ServiceRollbackAction::OpenSelector: {
+        char version[33];
+        if (servicePortal.otherSlotVersion(version, sizeof(version))) {
+          rollbackController.onSelectorOpened(true);
+          dashboard.showMessage("ОТКАТ ПРОШИВКИ", version,
+                                configStore.data(), "ДЛИННОЕ - ВЫБОР СЛОТА");
+        } else {
+          rollbackController.onSelectorOpened(false);
+          dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "ВТОРОЙ СЛОТ ПУСТ",
+                                configStore.data(), "УСТАНОВИТЕ ПРОШИВКУ");
         }
-        tripContext.checkpoint(now, true);
+        break;
       }
-      brightnessManager.checkpoint();
-      ESP.restart();
-    }
-    if (event == ButtonEvent::ServiceHold) {
-      {
-        StorageLock lock;
-        tripContext.checkpoint(now, true);
+      case ServiceRollbackAction::CancelToService:
+        dashboard.showService(servicePortal.ssid(), servicePortal.ip(),
+                              servicePortal.runningFirmwareLine(),
+                              servicePortal.slotVersionsLine(),
+                              configStore.data());
+        break;
+      case ServiceRollbackAction::SelectOtherSlot: {
+        char version[33] = "";
+        (void)servicePortal.otherSlotVersion(version, sizeof(version));
+        switch (servicePortal.selectOtherSlotForBoot()) {
+          case ServicePortal::RollbackResult::Ok:
+            rollbackController.onSlotSelectionResult(true);
+            dashboard.showMessage("СЛОТ ВЫБРАН", version,
+                                  configStore.data(), "ДЛИННОЕ - ПЕРЕЗАПУСК");
+            break;
+          case ServicePortal::RollbackResult::NoOtherSlot:
+            rollbackController.onSlotSelectionResult(false);
+            dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "НЕТ ВТОРОГО СЛОТА",
+                                  configStore.data(), "");
+            break;
+          case ServicePortal::RollbackResult::NoImage:
+            rollbackController.onSlotSelectionResult(false);
+            dashboard.showMessage("ОТКАТ НЕДОСТУПЕН", "СЛОТ БЕЗ ПРОШИВКИ",
+                                  configStore.data(), "");
+            break;
+          case ServicePortal::RollbackResult::Failed:
+            rollbackController.onSlotSelectionResult(false);
+            dashboard.showMessage("ОШИБКА ОТКАТА", "СЛОТ НЕ ВЫБРАН",
+                                  configStore.data(), "");
+            break;
+        }
+        break;
       }
-      brightnessManager.checkpoint();
-      ESP.restart();
+      case ServiceRollbackAction::RebootToSelectedSlot:
+        {
+          StorageLock lock;
+          if (!persistence.checkpoint(trip, petrolCalibration,
+                                      configStore.data().saveTrip, true)) {
+            ESP_LOGE(kTag, "Rollback-by-button runtime checkpoint failed");
+          }
+          tripContext.checkpoint(now, true);
+        }
+        brightnessManager.checkpoint();
+        ESP.restart();
+        break;
+      case ServiceRollbackAction::ExitServiceReboot:
+        {
+          StorageLock lock;
+          tripContext.checkpoint(now, true);
+        }
+        brightnessManager.checkpoint();
+        ESP.restart();
+        break;
+      case ServiceRollbackAction::None:
+        break;
     }
     delay(1);
     return;

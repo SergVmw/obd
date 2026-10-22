@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "version.h"
 #include "app_config.h"
 #include "headunit_web_ui_gz.h"
 #include "littlefs_storage.h"
@@ -690,7 +691,7 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
                                liveNanResp);
   CHECK(liveNanResp.statusCode == 200);
   CHECK(StrictJsonParser(liveNanResp.jsonBody).parseDocument());
-  CHECK(liveNanResp.jsonBody.find("\"version\":\"0.4.34\"") !=
+  CHECK(liveNanResp.jsonBody.find("\"version\":\"" H2G_FW_VERSION "\"") !=
         std::string::npos);
   CHECK(liveNanResp.jsonBody.find("\"resetReason\":\"host\"") !=
         std::string::npos);

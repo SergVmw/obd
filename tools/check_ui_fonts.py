@@ -89,7 +89,8 @@ def main() -> None:
         # being changed in passing.
         "src/dashboard_ui.cpp": {0xB7: "DTC results text, awaiting a separate fix"},
     }
-    for relative in ("src/dashboard_ui.cpp", "src/service_portal.cpp"):
+    for relative in ("src/dashboard_ui.cpp", "src/service_portal.cpp",
+                     "src/main.cpp"):
         text = (ROOT / relative).read_text(encoding="utf-8")
         used = {
             char

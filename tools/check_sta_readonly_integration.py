@@ -99,26 +99,48 @@ check('"IP: %s"' in dash_code and "drawText(line, 120, 208," not in dash_code,
       "DashboardUi::drawDiagnostics must render STA IP inside the upper unobstructed chord rather than clipped at y = 208")
 
 main_src = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
-check("staRuntime.attach(tripHistory);" in main_src and "staRuntime.begin(" not in main_src,
+main_code = strip_cpp_comments(main_src)
+check("staRuntime.attach(tripHistory);" in main_code and "staRuntime.begin(" not in main_code,
       "setup() must only attach TripHistory without spawning STA tasks before bootService check")
-check(main_src.count("staRuntime.shutdownForService()") >= 2,
+check(main_code.count("staRuntime.shutdownForService()") >= 2,
       "Both enterServiceMode() and enterLowVoltageSleep() must call staRuntime.shutdownForService()")
-
-portal_src = (ROOT / "src" / "service_portal.cpp").read_text(encoding="utf-8")
 check(
-    "if (server_.listening()) break;" in portal_src
-    and "if (!server_.listening()) {" in portal_src
-    and "WiFi.disconnect(true, false);" in portal_src,
-    "ServicePortal::begin()/bringUpAccessPoint() must reset residual STA state, retry port-80 bind, and fail closed if !server_.listening()",
+    "rtc_gpio_pullup_en(" in main_code
+    and "rtc_gpio_pulldown_dis(" in main_code
+    and "rtc_gpio_deinit(" in main_code,
+    "Deep sleep EXT0 button wake on GPIO4 must hold RTC pull-up across sleep and release RTC IO in setup()",
+)
+check(
+    "ServiceRollbackController" in main_code
+    and "ServiceRollbackAction::OpenSelector" in main_code
+    and "ServiceRollbackAction::RebootToSelectedSlot" in main_code,
+    "src/main.cpp must drive button rollback through ServiceRollbackController",
 )
 
-# 4. StorageLock serialization across all multi-core LittleFS callers & TWAI RX queue depth = 64.
+portal_src = (ROOT / "src" / "service_portal.cpp").read_text(encoding="utf-8")
+portal_code = strip_cpp_comments(portal_src)
+check(
+    "if (server_.listening()) break;" in portal_code
+    and "if (!server_.listening()) {" in portal_code
+    and "WiFi.disconnect(true, false);" in portal_code,
+    "ServicePortal::begin()/bringUpAccessPoint() must reset residual STA state, retry port-80 bind, and fail closed if !server_.listening()",
+)
+check(
+    "info.versionKnown && info.version[0] != '\\0'" in portal_code,
+    "ServicePortal::readOtherSlotVersion() must prefer the embedded H2GM firmware manifest version over raw SDK descriptor.version",
+)
+
+# 4. StorageLock serialization across all multi-core LittleFS callers, TWAI RX queue depth = 64,
+#    and PID 0x42 plausibility guard against 0x7E9 zero-voltage frames.
 for rel in ("src/main.cpp", "src/service_portal.cpp", "src/sta_readonly.cpp"):
     txt = (ROOT / rel).read_text(encoding="utf-8")
     check("StorageLock" in txt, f"{rel} must serialize LittleFS operations with StorageLock")
 
 obd_src = (ROOT / "src" / "obd_client.cpp").read_text(encoding="utf-8")
-check("general.rx_queue_len = 64;" in obd_src, "src/obd_client.cpp must set TWAI rx_queue_len = 64")
+obd_code = strip_cpp_comments(obd_src)
+check("general.rx_queue_len = 64;" in obd_code, "src/obd_client.cpp must set TWAI rx_queue_len = 64")
+check("rawMv >= 6000U && rawMv <= 20000U" in obd_code,
+      "src/obd_client.cpp PID 0x42 handler must reject sensorless 0.000 V / out-of-range module replies")
 
 if failures:
     for f in failures:
