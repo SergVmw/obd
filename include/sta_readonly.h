@@ -77,6 +77,7 @@ struct StaLiveSnapshot {
   float openMaxSpeedKph = 0.0f;
   TripRecord openRecord{};
   char hostname[StaClientLogic::kMaxHostnameLen + 1] = "h2";
+  char resetReason[16] = "unknown";
 };
 
 struct StaHttpResponse {

@@ -17,6 +17,7 @@ constexpr size_t kMinWpaPasswordLen = 8;
 constexpr size_t kMaxWpaPasswordLen = 63;
 constexpr size_t kMaxHostnameLen = 16;
 
+constexpr uint32_t kRadioStartupStaggerMs = 1500UL;
 constexpr uint32_t kConnectAttemptTimeoutMs = 10000UL;
 constexpr uint32_t kBackoffFirstMs = 5000UL;
 constexpr uint32_t kBackoffSecondMs = 15000UL;
@@ -96,16 +97,56 @@ inline uint32_t backoffDelayMs(uint32_t consecutiveFailures) {
 }
 
 // Never bind the STA read-only HTTP server to wildcard INADDR_ANY (0.0.0.0),
-// loopback (127.0.0.0/8), multicast/reserved (>=224.0.0.0), or the ESP32 AP
-// subnet 192.168.4.0/24. Because ESP-IDF compiles lwIP with SO_REUSE enabled,
-// a wildcard 0.0.0.0:80 socket would collide with ServicePortal on
-// 192.168.4.1:80 if both ever coexisted.
+// loopback (127.0.0.0/8), multicast/reserved (>=224.0.0.0), or ServicePortal's
+// SoftAP address 192.168.4.1 (plus .0/.255). Allowing 192.168.4.2..254 lets
+// Android/HyperOS hotspots that randomly pick 192.168.4.0/24 still bind their
+// specific assigned host address without ever colliding with 192.168.4.1:80.
 inline bool isSafeStaBindIp(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
-  (void)d;
   if (a == 0 || a == 127 || a >= 224) return false;
-  if (a == 192 && b == 168 && c == 4) return false;
+  if (a == 192 && b == 168 && c == 4 && (d == 0 || d == 1 || d == 255)) {
+    return false;
+  }
   return true;
 }
+
+// Staggers Wi-Fi STA bring-up by kRadioStartupStaggerMs after boot or display
+// wake so esp_wifi_start() calibration spikes never stack onto ignition-ON bus
+// droop + backlight turn-on inrush when the engine is not started yet, while
+// dropping allowRadio immediately (0 ms) when the screen goes dark or service
+// mode begins.
+class WakeStagger {
+ public:
+  bool filter(uint32_t nowMs, bool allowRadio) {
+    if (!allowRadio) {
+      reset();
+      return false;
+    }
+    if (active_) return true;
+    if (!armed_) {
+      armed_ = true;
+      allowedSinceMs_ = nowMs;
+      return false;
+    }
+    if (nowMs - allowedSinceMs_ >= kRadioStartupStaggerMs) {
+      active_ = true;
+      return true;
+    }
+    return false;
+  }
+
+  bool waiting() const { return armed_ && !active_; }
+
+  void reset() {
+    armed_ = false;
+    active_ = false;
+    allowedSinceMs_ = 0;
+  }
+
+ private:
+  bool armed_ = false;
+  bool active_ = false;
+  uint32_t allowedSinceMs_ = 0;
+};
 
 // Deterministic handover coordinator between Core 1 (main loop / enterServiceMode
 // / deep sleep) and Core 0 (optional STA HTTP worker task):

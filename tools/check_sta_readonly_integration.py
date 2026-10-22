@@ -43,8 +43,13 @@ check(
     "src/web_ui_gz.h is out of sync with web/index.html (run python3 tools/embed_web.py)",
 )
 
+def strip_cpp_comments(src: str) -> str:
+    return re.sub(r"//.*?$|/\*.*?\*/", "", src, flags=re.M | re.S)
+
+
 # 2. Strictly read-only server source must never invoke any state-mutating API.
 sta_ro_src = (ROOT / "src" / "sta_readonly.cpp").read_text(encoding="utf-8")
+sta_ro_code = strip_cpp_comments(sta_ro_src)
 forbidden_patterns = [
     (r"\.append\s*\(", "TripHistory::append"),
     (r"\.clear\s*\(", "TripHistory::clear"),
@@ -56,28 +61,42 @@ forbidden_patterns = [
 ]
 for pat, label in forbidden_patterns:
     check(
-        re.search(pat, sta_ro_src) is None,
+        re.search(pat, sta_ro_code) is None,
         f"src/sta_readonly.cpp contains forbidden mutating call: {label}",
     )
 
-# 3. Radio hygiene, DHCP hostname Option 12 ordering, Core 0 pinning, SNTP teardown,
-#    and total isolation from ServicePortal AP mode (zero wildcard port-80 bind,
-#    lazy worker spawn, true millisecond socket timeouts, SO_LINGER reset, task deletion).
-check("WiFi.persistent(false)" in sta_ro_src, "STA must disable NVS credential writes via WiFi.persistent(false)")
-check(sta_ro_src.count("WiFi.setHostname(host)") >= 2, "STA must set DHCP hostname both before and after WiFi.mode(WIFI_STA)")
-check('xTaskCreatePinnedToCore(\n        staTaskMain, "h2-sta-http", 8192,' in sta_ro_src
-      or 'xTaskCreatePinnedToCore(staTaskMain, "h2-sta-http", 8192,' in sta_ro_src,
+# 3. Radio hygiene, DHCP hostname Option 12 ordering, Core 0 pinning, tcpip_thread
+#    SNTP serialization (CONFIG_LWIP_TCPIP_CORE_LOCKING is unset on ESP32-S3),
+#    wake stagger + 13 dBm TX cap + disabled Arduino auto-reconnect, round-display
+#    bezel clearance, and total isolation from ServicePortal AP mode.
+check("WiFi.persistent(false)" in sta_ro_code, "STA must disable NVS credential writes via WiFi.persistent(false)")
+check("WiFi.setAutoReconnect(false)" in sta_ro_code,
+      "STA must disable Arduino background auto-reconnect so Core 1 never races Core 0 inside WiFi.begin/disconnect")
+check("WiFi.setTxPower(WIFI_POWER_13dBm)" in sta_ro_code and "WakeStagger" in sta_ro_code,
+      "STA must stagger radio wake and cap TX burst current at 13 dBm during ignition-ON / engine-OFF droop")
+check(sta_ro_code.count("WiFi.setHostname(host)") >= 2, "STA must set DHCP hostname both before and after WiFi.mode(WIFI_STA)")
+check('xTaskCreatePinnedToCore(\n        staTaskMain, "h2-sta-http", 8192,' in sta_ro_code
+      or 'xTaskCreatePinnedToCore(staTaskMain, "h2-sta-http", 8192,' in sta_ro_code,
       "STA HTTP server task must be pinned to Core 0 with an 8192 B stack")
-check("sntp_stop()" in sta_ro_src and "WiFi.mode(WIFI_OFF)" in sta_ro_src,
-      "STA radio shutdown must stop SNTP and set WiFi.mode(WIFI_OFF)")
-check(re.search(r"WiFiServer\s+\w+\s*\(\s*80\s*\)", sta_ro_src) is None,
+check(re.search(r"\bconfigTime\s*\(", sta_ro_code) is None,
+      "src/sta_readonly.cpp must NEVER call Arduino configTime() on Core 0 (unlocked lwIP race when CONFIG_LWIP_TCPIP_CORE_LOCKING is unset)")
+check("tcpip_api_call(&startSntpInTcpipThread" in sta_ro_code
+      and "tcpip_api_call(&stopSntpInTcpipThread" in sta_ro_code
+      and "WiFi.mode(WIFI_OFF)" in sta_ro_code,
+      "STA must run both SNTP start and SNTP stop synchronously inside lwIP tcpip_thread via tcpip_api_call and set WiFi.mode(WIFI_OFF)")
+check(re.search(r"WiFiServer\s+\w+\s*\(\s*80\s*\)", sta_ro_code) is None,
       "STA HTTP server must NEVER bind wildcard 0.0.0.0:80 (collides with ServicePortal 192.168.4.1:80 under lwIP SO_REUSE)")
-check("new WiFiServer(ip, 80, 2)" in sta_ro_src and "StaClientLogic::isSafeStaBindIp" in sta_ro_src,
+check("new WiFiServer(ip, 80, 2)" in sta_ro_code and "StaClientLogic::isSafeStaBindIp" in sta_ro_code,
       "STA HTTP server must bind exclusively to validated non-AP STA IP addresses")
-check("client.setTimeout(" not in sta_ro_src and "SO_RCVTIMEO" in sta_ro_src and "SO_SNDTIMEO" in sta_ro_src,
+check("client.setTimeout(" not in sta_ro_code and "SO_RCVTIMEO" in sta_ro_code and "SO_SNDTIMEO" in sta_ro_code,
       "STA client sockets must use sub-second setsockopt timeouts rather than multi-second WiFiClient::setTimeout")
-check("SO_LINGER" in sta_ro_src and "vTaskDelete(nullptr)" in sta_ro_src,
+check("SO_LINGER" in sta_ro_code and "vTaskDelete(nullptr)" in sta_ro_code,
       "STA shutdown must reclaim client PCBs without TIME_WAIT via SO_LINGER and delete the Core 0 worker task")
+
+dash_src = (ROOT / "src" / "dashboard_ui.cpp").read_text(encoding="utf-8")
+dash_code = strip_cpp_comments(dash_src)
+check('"IP: %s"' in dash_code and "drawText(line, 120, 208," not in dash_code,
+      "DashboardUi::drawDiagnostics must render STA IP inside the upper unobstructed chord rather than clipped at y = 208")
 
 main_src = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 check("staRuntime.attach(tripHistory);" in main_src and "staRuntime.begin(" not in main_src,

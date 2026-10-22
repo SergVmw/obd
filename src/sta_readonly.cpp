@@ -14,9 +14,11 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 #include <ctime>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lwip/apps/sntp.h>
+#include <lwip/priv/tcpip_priv.h>
 #include <lwip/sockets.h>
 #endif
 
@@ -84,6 +86,37 @@ class JsonBuf {
   std::string out_;
 };
 
+const char* currentResetReasonName() {
+#if defined(ESP32) && !defined(H2G_HOST_TESTS)
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      return "poweron";
+    case ESP_RST_EXT:
+      return "external";
+    case ESP_RST_SW:
+      return "software";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+      return "int_wdt";
+    case ESP_RST_TASK_WDT:
+      return "task_wdt";
+    case ESP_RST_WDT:
+      return "wdt";
+    case ESP_RST_DEEPSLEEP:
+      return "deepsleep";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SDIO:
+      return "sdio";
+    default:
+      return "unknown";
+  }
+#else
+  return "host";
+#endif
+}
+
 const char* fuelModeText(FuelMode mode) {
   switch (mode) {
     case FuelMode::Petrol:
@@ -134,6 +167,8 @@ void writeLiveJson(const StaLiveSnapshot& s, const TripHistory& tripHistory,
   j.strVal(H2G_FW_VERSION);
   j.key("hostname");
   j.strVal(s.hostname[0] ? s.hostname : "h2");
+  j.key("resetReason");
+  j.strVal(s.resetReason[0] ? s.resetReason : "unknown");
   j.key("uptimeMs");
   j.u32Val(s.uptimeMs);
   j.key("obdConnected");
@@ -827,6 +862,9 @@ StaLiveSnapshot buildLiveSnapshot(uint32_t nowMs, uint32_t rtcNowSec,
     std::strncpy(s.hostname, "h2", sizeof(s.hostname) - 1);
     s.hostname[sizeof(s.hostname) - 1] = '\0';
   }
+  std::strncpy(s.resetReason, currentResetReasonName(),
+               sizeof(s.resetReason) - 1);
+  s.resetReason[sizeof(s.resetReason) - 1] = '\0';
   return s;
 }
 
@@ -1146,11 +1184,53 @@ void serveClientSession(WiFiClient& client, WiFiServer& server,
   }
 }
 
+// Arduino-ESP32 compiles lwIP with CONFIG_LWIP_TCPIP_CORE_LOCKING unset, so
+// LOCK_TCPIP_CORE() is a no-op and raw lwIP timer/PCB lists (next_timeout,
+// udp_pcbs) belong exclusively to tcpip_thread. Calling Arduino's configTime()
+// or raw sntp_stop() from the Core 0 worker races tcpip_thread directly during
+// DHCP/mDNS activity and screen-dark teardown. Dispatch both operations
+// synchronously onto tcpip_thread via tcpip_api_call().
+err_t startSntpInTcpipThread(struct tcpip_api_call_data*) {
+  if (sntp_enabled()) {
+    sntp_stop();
+  }
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_setservername(1, "time.google.com");
+  sntp_setservername(2, "time.cloudflare.com");
+  sntp_init();
+  return ERR_OK;
+}
+
+err_t stopSntpInTcpipThread(struct tcpip_api_call_data*) {
+  if (sntp_enabled()) {
+    sntp_stop();
+  }
+  return ERR_OK;
+}
+
+void startSntpSafely() {
+  static bool tzConfigured = false;
+  if (!tzConfigured) {
+    setenv("TZ", "GMT0", 1);
+    tzset();
+    tzConfigured = true;
+  }
+  struct tcpip_api_call_data call = {};
+  tcpip_api_call(&startSntpInTcpipThread, &call);
+}
+
+void stopSntpSafely() {
+  struct tcpip_api_call_data call = {};
+  tcpip_api_call(&stopSntpInTcpipThread, &call);
+}
+
 void staTaskMain(void* param) {
   const TripHistory* tripHistory = static_cast<const TripHistory*>(param);
   // Strictly scoped to the assigned non-AP STA IP (never wildcard 0.0.0.0:80).
   std::unique_ptr<WiFiServer> server;
   IPAddress boundIp(0, 0, 0, 0);
+  StaClientLogic::WakeStagger wakeStagger;
   StaClientLogic::StateMachine sm;
   bool mdnsActive = false;
   bool sntpConfiguredForLink = false;
@@ -1167,10 +1247,10 @@ void staTaskMain(void* param) {
       MDNS.end();
       mdnsActive = false;
     }
-    if (sntp_enabled()) {
-      sntp_stop();
+    if (sntpConfiguredForLink) {
+      stopSntpSafely();
+      sntpConfiguredForLink = false;
     }
-    sntpConfiguredForLink = false;
     ntpReportedForLink = false;
   };
 
@@ -1190,6 +1270,7 @@ void staTaskMain(void* param) {
     portEXIT_CRITICAL(&gStaSpinlock);
 
     if (lockedOut) {
+      wakeStagger.reset();
       stopNetworkServices();
       if (driverTouched || sm.radioOn()) {
         WiFi.disconnect(true, false);
@@ -1205,13 +1286,14 @@ void staTaskMain(void* param) {
       return;
     }
 
+    const uint32_t nowMs = millis();
+    const bool staggeredAllowRadio = wakeStagger.filter(nowMs, allowRadio);
     const IPAddress rawIp = sm.radioOn() ? WiFi.localIP() : IPAddress(0, 0, 0, 0);
     const bool gotSafeIp =
         sm.radioOn() && (WiFi.status() == WL_CONNECTED) &&
         StaClientLogic::isSafeStaBindIp(rawIp[0], rawIp[1], rawIp[2], rawIp[3]);
-    const uint32_t nowMs = millis();
     const StaClientLogic::Action action =
-        sm.update(nowMs, allowRadio, gotSafeIp, ssid, password, host);
+        sm.update(nowMs, staggeredAllowRadio, gotSafeIp, ssid, password, host);
 
     if (action == StaClientLogic::Action::StopRadio) {
       stopNetworkServices();
@@ -1228,7 +1310,13 @@ void staTaskMain(void* param) {
       WiFi.persistent(false);
       WiFi.setHostname(host);
       WiFi.mode(WIFI_STA);
+      // Disable Arduino's background event-task auto-reconnect so Core 1 never
+      // races Core 0 inside esp_wifi_disconnect()/set_esp_interface_ip()/begin(),
+      // and cap TX burst current at 13 dBm inside the cabin to spare the 3.3 V
+      // rail during ignition-ON / engine-OFF battery droop.
+      WiFi.setAutoReconnect(false);
       WiFi.setHostname(host);
+      WiFi.setTxPower(WIFI_POWER_13dBm);
       WiFi.setSleep(true);
       if (password[0] != '\0') {
         WiFi.begin(ssid, password);
@@ -1263,8 +1351,7 @@ void staTaskMain(void* param) {
           mdnsActive = true;
         }
         if (!sntpConfiguredForLink) {
-          configTime(0, 0, "pool.ntp.org", "time.google.com",
-                     "time.cloudflare.com");
+          startSntpSafely();
           sntpConfiguredForLink = true;
         }
         if (!ntpReportedForLink) {
@@ -1286,12 +1373,16 @@ void staTaskMain(void* param) {
           }
         }
       }
+    } else if (sm.radioOn() && !shouldStopRadioNow() &&
+               (WiFi.status() == WL_CONNECTED) && rawIp[0] != 0) {
+      std::snprintf(ipStr, sizeof(ipStr), "%u.%u.%u.%u", rawIp[0], rawIp[1],
+                    rawIp[2], rawIp[3]);
     }
 
     portENTER_CRITICAL(&gStaSpinlock);
     gBridge.status.phase = sm.phase();
-    gBridge.status.radioOn = sm.radioOn();
-    gBridge.status.connected = sm.connected();
+    gBridge.status.radioOn = sm.radioOn() || wakeStagger.waiting();
+    gBridge.status.connected = sm.connected() || ipStr[0] != '\0';
     gBridge.status.consecutiveFailures = sm.consecutiveFailures();
     std::memcpy(gBridge.status.ip, ipStr, sizeof(ipStr));
     std::memcpy(gBridge.status.hostname, host, sizeof(host));

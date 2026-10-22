@@ -1169,13 +1169,40 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
            25, MC_DATUM, kMuted, FontRole::Medium,
            labelFont(config, true));
 
+  // Keep every diagnostic row strictly inside y = 56..182 (above the y = 183
+  // row verified clear of the recessed vent bezel in the car): placing the STA
+  // IP line down at y = 208 hid it behind the lower rim of the dashboard pod
+  // from the driver's viewing angle. When STA is enabled, place its live IP /
+  // status right at row 2 (y = 77, 223 px chord) beneath CAN status.
+  const int16_t stepY = config.staEnabled ? 21 : 24;
+  int16_t rowY = 56;
+
   char line[64];
   const uint16_t stateColor =
       data.obdConnected(now) ? config.colorBoost : config.colorDanger;
   drawText(data.obdConnected(now)
                ? translated(config, "CAN ПОДКЛЮЧЕН", "CAN CONNECTED")
                : translated(config, "CAN НЕТ СВЯЗИ", "CAN OFFLINE"),
-           31, 58, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
+           31, rowY, ML_DATUM, stateColor, FontRole::Small, labelFont(config));
+  rowY += stepY;
+
+  if (config.staEnabled) {
+    uint16_t wifiColor = kMuted;
+    if (data.staConnected && data.staIp[0] != '\0') {
+      snprintf(line, sizeof(line), "IP: %s", data.staIp);
+      wifiColor = config.colorBoost;
+    } else if (data.staRadioOn) {
+      strlcpy(line, translated(config, "WIFI: ПОИСК", "WIFI: SEARCH"),
+              sizeof(line));
+      wifiColor = config.colorWarning;
+    } else {
+      strlcpy(line, translated(config, "WIFI: ВЫКЛ", "WIFI: OFF"),
+              sizeof(line));
+    }
+    drawText(line, 31, rowY, ML_DATUM, wifiColor, FontRole::Small,
+             labelFont(config));
+    rowY += stepY;
+  }
 
   // Naming the engine ECU here rather than the last block to answer: since
   // engine signals are accepted from whichever powertrain block has them, the
@@ -1194,8 +1221,9 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
     strlcpy(line, translated(config, "ЭБУ: НЕТ СВЯЗИ", "ECU: NO LINK"),
             sizeof(line));
   }
-  drawText(line, 31, 83, ML_DATUM, config.colorText, FontRole::Small,
+  drawText(line, 31, rowY, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
+  rowY += stepY;
 
   const uint16_t milColor =
       (data.milCommandedOn || data.milAlertLatched)
@@ -1208,16 +1236,18 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
                ? ((data.milCommandedOn || data.milAlertLatched) ? "ON" : "OFF")
                : "?",
            data.ecuReportedDtcCount);
-  drawText(line, 31, 108, ML_DATUM, milColor, FontRole::Small,
+  drawText(line, 31, rowY, ML_DATUM, milColor, FontRole::Small,
            labelFont(config));
+  rowY += stepY;
 
   snprintf(line, sizeof(line),
            isRussian(config) ? "DTC: СОХР %u · ОЖИД %u · ПОСТ %u"
                              : "DTC: STO %u · PEN %u · PERM %u",
            data.dtcStoredCount, data.dtcPendingCount,
            data.dtcPermanentCount);
-  drawText(line, 31, 133, ML_DATUM, config.colorText, FontRole::Small,
+  drawText(line, 31, rowY, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
+  rowY += stepY;
 
   if (data.firstDtcRaw != 0) {
     char code[6];
@@ -1241,47 +1271,30 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
                 : translated(config, "КОДЫ: НЕТ", "CODES: NONE"),
             sizeof(line));
   }
-  drawText(line, 31, 158, ML_DATUM,
+  drawText(line, 31, rowY, ML_DATUM,
            data.dtcMisfirePresent ? config.colorDanger : config.colorWarning,
            FontRole::Small, labelFont(config));
+  rowY += stepY;
 
   snprintf(line, sizeof(line),
            isRussian(config) ? "ТАЙМАУТ/CAN: %lu/%lu"
                              : "TIMEOUT/CAN: %lu/%lu",
            static_cast<unsigned long>(data.obdTimeoutCount),
            static_cast<unsigned long>(data.canErrorCount));
-  drawText(line, 31, 183, ML_DATUM, config.colorText, FontRole::Small,
+  drawText(line, 31, rowY, ML_DATUM, config.colorText, FontRole::Small,
            labelFont(config));
-  // When the optional head-unit STA client is enabled, report its live IP or
-  // link state centered within the bottom chord (y = 208 -> 163 px chord);
-  // otherwise keep the VIN line unchanged.
-  if (config.staEnabled) {
-    uint16_t wifiColor = kMuted;
-    if (data.staConnected && data.staIp[0] != '\0') {
-      snprintf(line, sizeof(line), "IP %s", data.staIp);
-      wifiColor = config.colorBoost;
-    } else if (data.staRadioOn) {
-      strlcpy(line, translated(config, "WIFI: ПОИСК", "WIFI: SEARCH"),
-              sizeof(line));
-      wifiColor = config.colorWarning;
-    } else {
-      strlcpy(line, translated(config, "WIFI: ВЫКЛ", "WIFI: OFF"),
-              sizeof(line));
-    }
-    drawText(line, 120, 208, MC_DATUM, wifiColor, FontRole::Small,
-             labelFont(config));
-  } else {
-    // VIN, asked once at boot. This line replaces the old "DTC 03/07/0A · CLEAR
-    // IN WEB" hint, which measured 216 px into the 209 px available and was
-    // being clipped at the right edge; the VIN fits with room to spare and
-    // the hint about clearing codes lives in the web portal anyway.
+
+  if (!config.staEnabled) {
+    // VIN, asked once at boot. Raise to y = 200 (24 px step) for extra bottom
+    // bezel clearance over the previous y = 210 position.
+    rowY += stepY;
     if (data.vin[0] != '\0') {
       snprintf(line, sizeof(line), "VIN: %s", data.vin);
     } else {
       strlcpy(line, translated(config, "VIN: НЕТ ДАННЫХ", "VIN: NO DATA"),
               sizeof(line));
     }
-    drawText(line, 31, 210, ML_DATUM,
+    drawText(line, 31, rowY, ML_DATUM,
              data.vin[0] != '\0' ? config.colorText : kMuted, FontRole::Small,
              labelFont(config));
   }

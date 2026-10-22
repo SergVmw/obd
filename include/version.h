@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef H2G_FW_VERSION_OVERRIDE
-#define H2G_FW_VERSION "0.4.33"
+#define H2G_FW_VERSION "0.4.34"
 #else
 #define H2G_FW_VERSION H2G_FW_VERSION_OVERRIDE
 #endif

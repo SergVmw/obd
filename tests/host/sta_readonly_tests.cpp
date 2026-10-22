@@ -350,12 +350,33 @@ void testStaValidationAndStateMachinePolicy() {
   CHECK(!StaClientLogic::isValidHostname("h2_bad"));
   CHECK(!StaClientLogic::isValidHostname("12345678901234567", 32));
 
-  // Strict screen-gated policy + service mode preemption:
+  // Strict screen-gated policy + service mode preemption + 1.5 s wake stagger:
   CHECK(StaClientLogic::shouldRunRadio(false, true, "Xiaomi14", false));
   CHECK(!StaClientLogic::shouldRunRadio(false, true, "Xiaomi14", true));
   CHECK(!StaClientLogic::shouldRunRadio(true, true, "Xiaomi14", false));
   CHECK(!StaClientLogic::shouldRunRadio(false, false, "Xiaomi14", false));
   CHECK(!StaClientLogic::shouldRunRadio(false, true, "", false));
+
+  {
+    StaClientLogic::WakeStagger stagger;
+    // Cold boot at millis() == 0: holds radio off for 0..1499 ms, opens at 1500 ms:
+    CHECK(!stagger.waiting());
+    CHECK(!stagger.filter(0, true));
+    CHECK(stagger.waiting());
+    CHECK(!stagger.filter(1499, true));
+    CHECK(stagger.waiting());
+    CHECK(stagger.filter(1500, true));
+    CHECK(!stagger.waiting());
+    CHECK(stagger.filter(5000, true));
+    // Screen goes dark -> drops in 0 ms and rearms clean stagger for next wake:
+    CHECK(!stagger.filter(5001, false));
+    CHECK(!stagger.waiting());
+    // Wraparound across 0xFFFFFFFF -> 0x000005DC:
+    const uint32_t t0 = 0xFFFFFF00UL;
+    CHECK(!stagger.filter(t0, true));
+    CHECK(!stagger.filter(t0 + 1499U, true));
+    CHECK(stagger.filter(t0 + 1500U, true));
+  }
 
   // Backoff ladder 5 -> 15 -> 30 -> 30 s and instant screen-dark shutoff:
   StaClientLogic::StateMachine sm;
@@ -669,6 +690,10 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
                                liveNanResp);
   CHECK(liveNanResp.statusCode == 200);
   CHECK(StrictJsonParser(liveNanResp.jsonBody).parseDocument());
+  CHECK(liveNanResp.jsonBody.find("\"version\":\"0.4.34\"") !=
+        std::string::npos);
+  CHECK(liveNanResp.jsonBody.find("\"resetReason\":\"host\"") !=
+        std::string::npos);
 
   // Now set realistic finite fuel rate and emit all 4 endpoints for cross-layer
   // Python inspection (gzip decompression + exact JSON numeric equivalence):
@@ -717,7 +742,9 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
 
 void testServicePortalIsolationBindGuardsAndDualCoreRaceFuzzer() {
   // 1. Bind IP isolation: wildcard 0.0.0.0, loopback, multicast/broadcast, and
-  //    every single host in ESP32's SoftAP subnet 192.168.4.0/24 MUST be rejected.
+  //    ServicePortal's SoftAP address 192.168.4.1 (plus .0/.255) MUST be rejected,
+  //    while non-colliding host addresses 192.168.4.2..254 are safely accepted in
+  //    case an Android/HyperOS hotspot randomly selects 192.168.4.0/24.
   CHECK(!StaClientLogic::isSafeStaBindIp(0, 0, 0, 0));
   CHECK(!StaClientLogic::isSafeStaBindIp(0, 1, 2, 3));
   CHECK(!StaClientLogic::isSafeStaBindIp(127, 0, 0, 1));
@@ -725,9 +752,12 @@ void testServicePortalIsolationBindGuardsAndDualCoreRaceFuzzer() {
   CHECK(!StaClientLogic::isSafeStaBindIp(224, 0, 0, 1));
   CHECK(!StaClientLogic::isSafeStaBindIp(239, 255, 255, 250));
   CHECK(!StaClientLogic::isSafeStaBindIp(255, 255, 255, 255));
-  for (int host = 0; host <= 255; ++host) {
-    CHECK(!StaClientLogic::isSafeStaBindIp(192, 168, 4,
-                                           static_cast<uint8_t>(host)));
+  CHECK(!StaClientLogic::isSafeStaBindIp(192, 168, 4, 0));
+  CHECK(!StaClientLogic::isSafeStaBindIp(192, 168, 4, 1));
+  CHECK(!StaClientLogic::isSafeStaBindIp(192, 168, 4, 255));
+  for (int host = 2; host <= 254; ++host) {
+    CHECK(StaClientLogic::isSafeStaBindIp(192, 168, 4,
+                                          static_cast<uint8_t>(host)));
   }
   // Valid hotspot / LAN STA subnets accepted:
   CHECK(StaClientLogic::isSafeStaBindIp(192, 168, 43, 112));  // Xiaomi hotspot
