@@ -8,11 +8,14 @@ const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
 (async () => {
   const htmlRaw = fs.readFileSync(path.join(__dirname, '../../web/headunit.html'));
+  const openHtmlPath = path.join(__dirname, '../../web/h2-open.html');
+  const openHtmlRaw = fs.readFileSync(openHtmlPath);
   const htmlGz = zlib.gzipSync(htmlRaw, { level: 9 });
 
   let liveState = {
@@ -207,41 +210,59 @@ const zlib = require('node:zlib');
   };
 
   let livePollCount = 0;
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'GET') {
-      res.writeHead(405, { 'Allow': 'GET', 'Content-Type': 'application/json' });
-      res.end('{"error":"read_only","allow":"GET"}');
-      return;
-    }
-    const u = new URL(req.url, 'http://127.0.0.1');
-    if (u.pathname === '/') {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Content-Encoding': 'gzip',
+  function makeH2Handler() {
+    return (req, res) => {
+      const common = {
+        'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'no-store',
-      });
-      res.end(htmlGz);
-      return;
-    }
-    if (u.pathname === '/api/ro/live') {
-      ++livePollCount;
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(liveState));
-      return;
-    }
-    if (u.pathname === '/api/ro/trips') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(tripsPayload));
-      return;
-    }
-    if (u.pathname === '/api/ro/trips/days') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(daysPayload));
-      return;
-    }
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end('{"error":"not_found"}');
-  });
+        'X-Content-Type-Options': 'nosniff',
+      };
+      if (req.method !== 'GET') {
+        res.writeHead(405, { ...common, 'Allow': 'GET', 'Content-Type': 'application/json' });
+        res.end('{"error":"read_only","allow":"GET"}');
+        return;
+      }
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname === '/') {
+        res.writeHead(200, {
+          ...common,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Encoding': 'gzip',
+        });
+        res.end(htmlGz);
+        return;
+      }
+      if (u.pathname === '/h2-open.html') {
+        res.writeHead(200, {
+          ...common,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="h2-open.html"',
+        });
+        res.end(openHtmlRaw);
+        return;
+      }
+      if (u.pathname === '/api/ro/live') {
+        ++livePollCount;
+        res.writeHead(200, { ...common, 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(liveState));
+        return;
+      }
+      if (u.pathname === '/api/ro/trips') {
+        res.writeHead(200, { ...common, 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(tripsPayload));
+        return;
+      }
+      if (u.pathname === '/api/ro/trips/days') {
+        res.writeHead(200, { ...common, 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(daysPayload));
+        return;
+      }
+      res.writeHead(404, { ...common, 'Content-Type': 'application/json' });
+      res.end('{"error":"not_found"}');
+    };
+  }
+
+  const server = http.createServer(makeH2Handler());
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
@@ -330,8 +351,109 @@ const zlib = require('node:zlib');
     await page.click('.tbl-row[data-seq="1"]');
     assert.equal(await page.isVisible('#det-1'), true);
 
+    // Verify configurable refresh rate (#hzToggle: 4 -> 8 -> 10 -> 1 -> 2 -> 4 Гц),
+    // real request cadence difference between 1 Гц and 10 Гц, and localStorage persistence:
+    assert.equal(await page.textContent('#hzToggle'), '4 Гц');
+    assert.equal(await page.textContent('#linkLabel'), 'h2.local · 4 Гц');
+    await page.click('#hzToggle');
+    assert.equal(await page.textContent('#hzToggle'), '8 Гц');
+    await page.click('#hzToggle');
+    assert.equal(await page.textContent('#hzToggle'), '10 Гц');
+    assert.equal(await page.textContent('#linkLabel'), 'h2.local · 10 Гц');
+
+    const c10Start = livePollCount;
+    await page.waitForTimeout(650);
+    const pollsAt10Hz = livePollCount - c10Start;
+    assert.ok(pollsAt10Hz >= 4, `10 Гц mode expected >= 4 polls in 650 ms, got ${pollsAt10Hz}`);
+
+    // Reload and prove 10 Гц persists in localStorage:
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    assert.equal(await page.textContent('#hzToggle'), '10 Гц');
+    assert.equal(await page.textContent('#linkLabel'), 'h2.local · 10 Гц');
+
+    // Switch to 1 Гц and prove low-rate cadence makes <= 2 polls in 650 ms:
+    await page.click('#hzToggle');
+    assert.equal(await page.textContent('#hzToggle'), '1 Гц');
+    const c1Start = livePollCount;
+    await page.waitForTimeout(650);
+    const pollsAt1Hz = livePollCount - c1Start;
+    assert.ok(pollsAt1Hz <= 2, `1 Гц mode expected <= 2 polls in 650 ms, got ${pollsAt1Hz}`);
+    assert.ok(pollsAt10Hz >= pollsAt1Hz + 3, `10 Гц (${pollsAt10Hz}) must poll significantly faster than 1 Гц (${pollsAt1Hz})`);
+
+    // Cycle 1 -> 2 -> 4 Гц:
+    await page.click('#hzToggle');
+    assert.equal(await page.textContent('#hzToggle'), '2 Гц');
+    await page.click('#hzToggle');
+    assert.equal(await page.textContent('#hzToggle'), '4 Гц');
+
+    // Verify 1-tap [Ярлык] download delivers byte-for-byte h2-open.html:
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('#launcherBtn'),
+    ]);
+    assert.equal(download.suggestedFilename(), 'h2-open.html');
+    const dlPath = await download.path();
+    assert.deepEqual(fs.readFileSync(dlPath), openHtmlRaw, 'Downloaded h2-open.html must match web/h2-open.html byte-for-byte');
+
     await ctx.close();
-    console.log('  [ok] live 4 Hz P0171 alert, headSequence auto-refresh, Стрелки/Цифры persistence & row expand');
+    console.log(`  [ok] live 1..10 Гц refresh rate (10 Гц=${pollsAt10Hz} vs 1 Гц=${pollsAt1Hz} in 650 ms), [Ярлык] download, P0171 & row expand`);
+
+    // End-to-end Android 7 file:// auto-discovery & automatic redirect test across a randomized /24 subnet:
+    // - Subnet 127.0.43.0/24 simulates Xiaomi 14 randomizing 192.168.<X>.0/24;
+    // - 127.0.43.1:<gwPort> responds like the active hotspot gateway while non-active subnets blackhole (timeout);
+    // - 127.0.43.12:<lanPort> is a decoy HTTP 200 JSON server proving zero false positives;
+    // - 127.0.43.187:<lanPort> is the live H2 Gauge STA Read-Only server!
+    const blackholeSockets = new Set();
+    const gwServers = [];
+    let gwPort = 0;
+    const activeGw = http.createServer((_req, res) => {
+      res.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+      res.end('gw');
+    });
+    await new Promise(resolve => activeGw.listen(0, '127.0.43.1', resolve));
+    gwPort = activeGw.address().port;
+    gwServers.push(activeGw);
+    for (let s = 0; s <= 50; s++) {
+      if (s === 43) continue;
+      const bh = net.createServer(sock => {
+        blackholeSockets.add(sock);
+        sock.on('close', () => blackholeSockets.delete(sock));
+      });
+      await new Promise(resolve => bh.listen(gwPort, `127.0.${s}.1`, resolve));
+      gwServers.push(bh);
+    }
+
+    const h2LanServer = http.createServer(makeH2Handler());
+    await new Promise(resolve => h2LanServer.listen(0, '127.0.43.187', resolve));
+    const lanPort = h2LanServer.address().port;
+
+    const decoyServer = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' });
+      res.end('{"status":"other_device_on_hotspot","version":"1.0"}');
+    });
+    await new Promise(resolve => decoyServer.listen(lanPort, '127.0.43.12', resolve));
+
+    try {
+      const fileCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+      const filePage = await fileCtx.newPage();
+      const fileErrors = [];
+      filePage.on('pageerror', e => fileErrors.push(String(e)));
+
+      const fileUrl = `file://${openHtmlPath}?gwBase=127.0&maxSub=50&gwPort=${gwPort}&port=${lanPort}`;
+      await filePage.goto(fileUrl, { waitUntil: 'domcontentloaded' });
+
+      // Wait for completely hands-free discovery across 127.0.43.2..254 + automatic redirect into live dashboard!
+      await filePage.waitForURL(`http://127.0.43.187:${lanPort}/`, { timeout: 10000 });
+      await filePage.waitForFunction(() => document.getElementById('dial-econ-txt')?.textContent === '11.8');
+      assert.deepEqual(fileErrors, [], `h2-open.html page errors: ${fileErrors.join('; ')}`);
+      await fileCtx.close();
+      console.log(`  [ok] file://h2-open.html cold-discovered 127.0.43.187:${lanPort} (ignoring .12 decoy & blackhole subnets) and redirected to live dashboard`);
+    } finally {
+      for (const s of blackholeSockets) s.destroy();
+      decoyServer.close();
+      h2LanServer.close();
+      for (const gs of gwServers) gs.close();
+    }
   } finally {
     await browser.close();
     server.close();

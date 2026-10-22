@@ -6,6 +6,7 @@
 #include <cstring>
 #include <memory>
 
+#include "headunit_open_html.h"
 #include "headunit_web_ui_gz.h"
 #include "storage_mutex.h"
 #include "version.h"
@@ -897,6 +898,18 @@ void dispatchRequest(const char* method, const char* path, const char* query,
     return;
   }
 
+  if (std::strcmp(path, "/h2-open.html") == 0) {
+    out.statusCode = 200;
+    out.statusText = "OK";
+    out.contentType = "text/html; charset=utf-8";
+    out.isGzipStatic = false;
+    out.contentDisposition =
+        "Content-Disposition: attachment; filename=\"h2-open.html\"\r\n";
+    out.staticBody = kHeadUnitOpenHtml;
+    out.staticLen = kHeadUnitOpenHtmlLen;
+    return;
+  }
+
   if (std::strcmp(path, "/api/ro/live") == 0) {
     out.statusCode = 200;
     out.statusText = "OK";
@@ -1142,12 +1155,14 @@ void serveClientSession(WiFiClient& client, WiFiServer& server,
         !clientAskedClose && !shouldStopRadioNow() &&
         (servedOnSocket + 1U < kMaxKeepAliveRequests);
     const size_t bodyLen =
-        resp.isGzipStatic ? resp.staticLen : resp.jsonBody.size();
-    char headerBuf[384];
+        resp.staticBody ? resp.staticLen : resp.jsonBody.size();
+    char headerBuf[512];
     const int hLen = std::snprintf(
         headerBuf, sizeof(headerBuf),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "%s"
         "%s"
         "%s"
         "Cache-Control: no-store\r\n"
@@ -1157,15 +1172,16 @@ void serveClientSession(WiFiClient& client, WiFiServer& server,
         "Content-Length: %u\r\n\r\n",
         resp.statusCode, resp.statusText, resp.contentType,
         resp.isGzipStatic ? "Content-Encoding: gzip\r\n" : "",
+        resp.contentDisposition ? resp.contentDisposition : "",
         resp.includeAllowGet ? "Allow: GET\r\n" : "",
         keepAlive ? "keep-alive" : "close",
         keepAlive ? "Keep-Alive: timeout=4, max=240\r\n" : "",
         static_cast<unsigned>(bodyLen));
-    if (hLen > 0) {
+    if (hLen > 0 && static_cast<size_t>(hLen) < sizeof(headerBuf)) {
       client.write(reinterpret_cast<const uint8_t*>(headerBuf),
                    static_cast<size_t>(hLen));
     }
-    if (resp.isGzipStatic && resp.staticBody && resp.staticLen > 0) {
+    if (resp.staticBody && resp.staticLen > 0) {
       client.write_P(reinterpret_cast<const char*>(resp.staticBody),
                      resp.staticLen);
     } else if (!resp.jsonBody.empty()) {

@@ -67,6 +67,12 @@ def main() -> int:
         expected_html = (ROOT / "web" / "headunit.html").read_bytes()
         assert decompressed == expected_html, "GET / gzip payload drifted from web/headunit.html"
 
+        emitted_open = (tmp_path / "h2-open.html").read_bytes()
+        expected_open = (ROOT / "web" / "h2-open.html").read_bytes()
+        release_open = (ROOT / "releases" / "h2-open.html").read_bytes()
+        assert emitted_open == expected_open, "GET /h2-open.html payload drifted from web/h2-open.html"
+        assert release_open == expected_open, "releases/h2-open.html drifted from web/h2-open.html"
+
         live = json.loads((tmp_path / "live.json").read_text(encoding="utf-8"))
         trips = json.loads((tmp_path / "trips.json").read_text(encoding="utf-8"))
         days = json.loads((tmp_path / "days.json").read_text(encoding="utf-8"))

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<link rel="icon" href="data:,">
+<title>H2 Gauge — Автопоиск прибора</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body {
+  background: #070a0f;
+  color: #f6faf6;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  height: 100%;
+  overflow-x: hidden;
+}
+.wrap {
+  min-height: 100vh;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  padding: 18px;
+}
+.card {
+  width: 100%;
+  max-width: 560px;
+  background: #101620;
+  border: 1px solid #202c3d;
+  border-radius: 16px;
+  padding: 22px;
+}
+.hdr {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-justify-content: space-between;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.title { font-size: 21px; font-weight: 800; letter-spacing: .04em; }
+.badge {
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  background: rgba(90,202,238,.15);
+  color: #5acaee;
+  border: 1px solid rgba(90,202,238,.4);
+}
+.badge.ok {
+  background: rgba(90,242,172,.16);
+  color: #5af2ac;
+  border-color: rgba(90,242,172,.45);
+}
+.status {
+  font-size: 17px;
+  font-weight: 700;
+  color: #f6faf6;
+  margin-bottom: 6px;
+}
+.detail {
+  font-size: 13.5px;
+  color: #8b9bb2;
+  min-height: 20px;
+  margin-bottom: 14px;
+}
+.bar {
+  height: 10px;
+  background: #090d14;
+  border: 1px solid #1d2838;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.bar-fill {
+  height: 100%;
+  width: 8%;
+  background: #5acaee;
+  transition: width .16s ease-out;
+  -webkit-transition: width .16s ease-out;
+}
+.bar-fill.ok { background: #5af2ac; width: 100%; }
+.row {
+  display: -webkit-flex;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inp {
+  -webkit-flex: 1 1 200px;
+  flex: 1 1 200px;
+  min-height: 48px;
+  height: 48px;
+  background: #0b1018;
+  color: #f6faf6;
+  border: 1px solid #28384e;
+  border-radius: 11px;
+  padding: 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.btn {
+  min-height: 48px;
+  height: 48px;
+  padding: 0 18px;
+  border-radius: 11px;
+  border: 1px solid rgba(90,242,172,.45);
+  background: rgba(90,242,172,.14);
+  color: #5af2ac;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-sec {
+  border-color: rgba(90,202,238,.4);
+  background: #151d2a;
+  color: #5acaee;
+}
+.hint {
+  margin-top: 13px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #8b9bb2;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="hdr">
+      <span class="title">H2 GAUGE</span>
+      <span class="badge" id="stateBadge">ПОИСК</span>
+    </div>
+    <div class="status" id="statusTxt">Поиск H2 Gauge в сети Wi-Fi...</div>
+    <div class="detail" id="detailTxt">Проверка последнего адреса и подсети хотспота</div>
+    <div class="bar"><div class="bar-fill" id="progBar"></div></div>
+    <div class="row">
+      <input class="inp" id="manualInp" type="text" placeholder="IP (192.168.X.Y) или номер подсети X" autocomplete="off">
+      <button class="btn" id="openManualBtn" type="button">Открыть</button>
+      <button class="btn btn-sec" id="rescanBtn" type="button">Повтор</button>
+    </div>
+    <div class="hint" id="hintTxt">
+      Подходит для Android 7 без mDNS (.local). Достаточно включить точку доступа на телефоне — панель найдёт прибор сама и переключит экран.
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  function $(id) { return document.getElementById(id); }
+
+  function parseQuery() {
+    var out = {};
+    var q = window.location.search ? window.location.search.slice(1) : '';
+    if (!q) return out;
+    var parts = q.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var kv = parts[i].split('=');
+      if (kv[0]) {
+        try {
+          out[decodeURIComponent(kv[0])] = decodeURIComponent(kv.slice(1).join('='));
+        } catch (_) {
+          out[kv[0]] = kv.slice(1).join('=');
+        }
+      }
+    }
+    return out;
+  }
+
+  var Q = parseQuery();
+  var TARGET_PORT = parseInt(Q.port, 10) || 80;
+  var NO_REDIRECT = Q.noredirect === '1';
+  var GW_PROBE_PORT = parseInt(Q.gwPort, 10) || 65530;
+  var GW_FIRST_OCTETS = Q.gwBase ? Q.gwBase : '192.168';
+  var MAX_HOST = Math.min(254, Math.max(2, parseInt(Q.maxHost, 10) || 254));
+
+  var foundHost = null;
+  var roundNum = 0;
+  var scanRunning = false;
+  var retryTimer = null;
+
+  function withPort(ipOrHost) {
+    if (!ipOrHost) return '';
+    if (ipOrHost.indexOf(':') !== -1) return ipOrHost;
+    return TARGET_PORT === 80 ? ipOrHost : (ipOrHost + ':' + TARGET_PORT);
+  }
+
+  function extractPrefix(hostOrIp) {
+    if (!hostOrIp) return '';
+    var clean = String(hostOrIp).split(':')[0];
+    var m = /^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/.exec(clean);
+    return m ? m[1] : '';
+  }
+
+  function lsGet(k) {
+    try { return localStorage.getItem(k) || ''; } catch (_) { return ''; }
+  }
+  function lsSet(k, v) {
+    try { localStorage.setItem(k, v); } catch (_) {}
+  }
+
+  function loadSavedSubnets() {
+    var raw = lsGet('h2_subnets');
+    if (!raw) return [];
+    var arr = raw.split(','), out = [];
+    for (var i = 0; i < arr.length; i++) {
+      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(arr[i])) out.push(arr[i]);
+    }
+    return out;
+  }
+
+  function rememberHost(host) {
+    lsSet('h2_last_host', host);
+    var pfx = extractPrefix(host);
+    if (!pfx) return;
+    var list = loadSavedSubnets();
+    var next = [pfx];
+    for (var i = 0; i < list.length && next.length < 6; i++) {
+      if (list[i] !== pfx) next.push(list[i]);
+    }
+    lsSet('h2_subnets', next.join(','));
+  }
+
+  function setProgress(pct, detail) {
+    if (foundHost) return;
+    $('progBar').style.width = Math.max(6, Math.min(98, pct)) + '%';
+    if (detail) $('detailTxt').textContent = detail;
+  }
+
+  function isH2LivePayload(d) {
+    return !!(d && typeof d.version === 'string' && typeof d.hostname === 'string' &&
+              typeof d.obdConnected === 'boolean' && d.cur && typeof d.cur === 'object');
+  }
+
+  function finishFound(host, data) {
+    if (foundHost) return;
+    foundHost = host;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    rememberHost(host);
+    var targetUrl = 'http://' + host + '/';
+    $('stateBadge').className = 'badge ok';
+    $('stateBadge').textContent = 'НАЙДЕН';
+    $('progBar').className = 'bar-fill ok';
+    $('statusTxt').textContent = 'Подключено: ' + host;
+    $('detailTxt').textContent = 'H2 Gauge v' + data.version + ' — переход на панель приборов...';
+    if (!NO_REDIRECT) {
+      window.location.replace(targetUrl);
+    }
+  }
+
+  function probeLiveHost(host, timeoutMs, cb) {
+    var xhr = new XMLHttpRequest();
+    var done = false;
+    function finish(ok, data) {
+      if (done) return;
+      done = true;
+      cb(ok, data);
+    }
+    xhr.open('GET', 'http://' + host + '/api/ro/live?_=' + (+new Date()), true);
+    xhr.timeout = timeoutMs;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status === 200 && xhr.responseText) {
+        try {
+          var parsed = JSON.parse(xhr.responseText);
+          if (isH2LivePayload(parsed)) {
+            finish(true, parsed);
+            return;
+          }
+        } catch (_) {}
+      }
+      finish(false, null);
+    };
+    xhr.ontimeout = function() { finish(false, null); };
+    xhr.onerror = function() { finish(false, null); };
+    try { xhr.send(null); } catch (_) { finish(false, null); }
+  }
+
+  function scanPrefix(prefix, doneCb) {
+    var nextHost = 2;
+    var active = 0;
+    var CONCURRENCY = 42;
+    var finished = false;
+
+    function pump() {
+      if (foundHost) {
+        if (!finished) { finished = true; doneCb(true); }
+        return;
+      }
+      while (active < CONCURRENCY && nextHost <= MAX_HOST && !foundHost) {
+        (function(h) {
+          active++;
+          var candidate = withPort(prefix + '.' + h);
+          probeLiveHost(candidate, 450, function(ok, data) {
+            active--;
+            if (ok && !foundHost) {
+              finishFound(candidate, data);
+              if (!finished) { finished = true; doneCb(true); }
+              return;
+            }
+            if (h % 32 === 0) {
+              setProgress(25 + Math.round((h / MAX_HOST) * 65),
+                'Сканирование ' + prefix + '.2..' + MAX_HOST + ' (' + h + '/' + MAX_HOST + ')');
+            }
+            if (nextHost > MAX_HOST && active === 0) {
+              if (!finished) { finished = true; doneCb(false); }
+            } else {
+              pump();
+            }
+          });
+        })(nextHost++);
+      }
+      if (nextHost > MAX_HOST && active === 0 && !finished) {
+        finished = true;
+        doneCb(false);
+      }
+    }
+    setProgress(24, 'Сканирование подсети ' + prefix + '.0/24...');
+    pump();
+  }
+
+  function scanPrefixList(prefixes, idx, doneCb) {
+    if (foundHost || idx >= prefixes.length) {
+      doneCb(!!foundHost);
+      return;
+    }
+    scanPrefix(prefixes[idx], function(hit) {
+      if (hit || foundHost) { doneCb(true); return; }
+      scanPrefixList(prefixes, idx + 1, doneCb);
+    });
+  }
+
+  function detectWebRtcPrefixes(cb) {
+    var RTCPeer = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+    if (!RTCPeer) { cb([]); return; }
+    var seen = {}, list = [], settled = false;
+    var pc = null;
+    function finish() {
+      if (settled) return;
+      settled = true;
+      try { if (pc) pc.close(); } catch (_) {}
+      cb(list);
+    }
+    try {
+      pc = new RTCPeer({ iceServers: [] });
+      if (pc.createDataChannel) pc.createDataChannel('h2');
+      pc.onicecandidate = function(ev) {
+        if (!ev || !ev.candidate) { finish(); return; }
+        var cand = ev.candidate.candidate || '';
+        var re = /(\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3})\.\d{1,3}\b/g;
+        var m;
+        while ((m = re.exec(cand)) !== null) {
+          if (!seen[m[1]]) {
+            seen[m[1]] = true;
+            list.push(m[1]);
+          }
+        }
+      };
+      var offerRes = pc.createOffer(
+        function(desc) { try { pc.setLocalDescription(desc, function() {}, function() {}); } catch (_) {} },
+        function() { finish(); }
+      );
+      if (offerRes && typeof offerRes.then === 'function') {
+        offerRes.then(function(desc) {
+          try { pc.setLocalDescription(desc); } catch (_) {}
+        }, finish);
+      }
+      setTimeout(finish, 320);
+    } catch (_) {
+      finish();
+    }
+  }
+
+  function detectActiveGateways(alreadyTried, cb) {
+    var maxSub = parseInt(Q.maxSub, 10);
+    if (isNaN(maxSub) || maxSub < 0 || maxSub > 255) maxSub = 255;
+    var cur = 0, active = 0, CONC = 48;
+    var hits = [], done = false;
+
+    function pump() {
+      if (foundHost) {
+        if (!done) { done = true; cb(hits); }
+        return;
+      }
+      while (active < CONC && cur <= maxSub && !foundHost) {
+        (function(sub) {
+          var pfx = GW_FIRST_OCTETS + '.' + sub;
+          if (alreadyTried[pfx]) return;
+          active++;
+          var xhr = new XMLHttpRequest();
+          var settled = false;
+          var t0 = +new Date();
+          function end(fastReject) {
+            if (settled) return;
+            settled = true;
+            active--;
+            if (fastReject) hits.push(pfx);
+            if (cur > maxSub && active === 0) {
+              if (!done) { done = true; cb(hits); }
+            } else {
+              pump();
+            }
+          }
+          xhr.open('GET', 'http://' + pfx + '.1:' + GW_PROBE_PORT + '/', true);
+          xhr.timeout = 240;
+          xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4 && xhr.status > 0) end(true);
+          };
+          xhr.onerror = function() {
+            end(((+new Date()) - t0) < 220);
+          };
+          xhr.ontimeout = function() { end(false); };
+          try { xhr.send(null); } catch (_) { end(false); }
+        })(cur++);
+      }
+      if (cur > maxSub && active === 0 && !done) {
+        done = true;
+        cb(hits);
+      }
+    }
+    setProgress(55, 'Определение активного шлюза точки доступа...');
+    pump();
+  }
+
+  function addUniquePrefixes(target, seen, items) {
+    for (var i = 0; i < items.length; i++) {
+      var p = items[i];
+      if (p && !seen[p]) {
+        seen[p] = true;
+        target.push(p);
+      }
+    }
+  }
+
+  function probeDirectList(hosts, doneCb) {
+    if (!hosts.length) { doneCb(); return; }
+    var left = hosts.length, advanced = false;
+    for (var i = 0; i < hosts.length; i++) {
+      (function(h) {
+        probeLiveHost(h, 420, function(ok, data) {
+          left--;
+          if (ok && !foundHost) {
+            finishFound(h, data);
+            if (!advanced) { advanced = true; doneCb(); }
+            return;
+          }
+          if (left <= 0 && !advanced) {
+            advanced = true;
+            doneCb();
+          }
+        });
+      })(hosts[i]);
+    }
+  }
+
+  function runDiscoveryRound() {
+    if (foundHost || scanRunning) return;
+    scanRunning = true;
+    roundNum++;
+    $('statusTxt').textContent = roundNum === 1
+      ? 'Поиск H2 Gauge в сети Wi-Fi...'
+      : 'Ожидание подключения H2 Gauge (попытка #' + roundNum + ')...';
+
+    var directHosts = [], seenHost = {};
+    function pushDirect(h) {
+      if (h && !seenHost[h]) { seenHost[h] = true; directHosts.push(h); }
+    }
+    if (Q.host) pushDirect(withPort(Q.host));
+    var hashHost = window.location.hash ? window.location.hash.slice(1) : '';
+    if (hashHost) pushDirect(withPort(hashHost));
+    var lastHost = lsGet('h2_last_host');
+    if (lastHost) {
+      if (!$('manualInp').value) $('manualInp').value = lastHost;
+      pushDirect(withPort(lastHost));
+    }
+    pushDirect(withPort('h2.local'));
+
+    setProgress(14, 'Проверка сохранённого адреса...');
+    probeDirectList(directHosts, function() {
+      if (foundHost) { scanRunning = false; return; }
+      detectWebRtcPrefixes(function(rtcPrefixes) {
+        var seen = {};
+        var priorityPrefixes = [];
+        if (Q.prefix) addUniquePrefixes(priorityPrefixes, seen, [Q.prefix]);
+        addUniquePrefixes(priorityPrefixes, seen, rtcPrefixes);
+        addUniquePrefixes(priorityPrefixes, seen, loadSavedSubnets());
+
+        scanPrefixList(priorityPrefixes, 0, function(hit) {
+          if (hit || foundHost) { scanRunning = false; return; }
+          detectActiveGateways(seen, function(gwPrefixes) {
+            scanPrefixList(gwPrefixes, 0, function(gwHit) {
+              scanRunning = false;
+              if (!gwHit && !foundHost) {
+                setProgress(12, 'Прибор пока не ответил — автоматический повтор через 2.5 с');
+                retryTimer = setTimeout(runDiscoveryRound, 2500);
+              }
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function handleManualOpen() {
+    var raw = ($('manualInp').value || '').replace(/\s+/g, '');
+    if (!raw) { runDiscoveryRound(); return; }
+    if (/^\d{1,3}$/.test(raw)) {
+      var oct = parseInt(raw, 10);
+      if (oct >= 0 && oct <= 255) {
+        $('statusTxt').textContent = 'Сканирование подсети 192.168.' + oct + '.0/24...';
+        scanPrefix('192.168.' + oct, function(hit) {
+          if (!hit && !foundHost) {
+            $('detailTxt').textContent = 'В подсети 192.168.' + oct + '.* прибор пока не ответил';
+          }
+        });
+        return;
+      }
+    }
+    var target = withPort(raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, ''));
+    $('statusTxt').textContent = 'Проверка ' + target + '...';
+    probeLiveHost(target, 900, function(ok, data) {
+      if (ok) {
+        finishFound(target, data);
+      } else {
+        rememberHost(target);
+        if (!NO_REDIRECT) window.location.href = 'http://' + target + '/';
+      }
+    });
+  }
+
+  $('openManualBtn').addEventListener('click', handleManualOpen);
+  $('manualInp').addEventListener('keydown', function(e) {
+    if (e.keyCode === 13) handleManualOpen();
+  });
+  $('rescanBtn').addEventListener('click', function() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    runDiscoveryRound();
+  });
+
+  runDiscoveryRound();
+})();
+</script>
+</body>
+</html>

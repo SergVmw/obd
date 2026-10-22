@@ -16,6 +16,7 @@
 
 #include "version.h"
 #include "app_config.h"
+#include "headunit_open_html.h"
 #include "headunit_web_ui_gz.h"
 #include "littlefs_storage.h"
 #include "sta_client_logic.h"
@@ -521,6 +522,7 @@ void testStrictReadOnlyHttpWireParserAndAttackSurface() {
                                    "HEAD",   "OPTIONS", "TRACE",  "CONNECT",
                                    "get"};
   const char* attackTargets[] = {"/",
+                                 "/h2-open.html",
                                  "/api/ro/live",
                                  "/api/ro/trips",
                                  "/api/ro/trips/days",
@@ -703,8 +705,10 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
   const StaLiveSnapshot cleanSnap = StaReadOnly::buildLiveSnapshot(
       1000, 1020, cfg, tel, eng, ctx, clk, peakBoost);
 
-  StaHttpResponse rootResp, liveResp, tripsResp, daysResp;
+  StaHttpResponse rootResp, openResp, liveResp, tripsResp, daysResp;
   StaReadOnly::dispatchRequest("GET", "/", "", cleanSnap, hist, rootResp);
+  StaReadOnly::dispatchRequest("GET", "/h2-open.html", "", cleanSnap, hist,
+                               openResp);
   StaReadOnly::dispatchRequest("GET", "/api/ro/live", "", cleanSnap, hist,
                                liveResp);
   StaReadOnly::dispatchRequest("GET", "/api/ro/trips", "offset=0&limit=10",
@@ -714,10 +718,22 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
 
   CHECK(rootResp.statusCode == 200);
   CHECK(rootResp.isGzipStatic);
+  CHECK(rootResp.contentDisposition == nullptr);
   CHECK(rootResp.staticBody != nullptr);
   CHECK(rootResp.staticLen == kHeadUnitWebUiGzLen);
   CHECK(std::memcmp(rootResp.staticBody, kHeadUnitWebUiGz,
                     kHeadUnitWebUiGzLen) == 0);
+
+  CHECK(openResp.statusCode == 200);
+  CHECK(!openResp.isGzipStatic);
+  CHECK(openResp.contentDisposition != nullptr);
+  CHECK(std::strcmp(openResp.contentDisposition,
+                    "Content-Disposition: attachment; filename=\"h2-open.html\"\r\n") == 0);
+  CHECK(openResp.staticBody != nullptr);
+  CHECK(openResp.staticLen == kHeadUnitOpenHtmlLen);
+  CHECK(std::memcmp(openResp.staticBody, kHeadUnitOpenHtml,
+                    kHeadUnitOpenHtmlLen) == 0);
+
   CHECK(StrictJsonParser(liveResp.jsonBody).parseDocument());
   CHECK(StrictJsonParser(tripsResp.jsonBody).parseDocument());
   CHECK(StrictJsonParser(daysResp.jsonBody).parseDocument());
@@ -731,6 +747,7 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
       std::fclose(f);
     };
     writeFileBytes("root.html.gz", rootResp.staticBody, rootResp.staticLen);
+    writeFileBytes("h2-open.html", openResp.staticBody, openResp.staticLen);
     writeFileBytes("live.json", liveResp.jsonBody.data(),
                    liveResp.jsonBody.size());
     writeFileBytes("trips.json", tripsResp.jsonBody.data(),

@@ -742,7 +742,7 @@ void loop() {
   dashboard.render(now, telemetry, telemetryEngine, configStore.data(),
                    historyCardPtr);
 
-  if (now - lastStaSnapshotAt >= 200UL) {
+  if (now - lastStaSnapshotAt >= 100UL) {
     lastStaSnapshotAt = now;
     staRuntime.publishSnapshot(StaReadOnly::buildLiveSnapshot(
         now, rtcNowSec, configStore.data(), telemetry, telemetryEngine,

@@ -36,6 +36,42 @@ check(
     f"headunit_web_ui_gz.h exceeds 24 KiB budget ({len(head_gz)} B)",
 )
 
+open_raw = (ROOT / "web" / "h2-open.html").read_bytes()
+open_progmem = extract_progmem_bytes(ROOT / "src" / "headunit_open_html.h", "kHeadUnitOpenHtml")
+open_release = (ROOT / "releases" / "h2-open.html").read_bytes()
+check(
+    open_progmem == open_raw and open_release == open_raw,
+    "src/headunit_open_html.h or releases/h2-open.html is out of sync with web/h2-open.html (run python3 tools/embed_headunit_web.py)",
+)
+check(
+    len(open_raw) <= 24576,
+    f"web/h2-open.html exceeds 24 KiB budget ({len(open_raw)} B)",
+)
+
+# Verify Android 7.0 (Chrome 51 / pure ES5) JS compatibility + CORS-simple XHR hygiene
+# across both head-unit HTML files.
+for html_rel in ("web/headunit.html", "web/h2-open.html"):
+    html_text = (ROOT / html_rel).read_text(encoding="utf-8")
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html_text, re.S)
+    check(len(scripts) >= 1, f"{html_rel} must contain an inline <script> block")
+    js_all = "\n".join(scripts)
+    es6_forbidden = [
+        (r"\bconst\b", "ES6 const"),
+        (r"\blet\b", "ES6 let"),
+        (r"=>", "ES6 arrow function"),
+        (r"`", "ES6 template literal"),
+        (r"\?\?", "ES2020 nullish coalescing ??"),
+        (r"\?\.", "ES2020 optional chaining ?."),
+        (r"\.padStart\s*\(", "ES2017 String.prototype.padStart (missing in Chrome 51)"),
+        (r"\bAbortController\b", "AbortController (missing in Chrome 51)"),
+        (r"\basync\b", "ES2017 async function"),
+        (r"\bawait\b", "ES2017 await expression"),
+        (r"querySelectorAll\([^)]*\)\.forEach", "NodeList.prototype.forEach (missing in Chrome 51)"),
+        (r"\.setRequestHeader\s*\(", "Custom XHR header (triggers CORS OPTIONS preflight -> 405)"),
+    ]
+    for pat, label in es6_forbidden:
+        check(re.search(pat, js_all) is None, f"{html_rel} contains {label}, breaking Android 7 Chrome 51")
+
 portal_raw = (ROOT / "web" / "index.html").read_bytes()
 portal_gz = extract_progmem_bytes(ROOT / "src" / "web_ui_gz.h", "INDEX_HTML_GZ")
 check(
@@ -92,6 +128,10 @@ check("client.setTimeout(" not in sta_ro_code and "SO_RCVTIMEO" in sta_ro_code a
       "STA client sockets must use sub-second setsockopt timeouts rather than multi-second WiFiClient::setTimeout")
 check("SO_LINGER" in sta_ro_code and "vTaskDelete(nullptr)" in sta_ro_code,
       "STA shutdown must reclaim client PCBs without TIME_WAIT via SO_LINGER and delete the Core 0 worker task")
+check("Access-Control-Allow-Origin: *\\r\\n" in sta_ro_code
+      and "static_cast<size_t>(hLen) < sizeof(headerBuf)" in sta_ro_code
+      and 'std::strcmp(path, "/h2-open.html") == 0' in sta_ro_code,
+      "STA HTTP server must emit Access-Control-Allow-Origin: *, bounds-check headerBuf, and serve GET /h2-open.html")
 
 dash_src = (ROOT / "src" / "dashboard_ui.cpp").read_text(encoding="utf-8")
 dash_code = strip_cpp_comments(dash_src)
@@ -100,6 +140,8 @@ check('"IP: %s"' in dash_code and "drawText(line, 120, 208," not in dash_code,
 
 main_src = (ROOT / "src" / "main.cpp").read_text(encoding="utf-8")
 main_code = strip_cpp_comments(main_src)
+check("now - lastStaSnapshotAt >= 100UL" in main_code,
+      "src/main.cpp must publish STA live snapshots at 10 Hz (100 ms) so 8/10 Hz head-unit refresh modes receive fresh samples")
 check("staRuntime.attach(tripHistory);" in main_code and "staRuntime.begin(" not in main_code,
       "setup() must only attach TripHistory without spawning STA tasks before bootService check")
 check(main_code.count("staRuntime.shutdownForService()") >= 2,

@@ -86,7 +86,11 @@ html, body {
   box-shadow: inset 0 -2px 0 var(--petrol);
 }
 .mode-btn {
-  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  padding: 0 11px;
   font-size: 13px;
   color: var(--petrol);
   border-color: rgba(90,202,238,.4);
@@ -335,6 +339,8 @@ body:not(.digits-only) .digits-alt { display: none !important; }
     </nav>
 
     <button id="modeToggle" class="mode-btn" type="button" title="Переключение вида приборов">Вид: Стрелки</button>
+    <button id="hzToggle" class="mode-btn" type="button" title="Частота обновления экрана магнитолы">4 Гц</button>
+    <a id="launcherBtn" class="mode-btn" href="/h2-open.html" download="h2-open.html" title="Скачать ярлык автопоиска для Android 7">Ярлык</a>
 
     <div class="meta">
       <span><i class="dot" id="linkDot"></i> <span id="linkLabel">h2.local · 4 Гц</span></span>
@@ -491,73 +497,83 @@ body:not(.digits-only) .digits-alt { display: none !important; }
 </div>
 
 <script>
-const DIALS = {};
-const A0 = -115, A1 = 115;
+var DIALS = {};
+var A0 = -115, A1 = 115;
 
 function polar(cx, cy, r, deg) {
-  const rad = (deg - 90) * Math.PI / 180;
+  var rad = (deg - 90) * Math.PI / 180;
   return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
 }
 function arcPath(r, d0, d1) {
-  const [x0, y0] = polar(100, 104, r, d0);
-  const [x1, y1] = polar(100, 104, r, d1);
-  const large = (d1 - d0) > 180 ? 1 : 0;
-  return `M${x0.toFixed(1)},${y0.toFixed(1)} A${r},${r} 0 ${large},1 ${x1.toFixed(1)},${y1.toFixed(1)}`;
+  var p0 = polar(100, 104, r, d0);
+  var p1 = polar(100, 104, r, d1);
+  var large = (d1 - d0) > 180 ? 1 : 0;
+  return 'M' + p0[0].toFixed(1) + ',' + p0[1].toFixed(1) +
+    ' A' + r + ',' + r + ' 0 ' + large + ',1 ' + p1[0].toFixed(1) + ',' + p1[1].toFixed(1);
 }
 function valToDeg(cfg, v) {
-  const cl = Math.max(cfg.min, Math.min(cfg.max, v));
+  var cl = Math.max(cfg.min, Math.min(cfg.max, v));
   return A0 + ((cl - cfg.min) / (cfg.max - cfg.min)) * (A1 - A0);
 }
 function createDial(id, cfg) {
-  let arcs = `<path d="${arcPath(82, A0, A1)}" fill="none" stroke="#1b2636" stroke-width="10" stroke-linecap="round"/>`;
-  cfg.zones.forEach(([z0, z1, col]) => {
-    arcs += `<path d="${arcPath(82, valToDeg(cfg, z0), valToDeg(cfg, z1))}" fill="none" stroke="${col}" stroke-width="10"/>`;
-  });
-  let ticks = '';
-  for (let i = 0; i <= cfg.steps; i++) {
-    const v = cfg.min + (cfg.max - cfg.min) * (i / cfg.steps);
-    const d = valToDeg(cfg, v);
-    const major = i % 2 === 0;
-    const [x0, y0] = polar(100, 104, major ? 66 : 70, d);
-    const [x1, y1] = polar(100, 104, 75, d);
-    ticks += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${major ? '#9fb0c7' : '#41536b'}" stroke-width="${major ? 1.8 : 1}"/>`;
+  var arcs = '<path d="' + arcPath(82, A0, A1) + '" fill="none" stroke="#1b2636" stroke-width="10" stroke-linecap="round"/>';
+  var i, z;
+  for (i = 0; i < cfg.zones.length; i++) {
+    z = cfg.zones[i];
+    arcs += '<path d="' + arcPath(82, valToDeg(cfg, z[0]), valToDeg(cfg, z[1])) + '" fill="none" stroke="' + z[2] + '" stroke-width="10"/>';
+  }
+  var ticks = '';
+  for (i = 0; i <= cfg.steps; i++) {
+    var v = cfg.min + (cfg.max - cfg.min) * (i / cfg.steps);
+    var d = valToDeg(cfg, v);
+    var major = i % 2 === 0;
+    var p0 = polar(100, 104, major ? 66 : 70, d);
+    var p1 = polar(100, 104, 75, d);
+    ticks += '<line x1="' + p0[0].toFixed(1) + '" y1="' + p0[1].toFixed(1) + '" x2="' + p1[0].toFixed(1) + '" y2="' + p1[1].toFixed(1) +
+      '" stroke="' + (major ? '#9fb0c7' : '#41536b') + '" stroke-width="' + (major ? 1.8 : 1) + '"/>';
     if (major) {
-      const [lx, ly] = polar(100, 104, 54, d);
-      const lbl = cfg.fmtTick ? cfg.fmtTick(v) : Math.round(v);
-      ticks += `<text x="${lx.toFixed(1)}" y="${(ly + 3.5).toFixed(1)}" text-anchor="middle" class="dial-scale">${lbl}</text>`;
+      var lp = polar(100, 104, 54, d);
+      var lbl = cfg.fmtTick ? cfg.fmtTick(v) : Math.round(v);
+      ticks += '<text x="' + lp[0].toFixed(1) + '" y="' + (lp[1] + 3.5).toFixed(1) + '" text-anchor="middle" class="dial-scale">' + lbl + '</text>';
     }
   }
-  const marker = cfg.marker !== undefined
-    ? `<g class="marker-grp" id="${id}-mk" style="transform:rotate(${valToDeg(cfg, cfg.marker).toFixed(1)}deg)">
-         <polygon points="100,15 95,25 105,25" fill="none" stroke="#ffbe5a" stroke-width="2"/>
-       </g>` : '';
-  document.getElementById(id).innerHTML = `
-    <svg viewBox="0 0 200 132" class="dial-svg">
-      ${arcs}${ticks}${marker}
-      <g class="needle-grp" id="${id}-nd" style="transform:rotate(${A0}deg)">
-        <polygon points="100,24 96.8,104 103.2,104" fill="#f6faf6"/>
-        <polygon points="100,24 98.4,56 101.6,56" fill="${cfg.tip || '#5af2ac'}"/>
-      </g>
-      <circle cx="100" cy="104" r="8.5" fill="#1b2636" stroke="#8b9bb2" stroke-width="2"/>
-      <text x="100" y="92" class="dial-val" id="${id}-txt">—</text>
-      <text x="100" y="125" class="dial-unit" id="${id}-unit">${cfg.unit}</text>
-    </svg>`;
+  var marker = cfg.marker !== undefined
+    ? '<g class="marker-grp" id="' + id + '-mk" style="-webkit-transform:rotate(' + valToDeg(cfg, cfg.marker).toFixed(1) + 'deg);transform:rotate(' + valToDeg(cfg, cfg.marker).toFixed(1) + 'deg)">' +
+      '<polygon points="100,15 95,25 105,25" fill="none" stroke="#ffbe5a" stroke-width="2"/></g>'
+    : '';
+  document.getElementById(id).innerHTML =
+    '<svg viewBox="0 0 200 132" class="dial-svg">' +
+      arcs + ticks + marker +
+      '<g class="needle-grp" id="' + id + '-nd" style="-webkit-transform:rotate(' + A0 + 'deg);transform:rotate(' + A0 + 'deg)">' +
+        '<polygon points="100,24 96.8,104 103.2,104" fill="#f6faf6"/>' +
+        '<polygon points="100,24 98.4,56 101.6,56" fill="' + (cfg.tip || '#5af2ac') + '"/>' +
+      '</g>' +
+      '<circle cx="100" cy="104" r="8.5" fill="#1b2636" stroke="#8b9bb2" stroke-width="2"/>' +
+      '<text x="100" y="92" class="dial-val" id="' + id + '-txt">—</text>' +
+      '<text x="100" y="125" class="dial-unit" id="' + id + '-unit">' + cfg.unit + '</text>' +
+    '</svg>';
   DIALS[id] = cfg;
 }
 function setDial(id, val, text, unitText) {
-  const cfg = DIALS[id];
-  const nd = document.getElementById(id + '-nd');
-  const tx = document.getElementById(id + '-txt');
-  const un = document.getElementById(id + '-unit');
-  if (nd) nd.style.transform = `rotate(${valToDeg(cfg, val === null || val === undefined ? cfg.min : val).toFixed(1)}deg)`;
+  var cfg = DIALS[id];
+  var nd = document.getElementById(id + '-nd');
+  var tx = document.getElementById(id + '-txt');
+  var un = document.getElementById(id + '-unit');
+  if (nd) {
+    var rot = 'rotate(' + valToDeg(cfg, val === null || val === undefined ? cfg.min : val).toFixed(1) + 'deg)';
+    nd.style.webkitTransform = rot;
+    nd.style.transform = rot;
+  }
   if (tx) tx.textContent = text;
   if (un && unitText) un.textContent = unitText;
 }
 function setDialMarker(id, val) {
-  const cfg = DIALS[id];
-  const mk = document.getElementById(id + '-mk');
-  if (mk && val !== null && val !== undefined && Number.isFinite(val)) {
-    mk.style.transform = `rotate(${valToDeg(cfg, val).toFixed(1)}deg)`;
+  var cfg = DIALS[id];
+  var mk = document.getElementById(id + '-mk');
+  if (mk && val !== null && val !== undefined && typeof val === 'number' && isFinite(val)) {
+    var rot = 'rotate(' + valToDeg(cfg, val).toFixed(1) + 'deg)';
+    mk.style.webkitTransform = rot;
+    mk.style.transform = rot;
   }
 }
 
@@ -567,12 +583,12 @@ createDial('dial-econ', {
 });
 createDial('dial-boost', {
   min: -1.0, max: 1.5, steps: 10, unit: 'БАР НАДДУВА', marker: 0.0,
-  fmtTick: v => (v > 0 ? '+' : '') + v.toFixed(1),
+  fmtTick: function(v) { return (v > 0 ? '+' : '') + v.toFixed(1); },
   zones: [[-1.0, 0, '#5acaee'], [0, 0.9, '#5af2ac'], [0.9, 1.15, '#ffbe5a'], [1.15, 1.5, '#ff5d6a']]
 });
 createDial('dial-rpm', {
   min: 0, max: 6000, steps: 6, unit: 'ОБ/МИН (×1000)',
-  fmtTick: v => (v / 1000).toFixed(0),
+  fmtTick: function(v) { return (v / 1000).toFixed(0); },
   zones: [[0, 4500, '#5af2ac'], [4500, 5400, '#ffbe5a'], [5400, 6000, '#ff5d6a']]
 });
 createDial('dial-coolant', {
@@ -581,42 +597,100 @@ createDial('dial-coolant', {
 });
 createDial('dial-volt', {
   min: 11.0, max: 15.5, steps: 6, unit: 'ВОЛЬТ',
-  fmtTick: v => v.toFixed(1),
+  fmtTick: function(v) { return v.toFixed(1); },
   zones: [[11.0, 12.2, '#ff5d6a'], [12.2, 13.4, '#ffbe5a'], [13.4, 14.7, '#5af2ac'], [14.7, 15.5, '#ff5d6a']]
 });
 createDial('dial-trim', {
   min: -25, max: 25, steps: 10, unit: 'STFT + LTFT %',
-  fmtTick: v => (v > 0 ? '+' : '') + Math.round(v),
+  fmtTick: function(v) { return (v > 0 ? '+' : '') + Math.round(v); },
   zones: [[-25, -15, '#ff5d6a'], [-15, -10, '#ffbe5a'], [-10, 10, '#5af2ac'], [10, 15, '#ffbe5a'], [15, 25, '#ff5d6a']]
 });
 
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmtClock = sec => {
-  const s = Math.max(0, Math.round(sec || 0));
+function $(id) { return document.getElementById(id); }
+function pad2(n) {
+  var v = Math.floor(Math.abs(n || 0));
+  return (v < 10 ? '0' : '') + v;
+}
+var ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function(c) {
+    return ESC_MAP[c] || c;
+  });
+}
+function fmtClock(sec) {
+  var s = Math.max(0, Math.round(sec || 0));
   if (s >= 3600) {
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
-    return h + ':' + String(m).padStart(2, '0') + ' ч';
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h + ':' + pad2(m) + ' ч';
   }
-  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-};
-const fmtDur = sec => {
-  const m = Math.round((sec || 0) / 60);
-  return m < 60 ? m + ' мин' : (Math.floor(m / 60) + ' ч ' + String(m % 60).padStart(2, '0') + ' м');
-};
-const fmtRuDate = iso => {
+  return Math.floor(s / 60) + ':' + pad2(s % 60);
+}
+function fmtDur(sec) {
+  var m = Math.round((sec || 0) / 60);
+  return m < 60 ? m + ' мин' : (Math.floor(m / 60) + ' ч ' + pad2(m % 60) + ' м');
+}
+function fmtRuDate(iso) {
   if (!iso || typeof iso !== 'string' || iso.length < 10) return 'Без даты';
   return iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.' + iso.slice(0, 4);
-};
-const signed = (v, d) => (v >= 0 ? '+' : '') + v.toFixed(d);
+}
+function signed(v, d) { return (v >= 0 ? '+' : '') + v.toFixed(d); }
 
-let lastHeadSeq = null;
-let openDetailSeq = null;
-let pollInFlight = false;
-let lastOkAt = 0;
+var HZ_STEPS = [1, 2, 4, 8, 10];
+var HZ_NEEDLE_MS = { 1: 450, 2: 340, 4: 210, 8: 110, 10: 82 };
+var pollHz = 4;
+var pollIntervalMs = 250;
+var pollTimer = null;
+var pollInFlight = false;
+var lastHeadSeq = null;
+var openDetailSeq = null;
+var lastOkAt = 0;
+var lastHostname = 'h2';
+
+var hzStyleEl = document.createElement('style');
+document.head.appendChild(hzStyleEl);
+
+function updateLinkLabel() {
+  $('linkLabel').textContent = lastHostname + '.local · ' + pollHz + ' Гц';
+}
+
+function applyPollHz(hz, persist) {
+  var valid = false;
+  for (var i = 0; i < HZ_STEPS.length; i++) {
+    if (HZ_STEPS[i] === hz) { valid = true; break; }
+  }
+  if (!valid) hz = 4;
+  pollHz = hz;
+  pollIntervalMs = Math.round(1000 / hz);
+  var ndMs = HZ_NEEDLE_MS[hz] || 210;
+  hzStyleEl.textContent = '.needle-grp{transition-duration:' + ndMs + 'ms;-webkit-transition-duration:' + ndMs + 'ms;}';
+  $('hzToggle').textContent = hz + ' Гц';
+  updateLinkLabel();
+  if (persist) {
+    try { localStorage.setItem('h2_poll_hz', String(hz)); } catch (_) {}
+  }
+}
+
+try {
+  var savedHz = parseInt(localStorage.getItem('h2_poll_hz'), 10);
+  if (savedHz) applyPollHz(savedHz, false);
+  else applyPollHz(4, false);
+} catch (_) {
+  applyPollHz(4, false);
+}
+
+$('hzToggle').addEventListener('click', function() {
+  var idx = 0;
+  for (var i = 0; i < HZ_STEPS.length; i++) {
+    if (HZ_STEPS[i] === pollHz) { idx = i; break; }
+  }
+  var nextHz = HZ_STEPS[(idx + 1) % HZ_STEPS.length];
+  applyPollHz(nextHz, true);
+  schedulePoll(0);
+});
 
 function applyViewMode(digits) {
-  document.body.classList.toggle('digits-only', digits);
+  if (digits) document.body.classList.add('digits-only');
+  else document.body.classList.remove('digits-only');
   $('modeToggle').textContent = digits ? 'Вид: Цифры' : 'Вид: Стрелки';
   try { localStorage.setItem('h2_view_mode', digits ? 'digits' : 'dials'); } catch (_) {}
 }
@@ -624,34 +698,43 @@ try {
   if (localStorage.getItem('h2_view_mode') === 'digits') applyViewMode(true);
 } catch (_) {}
 
-$('modeToggle').addEventListener('click', () => {
+$('modeToggle').addEventListener('click', function() {
   applyViewMode(!document.body.classList.contains('digits-only'));
 });
 
-document.querySelectorAll('.tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    btn.classList.add('active');
-    $('view-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'hist' || btn.dataset.tab === 'days') {
-      loadHistory();
-    }
-  });
-});
+(function bindTabs() {
+  var tabs = document.querySelectorAll('.tab');
+  for (var i = 0; i < tabs.length; i++) {
+    (function(btn) {
+      btn.addEventListener('click', function() {
+        var allTabs = document.querySelectorAll('.tab');
+        var allViews = document.querySelectorAll('.view');
+        var j;
+        for (j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
+        for (j = 0; j < allViews.length; j++) allViews[j].classList.remove('active');
+        btn.classList.add('active');
+        var tabName = btn.getAttribute('data-tab');
+        $('view-' + tabName).classList.add('active');
+        if (tabName === 'hist' || tabName === 'days') {
+          loadHistory();
+        }
+      });
+    })(tabs[i]);
+  }
+})();
 
 function renderLive(d) {
-  const host = (d.hostname || 'h2') + '.local · 4 Гц';
-  $('linkLabel').textContent = host;
+  lastHostname = d.hostname || 'h2';
+  updateLinkLabel();
 
   if (d.clock && d.clock.localTime) {
     $('topClock').textContent = d.clock.localTime;
   } else {
-    const now = new Date();
-    $('topClock').textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    var now = new Date();
+    $('topClock').textContent = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
   }
 
-  const fp = $('fuelPill');
+  var fp = $('fuelPill');
   if (!d.obdConnected || !d.rpmFresh) {
     fp.className = 'pill pill-idle';
     fp.textContent = d.obdConnected ? 'ДВС СТОП' : 'OBD ЖДЁТ';
@@ -666,22 +749,23 @@ function renderLive(d) {
     fp.textContent = 'БЕНЗИН';
   }
 
-  const dtc = d.dtc || {};
-  const mil = $('milPill');
-  const cardDtc = $('cardDtc');
+  var dtc = d.dtc || {};
+  var mil = $('milPill');
+  var cardDtc = $('cardDtc');
   if (dtc.milOn || (dtc.stored || 0) > 0) {
-    const code = dtc.firstCode || 'ENGINE';
+    var code = dtc.firstCode || 'ENGINE';
     mil.className = 'pill pill-fault';
     mil.textContent = 'CHECK ' + code;
     cardDtc.classList.add('accent-danger');
-    $('lvDtcMain').innerHTML = `<span class="c-danger">${esc(code)} · Check Engine</span>`;
-    $('lvDtcSub').innerHTML = `<span>MIL: <b class="c-danger">${dtc.milOn ? 'ВКЛ' : 'выкл'}</b></span><span>Сохр: <b>${dtc.stored || 0}</b> · Ожид: <b>${dtc.pending || 0}</b></span>`;
+    $('lvDtcMain').innerHTML = '<span class="c-danger">' + esc(code) + ' · Check Engine</span>';
+    $('lvDtcSub').innerHTML = '<span>MIL: <b class="c-danger">' + (dtc.milOn ? 'ВКЛ' : 'выкл') +
+      '</b></span><span>Сохр: <b>' + (dtc.stored || 0) + '</b> · Ожид: <b>' + (dtc.pending || 0) + '</b></span>';
   } else if ((dtc.pending || 0) > 0) {
     mil.className = 'pill pill-ok';
     mil.textContent = 'ДВС OK';
     cardDtc.classList.remove('accent-danger');
-    $('lvDtcMain').innerHTML = `<span class="c-warn">${esc(dtc.firstCode || 'Ожид.')} · Ожидаемая</span>`;
-    $('lvDtcSub').innerHTML = `<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>${dtc.pending}</b></span>`;
+    $('lvDtcMain').innerHTML = '<span class="c-warn">' + esc(dtc.firstCode || 'Ожид.') + ' · Ожидаемая</span>';
+    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>' + dtc.pending + '</b></span>';
   } else {
     mil.className = 'pill pill-ok';
     mil.textContent = 'ДВС OK';
@@ -690,9 +774,9 @@ function renderLive(d) {
     $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>0</b></span>';
   }
 
-  const c = d.cur || {};
+  var c = d.cur || {};
   if (d.fuelValid && d.consumption !== null && d.consumption !== undefined) {
-    const valTxt = d.consumption.toFixed(1);
+    var valTxt = d.consumption.toFixed(1);
     if (d.perHour) {
       setDial('dial-econ', d.consumption * 4.0, valTxt, 'Л / ЧАС (ХХ)');
       $('curInstDig').textContent = valTxt;
@@ -732,7 +816,7 @@ function renderLive(d) {
   $('curPetKm').textContent = (c.petrolDistanceKm || 0).toFixed(2) + ' км';
   $('curLpgKm').textContent = (c.lpgDistanceKm || 0).toFixed(2) + ' км';
   if (c.lpgSharePercent !== null && c.lpgSharePercent !== undefined) {
-    const lpgPct = Math.max(0, Math.min(100, c.lpgSharePercent));
+    var lpgPct = Math.max(0, Math.min(100, c.lpgSharePercent));
     $('curLpgShare').textContent = lpgPct.toFixed(1) + '% ГБО';
     $('barPet').style.width = (100 - lpgPct).toFixed(1) + '%';
     $('barLpg').style.width = lpgPct.toFixed(1) + '%';
@@ -758,21 +842,21 @@ function renderLive(d) {
     ? c.idleSharePercent.toFixed(1) + '%' : '—';
 
   if (d.boostBar !== null && d.boostBar !== undefined) {
-    const bt = signed(d.boostBar, 2);
+    var bt = signed(d.boostBar, 2);
     setDial('dial-boost', d.boostBar, bt);
     $('lvBoostDig').textContent = bt;
   } else {
     setDial('dial-boost', -1.0, '—');
     $('lvBoostDig').textContent = '—';
   }
-  const peak = d.peakBoostBar || 0;
+  var peak = d.peakBoostBar || 0;
   setDialMarker('dial-boost', peak);
   $('lvPeakBoost').textContent = '▲ ' + signed(peak, 2) + ' бар';
   $('lvMapTxt').textContent = d.mapKpa !== null && d.mapKpa !== undefined ? 'MAP ' + Math.round(d.mapKpa) + ' кПа' : 'MAP —';
   $('lvBaro').textContent = (d.baroKpa || 100).toFixed(1) + ' кПа';
 
   if (d.rpm !== null && d.rpm !== undefined) {
-    const r = Math.round(d.rpm);
+    var r = Math.round(d.rpm);
     setDial('dial-rpm', r, String(r));
     $('lvRpmDig').textContent = String(r);
   } else {
@@ -783,10 +867,10 @@ function renderLive(d) {
   $('lvEcu').textContent = d.ecuId || '—';
 
   if (d.coolantC !== null && d.coolantC !== undefined) {
-    const tc = Math.round(d.coolantC);
+    var tc = Math.round(d.coolantC);
     setDial('dial-coolant', tc, tc + '°');
     $('lvCoolantDig').textContent = String(tc);
-    const st = $('lvCoolantState');
+    var st = $('lvCoolantState');
     if (tc >= 108) { st.className = 'c-danger'; st.textContent = 'ПЕРЕГРЕВ'; }
     else if (tc >= 102) { st.className = 'c-warn'; st.textContent = 'ВНИМАНИЕ'; }
     else if (tc >= 75) { st.className = 'c-lpg'; st.textContent = 'НОРМА'; }
@@ -798,10 +882,10 @@ function renderLive(d) {
   }
 
   if (d.voltageV !== null && d.voltageV !== undefined) {
-    const vt = d.voltageV.toFixed(2);
+    var vt = d.voltageV.toFixed(2);
     setDial('dial-volt', d.voltageV, vt);
     $('lvVoltDig').textContent = vt;
-    const vs = $('lvVoltState');
+    var vs = $('lvVoltState');
     if (d.voltageV < 12.2 || d.voltageV > 14.8) { vs.className = 'c-danger'; vs.textContent = d.voltageV < 12.2 ? 'НИЗКОЕ' : 'ПЕРЕЗАРЯД'; }
     else if (d.voltageV < 13.4) { vs.className = 'c-warn'; vs.textContent = 'ОТ АКБ'; }
     else { vs.className = 'c-lpg'; vs.textContent = 'ЗАРЯД OK'; }
@@ -812,10 +896,10 @@ function renderLive(d) {
   }
 
   if (d.trimSumPct !== null && d.trimSumPct !== undefined) {
-    const tt = signed(d.trimSumPct, 1);
+    var tt = signed(d.trimSumPct, 1);
     setDial('dial-trim', d.trimSumPct, tt + '%');
     $('lvTrimDig').textContent = tt;
-    const ts = $('lvTrimState');
+    var ts = $('lvTrimState');
     ts.className = d.trimWarn ? 'c-warn' : 'c-lpg';
     ts.textContent = d.trimWarn ? 'ОТКЛОНЕНИЕ' : 'НОРМА';
   } else {
@@ -830,14 +914,14 @@ function renderLive(d) {
   $('lvAir').textContent = d.airflowGps !== null && d.airflowGps !== undefined ? d.airflowGps.toFixed(2) + ' г/с' : '—';
   $('lvLoad').textContent = d.loadPct !== null && d.loadPct !== undefined ? Math.round(d.loadPct) + '%' : '—';
 
-  const fm = $('lvFuelMain');
+  var fm = $('lvFuelMain');
   if (d.lpgEnabled && d.lpgActive) { fm.className = 'c-lpg'; fm.textContent = 'ГБО'; }
   else { fm.className = 'c-petrol'; fm.textContent = 'Бензин'; }
   $('lvFuelLoop').textContent = d.fuelLoop || '—';
   $('lvO2').textContent = d.o2V !== null && d.o2V !== undefined ? d.o2V.toFixed(2) + ' В' : '—';
   $('lvDfco').textContent = d.dfco ? 'активен' : 'нет';
 
-  const seq = d.history ? d.history.headSequence : null;
+  var seq = d.history ? d.history.headSequence : null;
   if (seq !== null && seq !== lastHeadSeq) {
     lastHeadSeq = seq;
     loadHistory();
@@ -845,117 +929,171 @@ function renderLive(d) {
 }
 
 function renderTrips(data) {
-  const list = (data && data.trips) || [];
-  $('tabHist').textContent = `Поездки (${data.total ?? list.length})`;
+  var list = (data && data.trips) || [];
+  var total = (data && data.total !== undefined && data.total !== null) ? data.total : list.length;
+  $('tabHist').textContent = 'Поездки (' + total + ')';
   if (!list.length) {
     $('tripsBody').innerHTML = '<div class="tbl-empty">Завершённых поездок в журнале пока нет</div>';
     return;
   }
-  $('tripsBody').innerHTML = list.map((t, idx) => {
-    const p = t.petrol || {}, g = t.lpg || {};
-    const dateStr = t.dateUnknown ? 'Без даты' : fmtRuDate(t.localDate);
-    const timeStr = t.dateUnknown ? 'до синхр.' : (t.localTime || '');
-    const isOpen = openDetailSeq !== null ? openDetailSeq === t.sequence : idx === 0;
-    return `
-      <div class="tbl-row" data-seq="${t.sequence}">
-        <div><b>#${t.sequence}</b></div>
-        <div><b>${esc(dateStr)}</b> <span style="color:var(--muted);font-size:12.5px">${esc(timeStr)}</span></div>
-        <div><b>${(t.distanceKm || 0).toFixed(2)} км</b></div>
-        <div>${fmtDur(t.wallDurationSec || t.engineSeconds)}</div>
-        <div><b class="c-lpg">${t.movingAverageL100 !== null ? t.movingAverageL100.toFixed(1) : '—'}</b></div>
-        <div><b>${t.averageL100 !== null ? t.averageL100.toFixed(1) : '—'}</b></div>
-        <div>${fmtDur(t.preMoveSeconds)} <span style="color:var(--muted)">(${(t.preMoveLiters || 0).toFixed(2)}л)</span></div>
-        <div>${fmtDur(t.inTripIdleSeconds)} <span style="color:var(--muted)">(${(t.inTripIdleLiters || 0).toFixed(2)}л)</span></div>
-        <div class="c-lpg"><b>${t.lpgSharePercent !== null ? t.lpgSharePercent.toFixed(0) + '%' : '—'}</b></div>
-        <div>${t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(0) : '—'} / <b>${t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : '—'}</b></div>
-      </div>
-      <div class="tbl-detail ${isOpen ? 'open' : ''}" id="det-${t.sequence}">
-        <div class="det-box">
-          <div class="lbl"><span class="c-petrol">Бензин (K = ${(t.petrolCorrection || 1).toFixed(2)})</span><span>${(p.distanceKm || 0).toFixed(2)} км</span></div>
-          <div>Всего: <b>${(p.liters || 0).toFixed(2)} л</b> · В движ: <b>${p.movingAverageL100 !== null && p.movingAverageL100 !== undefined ? p.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b></div>
-          <div style="color:var(--muted)">Прогрев: ${(p.preMoveLiters || 0).toFixed(2)} л · В пути стоя: ${(p.inTripIdleLiters || 0).toFixed(2)} л</div>
-        </div>
-        <div class="det-box">
-          <div class="lbl"><span class="c-lpg">ГБО (K = ${(t.lpgCorrection || 1).toFixed(2)})</span><span>${(g.distanceKm || 0).toFixed(2)} км</span></div>
-          <div>Всего: <b>${(g.liters || 0).toFixed(2)} л</b> <span style="color:var(--muted)">(сырой ${(g.rawLiters || 0).toFixed(2)} л)</span></div>
-          <div style="color:var(--muted)">В движ: <b class="c-lpg">${g.movingAverageL100 !== null && g.movingAverageL100 !== undefined ? g.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b> · Простой: ${(g.inTripIdleLiters || 0).toFixed(2)} л</div>
-        </div>
-        <div class="det-box">
-          <div class="lbl"><span>Сводка записи #${t.sequence}</span><span>НАРАБОТКА ${fmtDur(t.engineSeconds)}</span></div>
-          <div>Ср. скор. в движ: <b>${t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(1) + ' км/ч' : '—'}</b></div>
-          <div style="color:var(--muted)">Макс. скор.: <b>${t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : 'неизв.'}</b></div>
-        </div>
-      </div>`;
-  }).join('');
+  var html = '';
+  for (var idx = 0; idx < list.length; idx++) {
+    var t = list[idx];
+    var p = t.petrol || {}, g = t.lpg || {};
+    var dateStr = t.dateUnknown ? 'Без даты' : fmtRuDate(t.localDate);
+    var timeStr = t.dateUnknown ? 'до синхр.' : (t.localTime || '');
+    var isOpen = openDetailSeq !== null ? openDetailSeq === t.sequence : idx === 0;
+    html +=
+      '<div class="tbl-row" data-seq="' + t.sequence + '">' +
+        '<div><b>#' + t.sequence + '</b></div>' +
+        '<div><b>' + esc(dateStr) + '</b> <span style="color:var(--muted);font-size:12.5px">' + esc(timeStr) + '</span></div>' +
+        '<div><b>' + (t.distanceKm || 0).toFixed(2) + ' км</b></div>' +
+        '<div>' + fmtDur(t.wallDurationSec || t.engineSeconds) + '</div>' +
+        '<div><b class="c-lpg">' + (t.movingAverageL100 !== null ? t.movingAverageL100.toFixed(1) : '—') + '</b></div>' +
+        '<div><b>' + (t.averageL100 !== null ? t.averageL100.toFixed(1) : '—') + '</b></div>' +
+        '<div>' + fmtDur(t.preMoveSeconds) + ' <span style="color:var(--muted)">(' + (t.preMoveLiters || 0).toFixed(2) + 'л)</span></div>' +
+        '<div>' + fmtDur(t.inTripIdleSeconds) + ' <span style="color:var(--muted)">(' + (t.inTripIdleLiters || 0).toFixed(2) + 'л)</span></div>' +
+        '<div class="c-lpg"><b>' + (t.lpgSharePercent !== null ? t.lpgSharePercent.toFixed(0) + '%' : '—') + '</b></div>' +
+        '<div>' + (t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(0) : '—') + ' / <b>' +
+          (t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : '—') + '</b></div>' +
+      '</div>' +
+      '<div class="tbl-detail ' + (isOpen ? 'open' : '') + '" id="det-' + t.sequence + '">' +
+        '<div class="det-box">' +
+          '<div class="lbl"><span class="c-petrol">Бензин (K = ' + (t.petrolCorrection || 1).toFixed(2) + ')</span><span>' + (p.distanceKm || 0).toFixed(2) + ' км</span></div>' +
+          '<div>Всего: <b>' + (p.liters || 0).toFixed(2) + ' л</b> · В движ: <b>' +
+            (p.movingAverageL100 !== null && p.movingAverageL100 !== undefined ? p.movingAverageL100.toFixed(1) + ' л/100' : '—') + '</b></div>' +
+          '<div style="color:var(--muted)">Прогрев: ' + (p.preMoveLiters || 0).toFixed(2) + ' л · В пути стоя: ' + (p.inTripIdleLiters || 0).toFixed(2) + ' л</div>' +
+        '</div>' +
+        '<div class="det-box">' +
+          '<div class="lbl"><span class="c-lpg">ГБО (K = ' + (t.lpgCorrection || 1).toFixed(2) + ')</span><span>' + (g.distanceKm || 0).toFixed(2) + ' км</span></div>' +
+          '<div>Всего: <b>' + (g.liters || 0).toFixed(2) + ' л</b> <span style="color:var(--muted)">(сырой ' + (g.rawLiters || 0).toFixed(2) + ' л)</span></div>' +
+          '<div style="color:var(--muted)">В движ: <b class="c-lpg">' +
+            (g.movingAverageL100 !== null && g.movingAverageL100 !== undefined ? g.movingAverageL100.toFixed(1) + ' л/100' : '—') +
+            '</b> · Простой: ' + (g.inTripIdleLiters || 0).toFixed(2) + ' л</div>' +
+        '</div>' +
+        '<div class="det-box">' +
+          '<div class="lbl"><span>Сводка записи #' + t.sequence + '</span><span>НАРАБОТКА ' + fmtDur(t.engineSeconds) + '</span></div>' +
+          '<div>Ср. скор. в движ: <b>' + (t.avgMovingSpeedKph !== null ? t.avgMovingSpeedKph.toFixed(1) + ' км/ч' : '—') + '</b></div>' +
+          '<div style="color:var(--muted)">Макс. скор.: <b>' + (t.maxSpeedKnown && t.maxSpeedKph !== null ? Math.round(t.maxSpeedKph) + ' км/ч' : 'неизв.') + '</b></div>' +
+        '</div>' +
+      '</div>';
+  }
+  $('tripsBody').innerHTML = html;
 
-  $('tripsBody').querySelectorAll('.tbl-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const seq = Number(row.dataset.seq);
-      const det = $('det-' + seq);
-      if (!det) return;
-      const open = det.classList.toggle('open');
-      openDetailSeq = open ? seq : -1;
-    });
-  });
+  var rows = $('tripsBody').querySelectorAll('.tbl-row');
+  for (var rIdx = 0; rIdx < rows.length; rIdx++) {
+    (function(row) {
+      row.addEventListener('click', function() {
+        var seq = Number(row.getAttribute('data-seq'));
+        var det = $('det-' + seq);
+        if (!det) return;
+        var open = det.classList.toggle('open');
+        openDetailSeq = open ? seq : -1;
+      });
+    })(rows[rIdx]);
+  }
 }
 
 function renderDays(data) {
-  const list = (data && data.days) || [];
-  $('tabDays').textContent = `По дням (${data.totalDays ?? list.length})`;
+  var list = (data && data.days) || [];
+  var totalDays = (data && data.totalDays !== undefined && data.totalDays !== null) ? data.totalDays : list.length;
+  $('tabDays').textContent = 'По дням (' + totalDays + ')';
   if (!list.length) {
     $('daysBody').innerHTML = '<div class="tbl-empty">Суточных сводок пока нет</div>';
     return;
   }
-  $('daysBody').innerHTML = list.map(d => `
-    <div class="tbl-row">
-      <div><b>${esc(d.dateUnknown ? 'Без даты (архив)' : fmtRuDate(d.date))}</b></div>
-      <div><b>${d.tripCount}</b></div>
-      <div><b>${(d.distanceKm || 0).toFixed(2)} км</b></div>
-      <div><b class="c-petrol">${(d.petrolLiters || 0).toFixed(2)} Б</b> + <b class="c-lpg">${(d.lpgLiters || 0).toFixed(2)} Г</b></div>
-      <div><b class="c-lpg">${d.movingAverageL100 !== null ? d.movingAverageL100.toFixed(1) + ' л/100' : '—'}</b></div>
-      <div><b>${d.averageL100 !== null ? d.averageL100.toFixed(1) + ' л/100' : '—'}</b></div>
-      <div>${fmtDur(d.preMoveSeconds)}</div>
-      <div>${fmtDur(d.inTripIdleSeconds)}</div>
-      <div><b>${d.maxSpeedKnown && d.maxSpeedKph !== null ? Math.round(d.maxSpeedKph) + ' км/ч' : '—'}</b></div>
-    </div>`).join('');
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    html +=
+      '<div class="tbl-row">' +
+        '<div><b>' + esc(d.dateUnknown ? 'Без даты (архив)' : fmtRuDate(d.date)) + '</b></div>' +
+        '<div><b>' + d.tripCount + '</b></div>' +
+        '<div><b>' + (d.distanceKm || 0).toFixed(2) + ' км</b></div>' +
+        '<div><b class="c-petrol">' + (d.petrolLiters || 0).toFixed(2) + ' Б</b> + <b class="c-lpg">' + (d.lpgLiters || 0).toFixed(2) + ' Г</b></div>' +
+        '<div><b class="c-lpg">' + (d.movingAverageL100 !== null ? d.movingAverageL100.toFixed(1) + ' л/100' : '—') + '</b></div>' +
+        '<div><b>' + (d.averageL100 !== null ? d.averageL100.toFixed(1) : '—') + '</b></div>' +
+        '<div>' + fmtDur(d.preMoveSeconds) + '</div>' +
+        '<div>' + fmtDur(d.inTripIdleSeconds) + '</div>' +
+        '<div><b>' + (d.maxSpeedKnown && d.maxSpeedKph !== null ? Math.round(d.maxSpeedKph) + ' км/ч' : '—') + '</b></div>' +
+      '</div>';
+  }
+  $('daysBody').innerHTML = html;
 }
 
-async function loadHistory() {
-  try {
-    const [tr, dy] = await Promise.all([
-      fetch('/api/ro/trips?limit=50', { cache: 'no-store' }),
-      fetch('/api/ro/trips/days?limit=31', { cache: 'no-store' })
-    ]);
-    if (tr.ok) renderTrips(await tr.json());
-    if (dy.ok) renderDays(await dy.json());
-  } catch (_) {}
-}
-
-async function pollLive() {
-  if (pollInFlight) return;
-  pollInFlight = true;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 900);
-  try {
-    const res = await fetch('/api/ro/live', { cache: 'no-store', signal: ctrl.signal });
-    if (res.ok) {
-      const data = await res.json();
-      lastOkAt = Date.now();
-      $('linkDot').className = 'dot';
-      renderLive(data);
+function getJson(url, timeoutMs, onOk, onErr) {
+  var xhr = new XMLHttpRequest();
+  var done = false;
+  xhr.open('GET', url, true);
+  xhr.timeout = timeoutMs;
+  xhr.onreadystatechange = function() {
+    if (xhr.readyState !== 4 || done) return;
+    done = true;
+    if (xhr.status === 200 && xhr.responseText) {
+      try {
+        onOk(JSON.parse(xhr.responseText));
+        return;
+      } catch (_) {}
     }
-  } catch (_) {
-    const age = Date.now() - lastOkAt;
-    $('linkDot').className = age > 2500 ? 'dot offline' : 'dot stale';
-  } finally {
-    clearTimeout(timer);
-    pollInFlight = false;
+    if (onErr) onErr();
+  };
+  xhr.ontimeout = function() {
+    if (done) return;
+    done = true;
+    if (onErr) onErr();
+  };
+  xhr.onerror = function() {
+    if (done) return;
+    done = true;
+    if (onErr) onErr();
+  };
+  try { xhr.send(null); } catch (_) {
+    if (!done && onErr) { done = true; onErr(); }
   }
 }
 
+function loadHistory() {
+  getJson('/api/ro/trips?limit=50&_=' + (+new Date()), 2000, renderTrips, null);
+  getJson('/api/ro/trips/days?limit=31&_=' + (+new Date()), 2000, renderDays, null);
+}
+
+function schedulePoll(delayMs) {
+  if (pollTimer !== null) clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollLive, delayMs);
+}
+
+function pollLive() {
+  if (pollInFlight) return;
+  pollInFlight = true;
+  var startedAt = +new Date();
+  var reqTimeout = Math.max(450, Math.min(1400, pollIntervalMs + 650));
+  getJson('/api/ro/live?_=' + startedAt, reqTimeout,
+    function(data) {
+      lastOkAt = +new Date();
+      $('linkDot').className = 'dot';
+      renderLive(data);
+      pollInFlight = false;
+      var elapsed = (+new Date()) - startedAt;
+      schedulePoll(Math.max(20, pollIntervalMs - elapsed));
+    },
+    function() {
+      var age = (+new Date()) - lastOkAt;
+      $('linkDot').className = age > 2500 ? 'dot offline' : 'dot stale';
+      pollInFlight = false;
+      var elapsed = (+new Date()) - startedAt;
+      schedulePoll(Math.max(50, pollIntervalMs - elapsed));
+    }
+  );
+}
+
+try {
+  if (location.host && location.protocol === 'http:') {
+    localStorage.setItem('h2_last_host', location.host);
+  }
+} catch (_) {}
+
 pollLive();
 loadHistory();
-setInterval(pollLive, 250);
 </script>
 </body>
 </html>

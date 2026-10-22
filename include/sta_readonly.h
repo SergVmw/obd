@@ -85,6 +85,7 @@ struct StaHttpResponse {
   const char* statusText = "Not Found";
   const char* contentType = "application/json; charset=utf-8";
   bool isGzipStatic = false;
+  const char* contentDisposition = nullptr;
   const uint8_t* staticBody = nullptr;
   size_t staticLen = 0;
   bool includeAllowGet = false;
