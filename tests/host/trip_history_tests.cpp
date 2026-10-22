@@ -20,6 +20,7 @@
 #include "trip_clock.h"
 #include "trip_context.h"
 #include "trip_history.h"
+#include "trip_history_view.h"
 #include "trip_record.h"
 
 uint32_t hostMillis = 1000;
@@ -793,6 +794,153 @@ void testPowerLossBootHealBadBlockTombstoneAndAntiSimpsonsParadox() {
   CHECK(!unmountedHist.append(dummy));
 }
 
+// ===========================================================================
+// 10. ON-DEVICE 240x240 HISTORY VIEW CACHE, CAROUSEL, TIMEOUT & DAY EQUIVALENCE
+// ===========================================================================
+void testOnDeviceHistoryViewCacheCarouselTimeoutAndDayEquivalence() {
+  resetHostEnv();
+  hostFsMounted = true;
+  LittleFsStorage storage;
+  CHECK(storage.begin());
+  TripHistory hist;
+  CHECK(hist.begin(storage));
+
+  ConfigData cfg = ConfigStore::defaults();
+  cfg.utcOffsetMin = 180;  // UTC+3
+
+  TripHistoryView view;
+  view.syncIfNeeded(hist);
+  CHECK(!view.active());
+  CHECK(view.totalCards() == 0);
+
+  // Empty archive card: clean prompt, short press immediately closes back to Fuel page
+  view.open(1000);
+  CHECK(view.active());
+  TripHistoryCardText emptyCard = view.buildCard(cfg, 1792663200UL);
+  CHECK(emptyCard.empty);
+  CHECK(std::strcmp(emptyCard.title, "ИСТОРИЯ") == 0);
+  CHECK(std::strcmp(emptyCard.subtitle, "НЕТ ЗАКРЫТЫХ ПОЕЗДОК") == 0);
+  CHECK(std::strcmp(emptyCard.footer, "КНОПКА - ВЫХОД") == 0);
+  view.stepNext(1200);
+  CHECK(!view.active());
+
+  // Append 22 closed trips across multiple days + 1 undated battery-pull trip (#23)
+  // Day 1..18: 2026-10-20 ("2026-10-20" in UTC+3 = 1792483200)
+  for (int i = 1; i <= 18; ++i) {
+    TripRecord r{};
+    r.trip.totalDistanceKm = 10.0 + i;
+    r.trip.lpgDistanceKm = 10.0 + i;
+    r.trip.rawLpgLiters = 1.0 + 0.05 * i;
+    r.trip.lpgSeconds = 900;
+    r.startRtcSec = static_cast<uint32_t>(i * 1000);
+    r.endRtcSec = static_cast<uint32_t>(i * 1000 + 900);
+    r.startEpochSec = 1792483200UL + static_cast<uint32_t>(i * 600);
+    r.petrolCorrection = 1.0f;
+    r.lpgCorrection = 1.2f;
+    r.utcOffsetMin = 180;
+    CHECK(hist.append(r));
+  }
+
+  // 4 dated trips on 2026-10-21 (1792569600 UTC -> 2026-10-21 03:00+03:00)
+  for (int i = 1; i <= 4; ++i) {
+    TripRecord r{};
+    r.trip.totalDistanceKm = 25.0;  // 4 * 25.0 = 100.0 km total
+    r.trip.petrolDistanceKm = 5.0;
+    r.trip.lpgDistanceKm = 20.0;
+    r.trip.rawPetrolLiters = 0.50;  // 4 * 0.50 = 2.00 L petrol
+    r.trip.rawLpgLiters = 1.50;     // 4 * 1.50 * 1.0 = 6.00 L LPG -> 8.00 L total = 8.0 L/100
+    r.trip.petrolSeconds = 300;
+    r.trip.lpgSeconds = 1500;
+    r.startRtcSec = 50000U + static_cast<uint32_t>(i * 2000);
+    r.endRtcSec = 50000U + static_cast<uint32_t>(i * 2000 + 2760);  // 46 min
+    r.startEpochSec = 1792569600UL + static_cast<uint32_t>(i * 3600);
+    r.petrolCorrection = 1.0f;
+    r.lpgCorrection = 1.0f;
+    r.utcOffsetMin = 180;
+    CHECK(hist.append(r));
+  }
+
+  // Plus 1 newest undated trip (#23) after battery disconnect: must NOT pollute
+  // the 2026-10-21 Day summary, AND must still show honestly as Trip #1 of 16!
+  TripRecord undated{};
+  undated.flags = TripRecordFlags::kDateUnknown;
+  undated.trip.totalDistanceKm = 12.4;
+  undated.trip.lpgDistanceKm = 12.4;
+  undated.trip.rawLpgLiters = 1.24;
+  undated.trip.lpgSeconds = 1200;
+  undated.startRtcSec = 80000;
+  undated.endRtcSec = 81200;  // 20 min
+  undated.startEpochSec = 0;
+  undated.petrolCorrection = 1.0f;
+  undated.lpgCorrection = 1.0f;
+  undated.utcOffsetMin = 180;
+  CHECK(hist.append(undated));
+
+  // Cross-check: readRecentAndLatestDay matches full readDays(1) bit-for-bit!
+  TripHistoryDaysResult fullDays{};
+  CHECK(hist.readDays(1, fullDays));
+  CHECK(fullDays.days.size() == 1);
+
+  view.syncIfNeeded(hist);
+  CHECK(view.hasLatestDay());
+  CHECK(view.recentCount() == TripHistoryView::kMaxRecentTrips);  // 16
+  CHECK(view.totalCards() == 17);  // 1 Day card + 16 recent Trip cards
+  CHECK(std::strcmp(view.latestDay().date, fullDays.days[0].date) == 0);
+  CHECK(view.latestDay().tripCount == fullDays.days[0].tripCount);
+  CHECK(near(view.latestDay().distanceKm, fullDays.days[0].distanceKm, 1e-6));
+  CHECK(near(view.latestDay().averageL100, fullDays.days[0].averageL100, 1e-6));
+  CHECK(near(view.latestDay().petrolLiters, fullDays.days[0].petrolLiters, 1e-6));
+  CHECK(near(view.latestDay().lpgLiters, fullDays.days[0].lpgLiters, 1e-6));
+
+  // Open on same local date (2026-10-21) -> says "СЕГОДНЯ 21.10 | 4 П."
+  view.open(5000);
+  TripHistoryCardText dayToday = view.buildCard(cfg, 1792580000UL);
+  CHECK(!dayToday.empty && dayToday.isDaySummary);
+  CHECK(std::strcmp(dayToday.subtitle, "СЕГОДНЯ 21.10 | 4 П.") == 0);
+  CHECK(std::strcmp(dayToday.centerValue, "100.0") == 0);
+  CHECK(std::strcmp(dayToday.centerUnit, "КМ | 8.0 Л/100") == 0);
+  CHECK(std::strcmp(dayToday.leftValue, "2.00 л") == 0);
+  CHECK(std::strcmp(dayToday.rightValue, "6.00 л") == 0);
+  CHECK(std::strcmp(dayToday.footer, "СУТКИ") == 0);
+
+  // Open next day (2026-10-22) with zero trips on 22.10 yet -> MUST NOT lie "СЕГОДНЯ",
+  // says "СУТКИ 21.10 | 4 П."!
+  TripHistoryCardText dayYesterday = view.buildCard(cfg, 1792666400UL);
+  CHECK(std::strcmp(dayYesterday.subtitle, "СУТКИ 21.10 | 4 П.") == 0);
+
+  // Step 1 -> newest trip (#23, undated)
+  view.stepNext(6000);
+  TripHistoryCardText t1 = view.buildCard(cfg, 1792666400UL);
+  CHECK(!t1.isDaySummary);
+  CHECK(std::strcmp(t1.subtitle, "#23 | БЕЗ ДАТЫ | 20 М") == 0);
+  CHECK(std::strcmp(t1.footer, "1 ИЗ 16") == 0);
+
+  // Step 2 -> trip #22 (dated 21.10, 46 min)
+  view.stepNext(7000);
+  TripHistoryCardText t2 = view.buildCard(cfg, 1792666400UL);
+  CHECK(std::strcmp(t2.subtitle, "#22 | 21.10 | 46 М") == 0);
+  CHECK(std::strcmp(t2.footer, "2 ИЗ 16") == 0);
+
+  // Step all remaining 15 clicks wraps back around to Day card (cursor == 0)
+  for (int s = 0; s < 15; ++s) view.stepNext(8000 + static_cast<uint32_t>(s * 100));
+  CHECK(view.cursor() == 0);
+
+  // Touching extends 15 s idle timeout; 15000 ms silence auto-closes cleanly
+  CHECK(!view.tick(20000));
+  view.touch(20000);
+  CHECK(!view.tick(34999));
+  CHECK(view.active());
+  CHECK(view.tick(35000));
+  CHECK(!view.active());
+
+  // Clearing archive automatically updates view via generation counter without stale cards
+  view.open(40000);
+  CHECK(hist.clear());
+  view.syncIfNeeded(hist);
+  CHECK(view.totalCards() == 0);
+  CHECK(view.buildCard(cfg, 1792666400UL).empty);
+}
+
 }  // namespace
 
 bool LittleFsStorage::begin() {
@@ -821,6 +969,8 @@ int main() {
            testExhaustive1760SingleBitFlipMutationsRejected);
   runGroup("bad-block tombstone, brownout boot heal, mid-ring corrupt slot and weighted days",
            testPowerLossBootHealBadBlockTombstoneAndAntiSimpsonsParadox);
+  runGroup("on-device 240x240 history cache, carousel, 15s auto-exit and day equivalence",
+           testOnDeviceHistoryViewCacheCarouselTimeoutAndDayEquivalence);
 
   std::printf(
       "\nAll %d ASan/UBSan direct, reverse/mutation and cross-layer C++ test groups passed.\n",

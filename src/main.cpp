@@ -27,6 +27,7 @@
 #include "trip_clock.h"
 #include "trip_context.h"
 #include "trip_history.h"
+#include "trip_history_view.h"
 #include "version.h"
 
 namespace {
@@ -60,6 +61,7 @@ TripClock tripClock;
 TripContextStore tripContext;
 TripBoundary tripBoundary;
 TripHistory tripHistory;
+TripHistoryView historyView;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
                             dtcHistoryPersistence, assetStore, littleFsStorage,
@@ -264,6 +266,7 @@ void captureDiagnosticTrace(uint32_t now) {
 
 void enterServiceMode() {
   if (serviceMode) return;
+  historyView.close();
   serviceMode = true;
   // A fresh session starts with no half-made rollback decision behind it.
   rollbackSelector = false;
@@ -391,6 +394,7 @@ void setup() {
       TripBoundaryAction::None) {
     closeOpenTripToHistory(millis(), bootRtcSec);
   }
+  historyView.syncIfNeeded(tripHistory);
   lpgInput.begin();
 
   const bool bootService = OneButton::heldAtBoot(3000);
@@ -431,6 +435,10 @@ void loop() {
   const ButtonEvent event = button.takeEvent();
   if (event == ButtonEvent::QuadPress &&
       configStore.data().brightness.mode == BrightnessMode::Manual) {
+    if (historyView.active()) {
+      historyView.touch(now);
+      dashboard.touchInteraction(now);
+    }
     ConfigData& c = configStore.data();
     const ConfigData previous = c;
     c.brightness.manualNight = !previous.brightness.manualNight;
@@ -595,9 +603,24 @@ void loop() {
     enterLowVoltageSleep();
   }
 
-  dashboard.render(now, telemetry, telemetryEngine, configStore.data());
+  historyView.syncIfNeeded(tripHistory);
+  if (historyView.tick(now)) {
+    dashboard.touchInteraction(now);
+  }
 
-  if (event == ButtonEvent::ShortPress) {
+  if (historyView.active()) {
+    if (event == ButtonEvent::ShortPress) {
+      historyView.stepNext(now);
+      dashboard.touchInteraction(now);
+    } else if (event == ButtonEvent::LongPress) {
+      historyView.close();
+      dashboard.touchInteraction(now);
+    } else if (event == ButtonEvent::ServiceHold) {
+      const bool moving = telemetry.rawSpeedKph.valid(now) &&
+                          telemetry.rawSpeedKph.value > 3.0f;
+      if (!moving) enterServiceMode();
+    }
+  } else if (event == ButtonEvent::ShortPress) {
     dashboard.nextPage(configStore.data());
   } else if (event == ButtonEvent::LongPress) {
     const bool moving = telemetry.rawSpeedKph.valid(now) &&
@@ -606,17 +629,8 @@ void loop() {
       if (dashboard.page() == 0) {
         dashboard.resetPeak();
       } else if (dashboard.page() == 1) {
-        telemetryEngine.resetTrip();
-        tripBoundary.reset();
-        if (!tripContext.resetForNewTrip(now, rtcNowSec,
-                                         tripClock.nowEpochSec(rtcNowSec))) {
-          ESP_LOGE(kTag, "Trip-reset context save failed");
-        }
-        const bool legacyResetOk = tripStore.save(trip);
-        if (!legacyResetOk ||
-            !persistence.checkpoint(trip, petrolCalibration, true, true)) {
-          ESP_LOGE(kTag, "Trip-reset runtime checkpoint failed");
-        }
+        historyView.open(now);
+        dashboard.touchInteraction(now);
       }
     }
   } else if (event == ButtonEvent::ServiceHold) {
@@ -624,6 +638,16 @@ void loop() {
                         telemetry.rawSpeedKph.value > 3.0f;
     if (!moving) enterServiceMode();
   }
+
+  TripHistoryCardText activeHistoryCard{};
+  const TripHistoryCardText* historyCardPtr = nullptr;
+  if (historyView.active()) {
+    activeHistoryCard = historyView.buildCard(
+        configStore.data(), tripClock.nowEpochSec(rtcNowSec));
+    historyCardPtr = &activeHistoryCard;
+  }
+  dashboard.render(now, telemetry, telemetryEngine, configStore.data(),
+                   historyCardPtr);
 
   persistence.periodic(now, trip, petrolCalibration,
                        configStore.data().saveTrip);

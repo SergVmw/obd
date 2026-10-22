@@ -236,6 +236,7 @@ bool TripHistory::begin(LittleFsStorage& storage) {
     badSlotCount_ = 0;
     healthy_ = saveHead(0, 0);
     ready_ = true;
+    ++generation_;
     return healthy_;
   }
 
@@ -268,6 +269,7 @@ bool TripHistory::begin(LittleFsStorage& storage) {
 
   ready_ = true;
   healthy_ = true;
+  ++generation_;
   return true;
 }
 
@@ -293,6 +295,7 @@ bool TripHistory::append(TripRecord& record) {
     headSequence_ = nextSeq;
     ++writeCount_;
     healthy_ = saveHead(headSequence_, badSlotCount_);
+    ++generation_;
     return healthy_;
   }
 
@@ -312,6 +315,7 @@ bool TripHistory::append(TripRecord& record) {
   ++failureCount_;
   headSequence_ = nextSeq;
   saveHead(headSequence_, badSlotCount_);
+  ++generation_;
   healthy_ = false;
   return false;
 }
@@ -435,6 +439,77 @@ bool TripHistory::readDays(size_t limit, TripHistoryDaysResult& out) const {
   return true;
 }
 
+bool TripHistory::readRecentAndLatestDay(size_t maxRecent,
+                                         TripRecord* outRecent,
+                                         size_t& outRecentCount,
+                                         bool& outHasDay,
+                                         TripDaySummary& outDay) const {
+  outRecentCount = 0;
+  outHasDay = false;
+  outDay = TripDaySummary{};
+  if (!ready_ || !storage_ || !storage_->mounted()) return false;
+  if (headSequence_ == 0U) return true;
+
+  fs::File file = LittleFS.open(kPath, "rb");
+  if (!file) return false;
+
+  uint8_t raw[kRecordBytes];
+  size_t olderDatedSeen = 0;
+  constexpr size_t kLookbehindDatedLimit = 32;
+
+  for (size_t step = 0; step < kCapacity && step < headSequence_; ++step) {
+    const uint32_t expectedSeq = headSequence_ - static_cast<uint32_t>(step);
+    const size_t slot = static_cast<size_t>(expectedSeq % kCapacity);
+    if (!readSlotFromOpenFile(file, slot, raw)) break;
+
+    TripRecord parsed{};
+    if (!TripRecordCodec::decode(raw, sizeof(raw), parsed) ||
+        parsed.sequence != expectedSeq ||
+        (parsed.flags & TripRecordFlags::kBadSlot) != 0U) {
+      continue;
+    }
+
+    if (outRecent && outRecentCount < maxRecent) {
+      outRecent[outRecentCount] = parsed;
+      ++outRecentCount;
+    }
+
+    const TripComputedMetrics m = TripRecordCodec::computeMetrics(parsed);
+    if (!m.dateUnknown) {
+      if (!outHasDay) {
+        outHasDay = true;
+        outDay = TripDaySummary{};
+        std::memcpy(outDay.date, m.localDate, sizeof(outDay.date));
+        addMetricsToDay(outDay, m);
+        olderDatedSeen = 0;
+      } else {
+        const int cmp = std::strcmp(m.localDate, outDay.date);
+        if (cmp == 0) {
+          addMetricsToDay(outDay, m);
+          olderDatedSeen = 0;
+        } else if (cmp > 0) {
+          outDay = TripDaySummary{};
+          std::memcpy(outDay.date, m.localDate, sizeof(outDay.date));
+          addMetricsToDay(outDay, m);
+          olderDatedSeen = 0;
+        } else {
+          ++olderDatedSeen;
+        }
+      }
+    }
+
+    if (outRecentCount >= maxRecent && outHasDay &&
+        olderDatedSeen >= kLookbehindDatedLimit) {
+      break;
+    }
+    if ((step & 63U) == 63U) yield();
+  }
+
+  file.close();
+  if (outHasDay) finalizeDaySummary(outDay);
+  return true;
+}
+
 bool TripHistory::clear() {
   if (!storage_ || !storage_->mounted()) return false;
   if (LittleFS.exists(kPath) && !LittleFS.remove(kPath)) {
@@ -448,5 +523,6 @@ bool TripHistory::clear() {
   badSlotCount_ = 0;
   healthy_ = saveHead(0, 0);
   ready_ = true;
+  ++generation_;
   return healthy_;
 }

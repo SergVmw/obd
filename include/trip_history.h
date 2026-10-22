@@ -88,6 +88,9 @@ class TripHistory {
   bool append(TripRecord& record);
   bool readPage(size_t offset, size_t limit, TripHistoryPage& out) const;
   bool readDays(size_t limit, TripHistoryDaysResult& out) const;
+  bool readRecentAndLatestDay(size_t maxRecent, TripRecord* outRecent,
+                              size_t& outRecentCount, bool& outHasDay,
+                              TripDaySummary& outDay) const;
   bool clear();
   bool factoryReset() { return clear(); }
 
@@ -97,6 +100,7 @@ class TripHistory {
   uint32_t badSlotCount() const { return badSlotCount_; }
   uint32_t writeCount() const { return writeCount_; }
   uint32_t failureCount() const { return failureCount_; }
+  uint32_t generation() const { return generation_; }
 
   static void encodeHead(uint32_t headSequence, uint32_t badSlotCount,
                          uint8_t out[kHeadBytes]);
@@ -118,4 +122,5 @@ class TripHistory {
   uint32_t badSlotCount_ = 0;
   uint32_t writeCount_ = 0;
   uint32_t failureCount_ = 0;
+  uint32_t generation_ = 1;
 };

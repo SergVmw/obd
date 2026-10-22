@@ -453,12 +453,13 @@ void DashboardUi::prepareForSleep() {
 
 void DashboardUi::render(uint32_t now, const TelemetryData& data,
                          const TelemetryEngine& engine,
-                         const ConfigData& config) {
+                         const ConfigData& config,
+                         const TripHistoryCardText* historyCard) {
   if (!framebufferReady_ || now - lastRenderAt_ < 100) return;
   lastRenderAt_ = now;
   const uint32_t renderStartedUs = micros();
 
-  if (page_ != 0 && config.autoReturnSec > 0 &&
+  if (historyCard == nullptr && page_ != 0 && config.autoReturnSec > 0 &&
       now - lastInteractionAt_ > config.autoReturnSec * 1000UL) {
     page_ = 0;
   }
@@ -466,26 +467,30 @@ void DashboardUi::render(uint32_t now, const TelemetryData& data,
   const uint32_t restoreStartedUs = micros();
   restoreBackground();
   restoreMicrosTotal_ += micros() - restoreStartedUs;
-  // The diagnostics screen is last. It carries the VIN and the code counts,
-  // which are read once and then only looked up, while the trims page is part
-  // of a running drive: the cycle should reach what is watched before what is
-  // filed.
-  switch (page_) {
-    case 1:
-      drawFuel(data, engine, config, now);
-      break;
-    case 2:
-      drawTemperatures(data, config, now);
-      break;
-    case 3:
-      drawLpg(data, engine, config, now);
-      break;
-    case 4:
-      drawDiagnostics(data, config, now);
-      break;
-    default:
-      drawMain(data, engine, config, now);
-      break;
+  if (historyCard != nullptr) {
+    drawTripHistory(*historyCard, config);
+  } else {
+    // The diagnostics screen is last. It carries the VIN and the code counts,
+    // which are read once and then only looked up, while the trims page is part
+    // of a running drive: the cycle should reach what is watched before what is
+    // filed.
+    switch (page_) {
+      case 1:
+        drawFuel(data, engine, config, now);
+        break;
+      case 2:
+        drawTemperatures(data, config, now);
+        break;
+      case 3:
+        drawLpg(data, engine, config, now);
+        break;
+      case 4:
+        drawDiagnostics(data, config, now);
+        break;
+      default:
+        drawMain(data, engine, config, now);
+        break;
+    }
   }
   sprite_.pushSprite(0, 0);
 
@@ -1260,6 +1265,41 @@ void DashboardUi::drawDiagnostics(const TelemetryData& data,
   drawText(line, 31, 210, ML_DATUM,
            data.vin[0] != '\0' ? config.colorText : kMuted, FontRole::Small,
            labelFont(config));
+}
+
+void DashboardUi::drawTripHistory(const TripHistoryCardText& card,
+                                  const ConfigData& config) {
+  sprite_.drawCircle(120, 120, 114, kTrack);
+  sprite_.drawCircle(120, 120, 108, kPanel);
+
+  drawText(card.title, 120, 28, MC_DATUM, kCyan, FontRole::Medium,
+           labelFont(config, true));
+  drawText(card.subtitle, 120, 56, MC_DATUM,
+           card.isDaySummary ? config.colorBoost : kMuted, FontRole::Small,
+           labelFont(config));
+
+  drawText(card.centerValue, 120, 100, MC_DATUM, config.colorText,
+           FontRole::Large, FSSB24);
+  drawText(card.centerUnit, 120, 131, MC_DATUM, kMuted, FontRole::Small,
+           labelFont(config, true));
+
+  sprite_.drawFastHLine(52, 148, 136, kTrack);
+
+  drawValueCell(68, 169, card.leftValue, card.leftLabel, config,
+                config.colorWarning);
+  drawValueCell(172, 169, card.rightValue, card.rightLabel, config,
+                config.colorBoost);
+
+  const int16_t footerWidth =
+      drawText(card.footer, 120, 211, MC_DATUM, kMuted, FontRole::Small,
+               labelFont(config));
+  if (!card.empty) {
+    const uint16_t dotColor =
+        card.isDaySummary ? config.colorBoost : kMuted;
+    const int16_t halfSpan = footerWidth / 2 + 10;
+    sprite_.fillCircle(120 - halfSpan, 211, 3, dotColor);
+    sprite_.fillCircle(120 + halfSpan, 211, 3, dotColor);
+  }
 }
 
 void DashboardUi::showService(const String& ssid, const String& ip,

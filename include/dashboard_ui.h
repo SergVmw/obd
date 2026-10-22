@@ -4,6 +4,7 @@
 #include <TFT_eSPI.h>
 #include "app_config.h"
 #include "telemetry.h"
+#include "trip_history_view.h"
 
 class AssetStore;
 
@@ -16,8 +17,10 @@ class DashboardUi {
   void begin(const ConfigData& config, bool normalMode,
              float initialBrightnessPercent, AssetStore* assets = nullptr);
   void render(uint32_t now, const TelemetryData& data,
-              const TelemetryEngine& engine, const ConfigData& config);
+              const TelemetryEngine& engine, const ConfigData& config,
+              const TripHistoryCardText* historyCard = nullptr);
   void nextPage(const ConfigData& config);
+  void touchInteraction(uint32_t now) { lastInteractionAt_ = now; }
   // Page order: 0 main, 1 fuel, 2 temperatures, 3 OBD diagnostics,
   // 4 LPG trims. The count lives here so the page switch, the wrap in
   // nextPage and the start-page setting cannot drift apart.
@@ -54,6 +57,8 @@ class DashboardUi {
                         uint32_t now);
   void drawDiagnostics(const TelemetryData& data, const ConfigData& config,
                        uint32_t now);
+  void drawTripHistory(const TripHistoryCardText& card,
+                       const ConfigData& config);
   void drawStartupLogo();
   void drawCarbonBackground(TFT_eSprite& target);
   void restoreBackground();

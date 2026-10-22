@@ -40,6 +40,7 @@ def main() -> int:
             os.path.join(ROOT, "src", "trip_clock.cpp"),
             os.path.join(ROOT, "src", "trip_context.cpp"),
             os.path.join(ROOT, "src", "trip_history.cpp"),
+            os.path.join(ROOT, "src", "trip_history_view.cpp"),
             os.path.join(ROOT, "src", "trip_record.cpp"),
             "-o",
             binary,

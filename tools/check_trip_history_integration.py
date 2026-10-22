@@ -97,9 +97,65 @@ def main() -> int:
         "src/diagnostic_web_ui_gz.h is out of sync with web/index.html"
     )
 
+    # 8. On-device 240x240 display view: VLW font codepoint coverage & circular chord geometry
+    view_cpp = (ROOT / "src" / "trip_history_view.cpp").read_text(encoding="utf-8")
+    ui_cpp = (ROOT / "src" / "dashboard_ui.cpp").read_text(encoding="utf-8")
+    font_h = (ROOT / "include" / "ui_font_golos_smooth.h").read_text(encoding="utf-8")
+    assert "historyView.open(now)" in main_cpp
+    assert "historyView.stepNext(now)" in main_cpp
+    assert "historyView.close()" in main_cpp
+    assert "drawTripHistory(*historyCard, config)" in ui_cpp
+
+    import math, struct
+
+    def parse_vlw_advances(array_name: str) -> dict[int, int]:
+        m = re.search(rf"{array_name}\[\].*?\{{(.*?)\}};", font_h, re.S)
+        assert m, f"Missing font array {array_name}"
+        raw = bytes(int(v, 16) for v in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
+        count = struct.unpack_from(">i", raw, 0)[0]
+        return {
+            struct.unpack_from(">i", raw, 24 + i * 28)[0]: struct.unpack_from(
+                ">i", raw, 24 + i * 28 + 12
+            )[0]
+            for i in range(count)
+        }
+
+    small_adv = parse_vlw_advances("H2GolosSmall13")
+    med_adv = parse_vlw_advances("H2GolosMedium19")
+    dig_adv = parse_vlw_advances("H2GolosDigits38")
+
+    # Every character literal in trip_history_view.cpp MUST exist in UI_CODEPOINTS
+    for literal in re.findall(r'"([^"]*)"', view_cpp):
+        for ch in literal:
+            assert ord(ch) in small_adv, (
+                f"Character {ch!r} (U+{ord(ch):04X}) in trip_history_view.cpp lacks a VLW glyph!"
+            )
+
+    # Every worst-case rendered string MUST fit strictly inside the physical 240x240 circular chord
+    worst_cases = [
+        ("ИСТОРИЯ", med_adv, 28),
+        ("HISTORY", med_adv, 28),
+        ("СЕГОДНЯ 31.12 | 99 П.", small_adv, 56),
+        ("СУТКИ 31.12 | 99 П.", small_adv, 56),
+        ("#9999 | БЕЗ ДАТЫ | 99Ч 59М", small_adv, 56),
+        ("#9999 | 31.12 | 99Ч 59М", small_adv, 56),
+        ("НЕТ ЗАКРЫТЫХ ПОЕЗДОК", small_adv, 56),
+        ("9999.9", dig_adv, 100),
+        ("КМ | 99.9 Л/100", small_adv, 131),
+        ("КМ | АРХИВ ПУСТ", small_adv, 131),
+        ("16 ИЗ 16", small_adv, 211),
+        ("КНОПКА - ВЫХОД", small_adv, 211),
+    ]
+    for sample, table, y_pos in worst_cases:
+        px_width = sum(table[ord(c)] for c in sample)
+        chord = 2.0 * math.sqrt(max(0.0, 120.0 ** 2 - (y_pos - 120.0) ** 2))
+        assert px_width + 12.0 < chord, (
+            f"String {sample!r} at y={y_pos} is {px_width}px wide vs {chord:.1f}px circular chord!"
+        )
+
     print(
         "Trip history cross-layer integration: 148 B record, 2048-slot /trips.bin, "
-        "40 B NVS context, pure-UTC sync, Schema 12 (232 B) and both gzip UIs OK"
+        "40 B NVS context, 240x240 VLW/chord view, Schema 12 (232 B) and both gzip UIs OK"
     )
     return 0
 
