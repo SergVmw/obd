@@ -1,5 +1,9 @@
 #include "service_portal.h"
 
+#include <cstdlib>
+
+#include "json_writer.h"
+
 #include "pid_names.h"
 #include "sta_client_logic.h"
 #include "storage_mutex.h"
@@ -17,6 +21,7 @@
 #include <math.h>
 #include <memory>
 #include <stdlib.h>
+#include <string>
 #include <string.h>
 #include "version.h"
 #ifdef H2G_DIAGNOSTIC_BUILD
@@ -351,6 +356,10 @@ bool ServicePortal::begin() {
     ESP_LOGE(kTag, "Service portal HTTP server failed to listen on port 80");
     return false;
   }
+  // Whatever the last session found. A failure here is reported through the
+  // status body rather than blocking the portal: the portal is the recovery
+  // path, and it must come up even if the identifier record is unreadable.
+  didStore_.load();
   startedAt_ = lastActivityAt_ = millis();
   serviceSession_ = true;
 
@@ -430,6 +439,7 @@ void ServicePortal::loop() {
   server_.handleClient();
 
   const uint32_t now = millis();
+  pumpDidActivity(now);
   if (rebootAt_ != 0 && static_cast<int32_t>(now - rebootAt_) >= 0) {
     persistence_.checkpoint(engine_.trip(), engine_.petrolCalibration(),
                             configStore_.data().saveTrip, true);
@@ -512,6 +522,18 @@ void ServicePortal::setupRoutes() {
              [this]() { startDtcScan(); });
   server_.on("/api/diagnostics/dtc/clear", HTTP_POST,
              [this]() { clearDtcs(); });
+
+  // Read-only manufacturer identifier scan. Same server, same port, same AP:
+  // the recovery invariant of this portal is that service mode brings up
+  // exactly one listener, and a second one is what once left a car needing a
+  // bench flash.
+  server_.on("/api/dids", HTTP_GET, [this]() { sendDidStatus(); });
+  server_.on("/api/dids/export", HTTP_GET, [this]() { sendDidExport(); });
+  server_.on("/api/dids/scan", HTTP_POST, [this]() { startDidScan(); });
+  server_.on("/api/dids/stop", HTTP_POST, [this]() { stopDidScan(); });
+  server_.on("/api/dids/snapshot", HTTP_POST,
+             [this]() { startDidSnapshot(); });
+  server_.on("/api/dids/clear", HTTP_POST, [this]() { clearDidStore(); });
 
   server_.on("/api/baro/capture", HTTP_POST, [this]() {
     touch();
@@ -2726,6 +2748,357 @@ void ServicePortal::clearDtcs() {
                "{\"ok\":true,\"accepted\":true,\"operation\":\"preclear_scan\"}");
 }
 
+
+// ---- read-only identifier scan ---------------------------------------------
+//
+// The scan exists so the owner can find out which manufacturer identifier
+// carries the pre-throttle pressure, the target boost, the wastegate duty or the
+// gearbox temperature without a laptop on the passenger seat. Everything below
+// is written to that one purpose: it reads and nothing else, it lives on the
+// portal's single port-80 server, and it only runs while the portal itself is
+// holding the ordinary poller paused.
+
+namespace {
+
+constexpr uint32_t kDidActionCooldownMs = 700;
+
+// Accepts 0xF1A0, "0xF1A0", "F1A0" and 61856 for the same value. The portal is
+// used from a phone by the side of the road, so a field that only takes one of
+// those is a field that produces a support message instead of a scan.
+bool readUnsigned(const JsonVariantConst& value, uint32_t& out, uint32_t max) {
+  uint32_t parsed = 0;
+  if (value.is<const char*>()) {
+    const char* text = value.as<const char*>();
+    if (text == nullptr || *text == '\0') return false;
+    char* end = nullptr;
+    const unsigned long raw = strtoul(text, &end, 0);
+    if (end == nullptr || *end != '\0') return false;
+    parsed = static_cast<uint32_t>(raw);
+  } else if (value.is<uint32_t>()) {
+    parsed = value.as<uint32_t>();
+  } else if (value.is<int>()) {
+    const int raw = value.as<int>();
+    if (raw < 0) return false;
+    parsed = static_cast<uint32_t>(raw);
+  } else {
+    return false;
+  }
+  if (parsed > max) return false;
+  out = parsed;
+  return true;
+}
+
+// The two responders this vehicle answers on, named the way the page names them.
+bool readResponder(const JsonVariantConst& value, uint32_t& requestId) {
+  if (value.is<const char*>()) {
+    const char* text = value.as<const char*>();
+    if (text == nullptr) return false;
+    if (strcmp(text, "engine") == 0) {
+      requestId = 0x7E0;
+      return true;
+    }
+    if (strcmp(text, "gearbox") == 0) {
+      requestId = 0x7E1;
+      return true;
+    }
+  }
+  uint32_t parsed = 0;
+  if (!readUnsigned(value, parsed, 0x7E7)) return false;
+  if (parsed != 0x7E0 && parsed != 0x7E1) return false;
+  requestId = parsed;
+  return true;
+}
+
+}  // namespace
+
+void ServicePortal::pumpDidActivity(uint32_t now) {
+  DidExplorer& explorer = obdClient_.didExplorer();
+
+  // Answers are drained every pass. A snapshot stamps each one with the
+  // manifold pressure and engine speed the gauge is reading at that instant,
+  // which is what makes a column of the export one engine state rather than a
+  // mixture of two.
+  const bool mapValid = telemetry_.mapKpa.valid(now);
+  const float mapKpa = telemetry_.mapKpa.value;
+  const bool rpmValid = telemetry_.rpm.valid(now);
+  const float rpm = telemetry_.rpm.value;
+  DidExplorer::Answer answer;
+  while (explorer.takeAnswer(answer)) {
+    if (activeSnapshotSlot_ < DidStore::kSlots) {
+      didStore_.captureAnswer(activeSnapshotSlot_, mapValid, mapKpa, rpmValid,
+                              rpm, answer);
+    }
+  }
+
+  const bool runningNow = explorer.running();
+  if (didRunActive_ && !runningNow) {
+    didRunActive_ = false;
+    const DidExplorer::State state = explorer.state();
+    bool stored = false;
+    if (explorer.mode() == DidExplorer::Mode::RangeScan) {
+      // A scan the owner stopped early still found what it found; throwing that
+      // away because the sweep did not reach the end of the range would waste
+      // the only part of it that cost bus time.
+      if (state == DidExplorer::State::Finished ||
+          state == DidExplorer::State::Stopped) {
+        stored = didStore_.recordScan(explorer, now);
+      }
+    } else if (activeSnapshotSlot_ < DidStore::kSlots) {
+      const uint32_t rtcSec = currentRtcSec();
+      didStore_.finishSnapshot(activeSnapshotSlot_, now,
+                               tripClock_.nowEpochSec(rtcSec));
+      stored = true;
+    }
+    activeSnapshotSlot_ = kNoSnapshotSlot;
+    if (stored && !didStore_.save()) {
+      ESP_LOGE(kTag, "Identifier store write failed: %s", didStore_.statusName());
+    }
+  }
+  didRunActive_ = runningNow;
+}
+
+void ServicePortal::sendDidStatus() {
+  touch();
+  const DidExplorer& explorer = obdClient_.didExplorer();
+  DidStore::LiveStatus live;
+  live.state = explorer.stateName();
+  live.mode = explorer.mode() == DidExplorer::Mode::Targets ? "targets" : "range";
+  live.running = explorer.running();
+  live.sessionOpened = explorer.sessionOpened();
+  live.sessionRefused = explorer.sessionRefused();
+  live.done = explorer.doneDids();
+  live.total = explorer.totalDids();
+  live.currentDid = explorer.currentDid();
+
+  h2gjson::JsonBuf buffer(4096);
+  didStore_.writeJson(buffer, true, &live);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", String(buffer.str().c_str()));
+}
+
+void ServicePortal::sendDidExport() {
+  touch();
+  const DidExplorer& explorer = obdClient_.didExplorer();
+  DidStore::LiveStatus live;
+  live.state = explorer.stateName();
+  live.mode = explorer.mode() == DidExplorer::Mode::Targets ? "targets" : "range";
+  live.running = explorer.running();
+  live.sessionOpened = explorer.sessionOpened();
+  live.sessionRefused = explorer.sessionRefused();
+  live.done = explorer.doneDids();
+  live.total = explorer.totalDids();
+  live.currentDid = explorer.currentDid();
+
+  h2gjson::JsonBuf buffer(4096);
+  didStore_.writeJson(buffer, true, &live);
+  char filename[48];
+  snprintf(filename, sizeof(filename), "h2g-dids-%lu.json",
+           static_cast<unsigned long>(currentRtcSec()));
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.sendHeader("Content-Disposition",
+                     String("attachment; filename=\"") + filename + "\"");
+  server_.send(200, "application/json", String(buffer.str().c_str()));
+}
+
+void ServicePortal::startDidScan() {
+  touch();
+  if (!requireAction("did-scan", lastDidActionAt_, kDidActionCooldownMs)) return;
+  DidExplorer& explorer = obdClient_.didExplorer();
+  if (explorer.running()) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"identifier scan already running\"}");
+    return;
+  }
+  // One diagnostic conversation at a time. The scanner and the DTC reader share
+  // the client's single request slot, and interleaving two hand-rolled
+  // sequences through it is how a session gets lost.
+  if (obdClient_.diagnosticsState().operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain")) ||
+      !request.is<JsonObjectConst>()) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"JSON body required\"}");
+    return;
+  }
+  uint32_t requestId = 0;
+  if (!readResponder(request["ecu"], requestId)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"ecu must be engine or gearbox\"}");
+    return;
+  }
+  uint32_t service = 0x22;
+  if (request["service"].is<JsonVariantConst>() &&
+      !readUnsigned(request["service"], service, 0xFF)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"service must be 0x22 or 0x21\"}");
+    return;
+  }
+  DidExplorer::Config config;
+  config.requestId = requestId;
+  config.responseId = requestId + 8;
+  config.service = static_cast<uint8_t>(service);
+  config.extendedSession = false;
+  if (request["session"].is<const char*>()) {
+    const char* session = request["session"].as<const char*>();
+    if (session != nullptr && strcmp(session, "extended") == 0) {
+      config.extendedSession = true;
+    }
+  }
+  // The default range is where the identification identifiers live on both
+  // modules of this car; a scan with no range given should be the one the owner
+  // wants, not an empty one.
+  config.firstDid = service == 0x22 ? 0xF180 : 0x00;
+  config.lastDid = service == 0x22 ? 0xF1FF : 0xFF;
+  uint32_t firstDid = config.firstDid;
+  if (request["first"].is<JsonVariantConst>() &&
+      !readUnsigned(request["first"], firstDid, 0xFFFF)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"first identifier out of range\"}");
+    return;
+  }
+  uint32_t lastDid = config.lastDid;
+  if (request["last"].is<JsonVariantConst>() &&
+      !readUnsigned(request["last"], lastDid, 0xFFFF)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"last identifier out of range\"}");
+    return;
+  }
+  config.firstDid = static_cast<uint16_t>(firstDid);
+  config.lastDid = static_cast<uint16_t>(lastDid);
+  if (!DidExplorer::validConfig(config)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"range must be at most 512 identifiers and end no "
+                 "earlier than it starts\"}");
+    return;
+  }
+  if (!explorer.start(config, millis())) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"identifier scan could not be started\"}");
+    return;
+  }
+  activeSnapshotSlot_ = kNoSnapshotSlot;
+  didRunActive_ = true;
+  server_.send(202, "application/json",
+               "{\"ok\":true,\"accepted\":true,\"state\":\"running\"}");
+}
+
+void ServicePortal::startDidSnapshot() {
+  touch();
+  if (!requireAction("did-snapshot", lastDidActionAt_, kDidActionCooldownMs)) {
+    return;
+  }
+  DidExplorer& explorer = obdClient_.didExplorer();
+  if (explorer.running()) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"identifier scan already running\"}");
+    return;
+  }
+  if (obdClient_.diagnosticsState().operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain"))) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"JSON body required\"}");
+    return;
+  }
+  size_t slot = 0;
+  const char* slotName = request["slot"].is<const char*>()
+                             ? request["slot"].as<const char*>()
+                             : nullptr;
+  if (!DidStore::slotFromName(slotName, slot)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"slot must be ignition, idle or load\"}");
+    return;
+  }
+  uint32_t requestId = 0;
+  if (!readResponder(request["ecu"], requestId)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"ecu must be engine or gearbox\"}");
+    return;
+  }
+  uint16_t targets[DidStore::kMaxSnapshotEntries] = {0};
+  const size_t count =
+      didStore_.collectTargets(static_cast<uint16_t>(requestId), targets,
+                               DidStore::kMaxSnapshotEntries);
+  if (count == 0) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"scan this module first: nothing to re-read\"}");
+    return;
+  }
+  // The service and the responder are taken from the scan that found these
+  // identifiers, so a snapshot asks the module the same question the scan did.
+  const DidStore::Ecu* ecu = requestId == 0x7E0 ? didStore_.engine()
+                                                : didStore_.gearbox();
+  DidExplorer::Config config;
+  config.requestId = requestId;
+  config.responseId = requestId + 8;
+  config.service = ecu != nullptr ? ecu->service : 0x22;
+  config.extendedSession = false;
+  if (request["session"].is<const char*>()) {
+    const char* session = request["session"].as<const char*>();
+    if (session != nullptr && strcmp(session, "extended") == 0) {
+      config.extendedSession = true;
+    }
+  }
+  if (!explorer.startTargets(config, targets, count, millis())) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"control snapshot could not be started\"}");
+    return;
+  }
+  if (!didStore_.beginSnapshot(slot, static_cast<uint16_t>(requestId),
+                               config.service, millis())) {
+    explorer.stop(millis());
+    server_.send(409, "application/json",
+                 "{\"error\":\"control snapshot could not be stored\"}");
+    return;
+  }
+  activeSnapshotSlot_ = slot;
+  didRunActive_ = true;
+  char reply[96];
+  snprintf(reply, sizeof(reply),
+           "{\"ok\":true,\"accepted\":true,\"slot\":\"%s\",\"targets\":%lu}",
+           DidStore::slotName(slot), static_cast<unsigned long>(count));
+  server_.send(202, "application/json", reply);
+}
+
+void ServicePortal::stopDidScan() {
+  touch();
+  if (!requireAction("did-stop", lastDidActionAt_, kDidActionCooldownMs)) return;
+  DidExplorer& explorer = obdClient_.didExplorer();
+  if (!explorer.running()) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"no identifier scan is running\"}");
+    return;
+  }
+  explorer.stop(millis());
+  server_.send(202, "application/json",
+               "{\"ok\":true,\"accepted\":true,\"state\":\"stopping\"}");
+}
+
+void ServicePortal::clearDidStore() {
+  touch();
+  if (!requireAction("did-clear", lastDidActionAt_, kDidActionCooldownMs)) {
+    return;
+  }
+  DidExplorer& explorer = obdClient_.didExplorer();
+  if (explorer.running()) explorer.stop(millis());
+  activeSnapshotSlot_ = kNoSnapshotSlot;
+  didRunActive_ = false;
+  if (!didStore_.clear()) {
+    server_.send(500, "application/json",
+                 "{\"error\":\"identifier store could not be cleared\"}");
+    return;
+  }
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
 void ServicePortal::sendAssetStatus() {
   touch();
   JsonDocument doc;
@@ -4035,8 +4408,14 @@ void ServicePortal::sendTrips() {
       char timeText[8];
       snprintf(timeText, sizeof(timeText), "%02u:%02u", m.startHour,
                m.startMinute);
-      item["localDate"] = m.localDate;
-      item["localTime"] = timeText;
+      // std::string, not the char array itself. ArduinoJson stores a
+      // zero-copy pointer for a `const char*`, and m is a local of this loop
+      // body: the pointer outlived the array and /api/trips answered
+      // "localDate": "" on every record, while the identical field on the
+      // round screen and in /trips.bin was correct because neither goes
+      // through this serializer.
+      item["localDate"] = std::string(m.localDate);
+      item["localTime"] = std::string(timeText);
     } else {
       item["localDate"] = "";
       item["localTime"] = "";

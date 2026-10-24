@@ -22,6 +22,7 @@ SOURCES = [
     "src/pid_support.cpp",
     "src/mode22.cpp",
     "src/mode22_config.cpp",
+    "src/did_explorer.cpp",
     "src/obd_diagnostics.cpp",
     "src/dtc_history_snapshot.cpp",
     "src/dtc_history_persistence.cpp",

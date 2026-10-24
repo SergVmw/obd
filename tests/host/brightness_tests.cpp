@@ -87,6 +87,34 @@ uint32_t fnv(const uint8_t* b, size_t len) {
   return h;
 }
 
+// A schema-13 record: the layout 0.4.36 shipped and the one every device in the
+// field holds. Same 348 bytes as schema 14, different meaning inside.
+std::vector<uint8_t> v13Record(float lpgCorrection, float boostMaxBar,
+                               float boostDangerBar) {
+  ConfigData c = ConfigStore::defaults();
+  // The old factory values, restored by hand because defaults() now returns the
+  // new ones. A migration test that started from the new defaults would be
+  // testing nothing.
+  c.schemaVersion = 13;
+  c.boostMaxBar = boostMaxBar;
+  c.boostWarningBar = 0.90f;
+  c.boostDangerBar = boostDangerBar;
+  c.lpgCorrection = lpgCorrection;
+  c.petrolAfr = 14.7f;
+  c.petrolDensity = 745.0f;
+  c.lpgAfr = 15.5f;
+  c.lpgDensity = 540.0f;
+  c.tripGapMin = 5;
+  c.tripMinDistanceM = 100;
+  c.utcOffsetMin = 180;
+  std::vector<uint8_t> result(sizeof(ConfigData));
+  std::memcpy(result.data(), &c, offsetof(ConfigData, checksum));
+  const uint32_t hash = fnv(result.data(), offsetof(ConfigData, checksum));
+  std::memcpy(result.data() + offsetof(ConfigData, checksum), &hash,
+              sizeof(hash));
+  return result;
+}
+
 std::vector<uint8_t> v5Record(bool inverted = false) {
   ConfigData c = ConfigStore::defaults();
   c.schemaVersion = 5;
@@ -758,6 +786,78 @@ void testDisablingLpgDropsTheDecisionAtOnce() {
   CHECK(!r.input.update(hostMillis, r.config));
 }
 
+// 0.4.37: the upgrade every device in the field takes, tested three ways.
+//
+// The record is the same length as before, so nothing but the stored version
+// says which meaning its bytes carry - and getting this wrong is not a cosmetic
+// bug: the coefficient would keep meaning "trim on physical gas litres" while
+// the firmware had started treating it as "gas litres per petrol litre".
+void testSchema13To14MigratesTheGasCoefficientAndBoostScale() {
+  // A trigger inside the 0.80..1.25 band is a trim around the old base, and the
+  // honest translation of "no trim" is the new factory 1.20.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(1.2f, 1.5f, 1.15f);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(store.data().schemaVersion == H2G_CONFIG_SCHEMA);
+    CHECK(near(store.data().lpgCorrection, 1.20f, 1e-4f));
+    // The trip in progress is converted by this factor, and the product has to
+    // be the identity: 1.30842 * 0.764279 == 1, so nothing the owner had
+    // already accumulated changes its litres.
+    CHECK(near(store.lpgBasisScale(), 1.0f / 1.30842f, 1e-5f));
+    CHECK(near(store.lpgBasisScale() * 1.30842f, 1.0f, 1e-5f));
+  }
+  // The value the previous release's advice produced, 0.917, is the same
+  // request: it also lands on 1.20.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(0.917f, 1.5f, 1.15f);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(near(store.data().lpgCorrection, 1.20f, 1e-4f));
+  }
+  // Outside the band the owner was correcting a real measured error, so the
+  // number keeps producing the litres it produced: 1.50 * 1.30842 = 1.9626.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(1.5f, 1.5f, 1.15f);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(near(store.data().lpgCorrection, 1.5f * 1.30842f, 1e-3f));
+  }
+  // The boost scale moves only when the record still holds the exact old
+  // factory quartet. A value somebody chose is theirs.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(1.2f, 1.3f, 1.10f);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(near(store.data().boostMaxBar, 1.3f, 1e-4f));
+    CHECK(near(store.data().boostDangerBar, 1.10f, 1e-4f));
+  }
+  // And the untouched quartet moves to -1.0..+1.2 with danger at 1.05.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(1.2f, 1.5f, 1.15f);
+    ConfigStore store;
+    CHECK(store.begin());
+    CHECK(near(store.data().boostMinBar, -1.0f, 1e-4f));
+    CHECK(near(store.data().boostMaxBar, 1.2f, 1e-4f));
+    CHECK(near(store.data().boostWarningBar, 0.90f, 1e-4f));
+    CHECK(near(store.data().boostDangerBar, 1.05f, 1e-4f));
+    CHECK(store.data().boostWarningBar < store.data().boostDangerBar &&
+          store.data().boostDangerBar <= store.data().boostMaxBar);
+  }
+  // A record already at schema 14 is loaded as it stands: no second migration,
+  // because running the trim again would keep pushing a calibrated value up.
+  {
+    Preferences::storage["h2gauge/config"] = v13Record(1.2f, 1.5f, 1.15f);
+    ConfigStore first;
+    CHECK(first.begin());
+    const float migrated = first.data().lpgCorrection;
+    ConfigStore second;
+    CHECK(second.begin());
+    CHECK(near(second.data().lpgCorrection, migrated, 1e-6f));
+    CHECK(near(second.lpgBasisScale(), 1.0f, 1e-6f));
+  }
+}
+
 int main() {
   test("settings constraints and safe default", [] {
     auto c = ConfigStore::defaults();
@@ -1018,6 +1118,8 @@ int main() {
     r.click(); r.run(600, false);
     CHECK(r.events.size() == 1 && r.events[0] == ButtonEvent::QuadPress);
   });
+  test("a schema-13 record moves onto the petrol-equivalent gas basis",
+       testSchema13To14MigratesTheGasCoefficientAndBoostScale);
   test("schema-5 migration preserves settings, trip and fuel calibration namespaces", [] {
     Preferences::storage["h2gauge/config"] = v5Record();
     Preferences::storage["h2trip/trip"] = {1, 2, 3};
@@ -1029,7 +1131,13 @@ int main() {
     // then fall back to their factory values.
     CHECK(c.schemaVersion == H2G_CONFIG_SCHEMA && c.brightnessDay == 73 &&
           c.brightnessNight == 19);
-    CHECK(near(c.petrolCorrection, 1.18f) && near(c.lpgCorrection, 1.31f));
+    CHECK(near(c.petrolCorrection, 1.18f));
+    // 1.31 is outside the 0.80..1.25 band that 0.4.37 reads as "a trim around
+    // the old base", so it keeps meaning what it meant: the coefficient is
+    // rescaled by the basis ratio (15.5*540)/(14.7*745) = 1.30842 and lands at
+    // 1.714, which shows the owner the same litres the record used to produce.
+    // A value inside the band would instead land on the new factory 1.20.
+    CHECK(near(c.lpgCorrection, 1.31f * 1.30842f, 1e-3f));
     CHECK(near(c.displaySpeedOffsetKph, -4.5f) && c.lpgEnabled);
     CHECK(c.colorText == 0x1234 && c.startPage == 2 && !c.dfcoCorrectionEnabled);
     CHECK(c.language == UiLanguage::English);

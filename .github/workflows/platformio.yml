@@ -32,6 +32,8 @@ jobs:
           python tools/test_obd_diagnostics.py
           python tools/test_obd_fixed_identity.py
           python tools/test_obd_client.py
+          python tools/test_did_explorer.py
+          python tools/test_did_store.py
           python tools/test_ota_diagnostics.py
           python tools/test_persistence.py
           python tools/test_storage_recovery.py
@@ -52,6 +54,7 @@ jobs:
           python tools/check_stack_budget.py
           python tools/check_obd_service_integration.py
           python tools/check_dtc_integration.py
+          python tools/check_did_integration.py
           python tools/check_storage_integration.py
           python tools/check_ota_transport.py
           python tools/check_speed_density_integration.py
@@ -76,6 +79,7 @@ jobs:
           NODE_PATH="$PWD/node_modules" node tests/web/config_first_load.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/trip_history_ui.cjs
           NODE_PATH="$PWD/node_modules" node tests/web/sta_headunit_ui.cjs
+          NODE_PATH="$PWD/node_modules" node tests/web/did_explorer_ui.cjs
 
       - name: Build ESP32-S3 N16R8 firmware
         run: pio run -e esp32s3_n16r8

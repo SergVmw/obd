@@ -4,6 +4,7 @@
 #include "driver/twai.h"
 #include "app_config.h"
 #include "can_monitor.h"
+#include "did_explorer.h"
 #include "mode22.h"
 #include "obd_diagnostics.h"
 #include "obd_request_timing.h"
@@ -112,6 +113,12 @@ bool identityDiscriminates() const;
   const ObdDiagnosticsState& diagnosticsState() const {
     return diagnostics_.state();
   }
+  // Read-only identifier scan. Only the service portal starts it, and only
+  // while standard polling is paused: it is a diagnostic action that belongs to
+  // a parked car, and the scheduler below stops it the moment service mode ends.
+  DidExplorer& didExplorer() { return didExplorer_; }
+  const DidExplorer& didExplorer() const { return didExplorer_; }
+
   const DtcHistoryData& dtcHistory() const { return diagnostics_.history(); }
   void restoreDtcHistory(const DtcHistoryData& history) {
     diagnostics_.restoreHistory(history);
@@ -148,6 +155,11 @@ bool identityDiscriminates() const;
     // while a diagnostic request is in flight, which is what keeps it from
     // sharing ISO-TP state with the DTC path.
     Vin,
+    // A manufacturer identifier read started from the service portal. It shares
+    // the single request slot with everything else, so the scan is paced by the
+    // same maxRequestsPerSecond budget the poller respects and can never run
+    // alongside a Mode 01 request of ours.
+    Did,
   };
 
   // A VIN is 17 characters behind three header bytes: the service, the PID and
@@ -167,6 +179,7 @@ bool identityDiscriminates() const;
   // is fetched once after discovery and never polled again.
   bool sendPid(uint8_t pid, uint32_t now);
   bool sendMode22(uint32_t now);
+  bool sendDidRequest(uint32_t now);
   bool sendDiagnostics(uint32_t now);
   void receiveFrames(uint32_t now);
   void parseResponse(const twai_message_t& message, uint32_t now);
@@ -192,6 +205,7 @@ bool identityDiscriminates() const;
   CanMonitor& monitor_;
   ObdDiagnostics diagnostics_;
   Mode22Transport mode22_;
+  DidExplorer didExplorer_;
   bool installed_ = false;
   bool paused_ = false;
   bool servicePollingEnabled_ = false;

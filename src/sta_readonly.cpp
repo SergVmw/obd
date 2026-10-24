@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "headunit_open_html.h"
+#include "json_writer.h"
 #include "headunit_web_ui_gz.h"
 #include "storage_mutex.h"
 #include "version.h"
@@ -25,67 +26,7 @@
 
 namespace {
 
-class JsonBuf {
- public:
-  explicit JsonBuf(size_t reserveBytes) { out_.reserve(reserveBytes); }
-  const std::string& str() const { return out_; }
-  std::string take() { return std::move(out_); }
-
-  void raw(const char* s) { out_ += s; }
-  void ch(char c) { out_.push_back(c); }
-
-  void key(const char* k, bool commaBefore = true) {
-    if (commaBefore) out_.push_back(',');
-    out_.push_back('"');
-    out_ += k;
-    out_ += "\":";
-  }
-
-  void strVal(const char* s) {
-    out_.push_back('"');
-    if (s) {
-      for (const char* p = s; *p != '\0'; ++p) {
-        const unsigned char c = static_cast<unsigned char>(*p);
-        if (c == '"' || c == '\\') {
-          out_.push_back('\\');
-          out_.push_back(static_cast<char>(c));
-        } else if (c >= 0x20) {
-          out_.push_back(static_cast<char>(c));
-        }
-      }
-    }
-    out_.push_back('"');
-  }
-
-  void boolVal(bool v) { out_ += (v ? "true" : "false"); }
-
-  void u32Val(uint32_t v) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(v));
-    out_ += buf;
-  }
-
-  void i32Val(int32_t v) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%ld", static_cast<long>(v));
-    out_ += buf;
-  }
-
-  void optFloat(bool present, double v) {
-    if (!present || !std::isfinite(v)) {
-      out_ += "null";
-      return;
-    }
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.4f", v);
-    out_ += buf;
-  }
-
-  void numFloat(double v) { optFloat(true, v); }
-
- private:
-  std::string out_;
-};
+using JsonBuf = h2gjson::JsonBuf;
 
 const char* currentResetReasonName() {
 #if defined(ESP32) && !defined(H2G_HOST_TESTS)
@@ -220,6 +161,18 @@ void writeLiveJson(const StaLiveSnapshot& s, const TripHistory& tripHistory,
   j.optFloat(s.hasBoost, s.boostBar);
   j.key("peakBoostBar");
   j.numFloat(s.peakBoostBar);
+  // The scale the head-unit dial is rebuilt from. Flat keys rather than a nested
+  // object: the page reads them once per snapshot and rebuilds only when one of
+  // the four changed, which a string comparison of these four numbers makes
+  // cheap.
+  j.key("boostMinBar");
+  j.numFloat(s.boostMinBar);
+  j.key("boostMaxBar");
+  j.numFloat(s.boostMaxBar);
+  j.key("boostWarningBar");
+  j.numFloat(s.boostWarningBar);
+  j.key("boostDangerBar");
+  j.numFloat(s.boostDangerBar);
   j.key("coolantC");
   j.optFloat(s.hasCoolant, s.coolantC);
   j.key("iatC");
@@ -800,6 +753,24 @@ StaLiveSnapshot buildLiveSnapshot(uint32_t nowMs, uint32_t rtcNowSec,
   }
   s.baroKpa = telemetry.effectiveBaroKpa;
   s.peakBoostBar = ioPeakBoostBar;
+
+  // Guarded the same way config validation is: a scale that cannot be drawn
+  // (equal ends, or a zone outside it) falls back to the factory one instead of
+  // producing a dial that divides by zero.
+  s.boostMinBar = config.boostMinBar;
+  s.boostMaxBar = config.boostMaxBar;
+  s.boostWarningBar = config.boostWarningBar;
+  s.boostDangerBar = config.boostDangerBar;
+  if (!std::isfinite(s.boostMinBar) || !std::isfinite(s.boostMaxBar) ||
+      s.boostMaxBar - s.boostMinBar < 0.2f ||
+      !std::isfinite(s.boostWarningBar) || !std::isfinite(s.boostDangerBar) ||
+      s.boostWarningBar >= s.boostDangerBar ||
+      s.boostDangerBar > s.boostMaxBar) {
+    s.boostMinBar = -1.0f;
+    s.boostMaxBar = 1.2f;
+    s.boostWarningBar = 0.90f;
+    s.boostDangerBar = 1.05f;
+  }
 
   s.hasCoolant = telemetry.coolantC.valid(nowMs, 10000);
   if (s.hasCoolant) s.coolantC = telemetry.coolantC.value;

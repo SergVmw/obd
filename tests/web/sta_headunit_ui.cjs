@@ -37,6 +37,10 @@ const zlib = require('node:zlib');
     baroKpa: 99.4,
     boostBar: 0.19,
     peakBoostBar: 0.80,
+    boostMinBar: -1.0,
+    boostMaxBar: 1.2,
+    boostWarningBar: 0.9,
+    boostDangerBar: 1.05,
     coolantC: 90.0,
     iatC: 24.0,
     voltageV: 14.12,
@@ -332,6 +336,38 @@ const zlib = require('node:zlib');
     assert.equal(await page.textContent('#modeToggle'), 'Вид: Цифры');
     await page.click('#modeToggle');
     assert.equal(await page.textContent('#modeToggle'), 'Вид: Стрелки');
+
+
+    // The boost scale is the device's, not the page's. Engine configuration
+    // changes the ceiling (1.2 bar default, lower for a stock car), and a page
+    // that keeps its own numbers would silently mis-scale every reading.
+    const boostTicks = () => page.$$eval('#dial-boost .dial-scale', els => els.map(e => e.textContent));
+    let ticks = await boostTicks();
+    assert.ok(ticks.includes('+1.2'), `boost dial must end at the configured +1.2, saw ${ticks.join(',')}`);
+    assert.equal(ticks[0], '-1.0', 'boost dial must start at the configured -1.0');
+
+    liveState.boostMaxBar = 1.4;
+    liveState.boostWarningBar = 1.0;
+    liveState.boostDangerBar = 1.2;
+    await page.waitForFunction(() =>
+      Array.from(document.querySelectorAll('#dial-boost .dial-scale'))
+        .some(e => e.textContent === '+1.4'), null, { timeout: 4000 });
+    ticks = await boostTicks();
+    assert.ok(ticks.includes('+1.4') && !ticks.includes('+1.2'),
+      `the boost dial must rebuild on a new ceiling, saw ${ticks.join(',')}`);
+
+    // A scale that cannot be true is ignored instead of drawn: warning above
+    // danger would paint a zone that inverts mid-arc.
+    liveState.boostMaxBar = 1.2;
+    liveState.boostWarningBar = 1.1;
+    liveState.boostDangerBar = 1.0;
+    await page.waitForTimeout(900);
+    ticks = await boostTicks();
+    assert.ok(ticks.includes('+1.4'),
+      `an invalid scale must leave the previous dial alone, saw ${ticks.join(',')}`);
+    liveState.boostMaxBar = 1.2;
+    liveState.boostWarningBar = 0.9;
+    liveState.boostDangerBar = 1.05;
 
     // Simulate live Check Engine P0171 + closed trip #3 appearing at 4 Hz without manual reload:
     const pollsBefore = livePollCount;

@@ -362,21 +362,34 @@ void TelemetryEngine::update(uint32_t now, const ConfigData& config,
       phi = data_.equivalenceRatio.value;
     }
 
+    // One raw basis for both fuels: the litres of petrol the measured air
+    // would burn. Gas is then that figure times lpgCorrection, and nothing
+    // else - which is the whole of 0.4.37's fuel change.
+    //
+    // Until this release the gas branch used lpgAfr = 15.5 and
+    // lpgDensity = 540 g/L, so the raw number was already 1.3084 times the
+    // petrol litres it was measured against. The owner, reading a box labelled
+    // "LPG coefficient", then set 1.2 to ask for the usual 20 % and got 57 %.
+    // Two multipliers for one question, and the second one was invisible.
+    // The physical ratio has not disappeared, it has moved: 1.3084 is the
+    // stoichiometric answer for pure propane at 15.5:1 and 540 g/L, while what
+    // a car on a propane-butane mix actually burns is 1.15..1.25 of the petrol
+    // litres. The difference is real (denser butane, slightly lower airflow on
+    // gas) and it is exactly what the single coefficient is calibrated for.
+    // lpgAfr and lpgDensity remain in the record for compatibility and are no
+    // longer read by any calculation; see ConfigStore::migrateV13().
     float rawLph = NAN;
     if (config.fuelSource == FuelSource::SpeedDensity) {
       data_.speedDensityAirflowGps = calculateSpeedDensityAirflowGps(now);
       if (isfinite(data_.speedDensityAirflowGps)) {
-        const bool lpg = data_.fuelMode == FuelMode::Lpg;
-        rawLph = calculateMafFuelLph(
-            data_.speedDensityAirflowGps, phi,
-            lpg ? config.lpgAfr : config.petrolAfr,
-            lpg ? config.lpgDensity : config.petrolDensity);
+        rawLph = calculateMafFuelLph(data_.speedDensityAirflowGps, phi,
+                                     config.petrolAfr, config.petrolDensity);
       }
     } else if (data_.fuelMode == FuelMode::Lpg) {
       // PID 5E is not treated as real liquid LPG consumption.
       if (data_.mafGps.valid(now)) {
         rawLph = calculateMafFuelLph(data_.mafGps.value, phi,
-                                     config.lpgAfr, config.lpgDensity);
+                                     config.petrolAfr, config.petrolDensity);
       }
     } else {
       const bool allowPid5E = config.fuelSource == FuelSource::Auto ||

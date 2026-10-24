@@ -230,7 +230,10 @@ class StrictJsonParser {
 
 void testSchema13LayoutAndPaddingPoisonMigration() {
   resetHostEnv();
-  CHECK(H2G_CONFIG_SCHEMA == 13);
+  // Schema 14 keeps the schema-13 byte layout exactly: 0.4.37 changed what two
+  // fields mean, not where they are, which is why this record is still 348
+  // bytes and why begin() has to read the stored version to tell them apart.
+  CHECK(H2G_CONFIG_SCHEMA == 14);
   CHECK(sizeof(ConfigData) == 348);
 
   ConfigData base = ConfigStore::defaults();
@@ -266,12 +269,15 @@ void testSchema13LayoutAndPaddingPoisonMigration() {
   ConfigStore store;
   CHECK(store.begin());
   const ConfigData& migrated = store.data();
-  CHECK(migrated.schemaVersion == 13);
+  CHECK(migrated.schemaVersion == H2G_CONFIG_SCHEMA);
   CHECK(migrated.tripGapMin == 12);
   CHECK(migrated.tripMinDistanceM == 450);
   CHECK(migrated.utcOffsetMin == -180);
   CHECK(std::strcmp(migrated.deviceName, "H2 Car Unit") == 0);
-  CHECK(std::fabs(migrated.lpgCorrection - 1.24f) < 1e-6f);
+  // 1.24 sits inside the 0.80..1.25 band that 0.4.37 treats as a trim around
+  // the old physical-litre basis, so it lands on the new factory 1.20 - the
+  // value whose label now reads "+20 % against petrol".
+  CHECK(std::fabs(migrated.lpgCorrection - 1.20f) < 1e-6f);
   CHECK(!migrated.staEnabled);
   CHECK(std::strcmp(migrated.staSsid, "") == 0);
   CHECK(std::strcmp(migrated.staPassword, "") == 0);
@@ -317,7 +323,7 @@ void testSchema13ExhaustiveBitFlipRejection() {
     CHECK(std::strcmp(checkStore.data().staSsid, "") == 0);
     CHECK(std::strcmp(checkStore.data().staHostname, "h2") == 0);
   }
-  std::printf("PASS exhaustive %zu single-bit flip mutations rejected across 348-byte Schema 13\n",
+  std::printf("PASS exhaustive %zu single-bit flip mutations rejected across 348-byte Schema 14\n",
               totalBits);
 }
 

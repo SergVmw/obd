@@ -66,6 +66,12 @@ constexpr size_t kV12RecordSize = 232;
 // staEnabled (1 B @ 226), staSsid (33 B @ 227..259), staPassword (65 B @ 260..324),
 // staHostname (17 B @ 325..341), moving checksum to 344 and sizeof(ConfigData) to 348.
 constexpr size_t kV13ChecksumOffset = 344;
+// Schema 13 and schema 14 are the same length: 0.4.37 changed what two existing
+// fields mean rather than adding one. begin() therefore reads the stored
+// version before it knows whether the LPG coefficient inside the record refers
+// to physical gas litres or to petrol-equivalent ones, exactly as schemas 7/8
+// and 9/10 are told apart.
+constexpr size_t kV13RecordSize = 348;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -102,6 +108,9 @@ static_assert(offsetof(ConfigData, checksum) == kV13ChecksumOffset,
 static_assert(kV13ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
+static_assert(kV13RecordSize == kV13ChecksumOffset + 4,
+              "a schema-13 record ends at its checksum, which is the whole "
+              "reason schema 14 keeps the same length");
 
 // The diagnostics screen moved to the end of the page cycle in 0.4.28, so the
 // number an owner chose no longer names the screen it named. Following the
@@ -113,6 +122,79 @@ void remapStartPageForReorderedPages(ConfigData& config) {
     config.setDisplayStartPage(4);  // diagnostics OBD, now last
   } else if (config.displayStartPage() == 4) {
     config.setDisplayStartPage(3);  // LPG trims, now fourth
+  }
+}
+
+// Every record written before schema 14 needs the same two corrections, so
+// they live in one place instead of being restated by eight migrations.
+//
+// 1. The LPG coefficient changed basis. Until 0.4.37 the gas raw figure was
+//    already physical gas litres - the air mass divided by lpgAfr = 15.5 and
+//    lpgDensity = 540 g/L - so the coefficient on top of it was a trim around
+//    1.0. From schema 14 the raw figure is petrol-equivalent litres and the
+//    coefficient is the whole of the difference between the fuels.
+//
+//    A stored value near 1.0 was a trim, and the honest translation of "no
+//    trim" is the new factory 1.20 (gas burns about 20 % more litres than
+//    petrol). A stored value further away was a calibration against a real
+//    measured error, and throwing that away would be worse than keeping it
+//    meaning what it meant: those are scaled by the basis ratio instead, so
+//    the vehicle keeps showing the number its owner had corrected it to.
+//
+// 2. The boost scale moved from -1.0..+1.5 to -1.0..+1.2 bar, because the
+//    stock GW4G15B peaks near 1.0 bar and the top third of the old arc was
+//    unreachable. Only a record still holding the exact old factory quartet is
+//    moved: a value somebody chose is left alone, whatever it is.
+constexpr float kLpgBasisRatioDefault = 1.30842f;  // (15.5 * 540) / (14.7 * 745)
+constexpr float kLpgTrimBandLow = 0.80f;
+constexpr float kLpgTrimBandHigh = 1.25f;
+constexpr float kLpgCorrectionDefault = 1.20f;
+
+bool nearlyEqual(float a, float b) { return std::fabs(a - b) < 1e-4f; }
+
+// How many physical gas litres the record's own constants made out of the same
+// air mass that one petrol litre burnt: gas volume over petrol volume for one
+// kilogram of air, (petrolAfr * petrolDensity) / (lpgAfr * lpgDensity), which is
+// 1.30842 for the factory constants.
+//
+// Guarded at both ends: a record whose fuel constants are out of range cannot
+// say what its litre figure meant, so the factory constants are the only
+// defensible answer.
+float lpgBasisRatio(const ConfigData& config) {
+  if (std::isfinite(config.petrolAfr) && std::isfinite(config.petrolDensity) &&
+      std::isfinite(config.lpgAfr) && std::isfinite(config.lpgDensity) &&
+      config.petrolAfr >= 10.0f && config.petrolAfr <= 20.0f &&
+      config.lpgAfr >= 10.0f && config.lpgAfr <= 20.0f &&
+      config.petrolDensity >= 400.0f && config.petrolDensity <= 900.0f &&
+      config.lpgDensity >= 400.0f && config.lpgDensity <= 700.0f) {
+    const float ratio = (config.petrolAfr * config.petrolDensity) /
+                        (config.lpgAfr * config.lpgDensity);
+    if (ratio > 0.2f && ratio < 5.0f) return ratio;
+  }
+  return kLpgBasisRatioDefault;
+}
+
+void upgradePreSchema14(ConfigData& config) {
+  const float ratio = lpgBasisRatio(config);
+
+  const float stored = config.lpgCorrection;
+  if (!std::isfinite(stored)) {
+    config.lpgCorrection = kLpgCorrectionDefault;
+  } else if (stored >= kLpgTrimBandLow && stored <= kLpgTrimBandHigh) {
+    config.lpgCorrection = kLpgCorrectionDefault;
+  } else {
+    float scaled = stored * ratio;
+    if (scaled < 0.5f) scaled = 0.5f;
+    if (scaled > 2.0f) scaled = 2.0f;
+    config.lpgCorrection = scaled;
+  }
+
+  if (nearlyEqual(config.boostMinBar, -1.0f) &&
+      nearlyEqual(config.boostMaxBar, 1.5f) &&
+      nearlyEqual(config.boostWarningBar, 0.90f) &&
+      nearlyEqual(config.boostDangerBar, 1.15f)) {
+    config.boostMaxBar = 1.2f;
+    config.boostDangerBar = 1.05f;
   }
 }
 
@@ -168,9 +250,15 @@ ConfigData ConfigStore::defaults() {
   c.fixedBaroKpa = 99.4f;
   c.boostOffsetBar = 0.0f;
   c.boostMinBar = -1.0f;
-  c.boostMaxBar = 1.5f;
+  // -1.0 .. +1.2 bar since 0.4.37. The stock GW4G15B works at 0.75..0.90 bar of
+  // boost and peaks at 0.95..1.05, so the top third of the old -1.0..+1.5 arc
+  // was a region this engine does not enter: the needle spent its whole life in
+  // the lower half while the numbers the owner reads were compressed into it.
+  // With +1.2 the eleven major ticks are exactly 0.2 bar apart, which is what
+  // the round screen and the head-unit dial both draw from this one pair.
+  c.boostMaxBar = 1.2f;
   c.boostWarningBar = 0.90f;
-  c.boostDangerBar = 1.15f;
+  c.boostDangerBar = 1.05f;
   c.smoothingMs = 250;
 
 #ifdef H2G_SPEED_DENSITY_BUILD
@@ -179,9 +267,20 @@ ConfigData ConfigStore::defaults() {
   c.fuelSource = FuelSource::Auto;
 #endif
   c.petrolCorrection = 1.0f;
-  c.lpgCorrection = 1.0f;
+  // The gas coefficient is now the whole difference between the fuels, in
+  // litres, against the same raw basis as petrol: 1.20 means the engine burns
+  // 20 % more litres of gas than of petrol for the same work. That is the
+  // number every LPG installer quotes and the number a pump fill can check.
+  // Until 0.4.37 the raw gas figure was already 1.3084 times the petrol litres
+  // (15.5:1, 540 g/L) and this coefficient was a trim on top of that, so a
+  // well-meant 1.20 produced 57 %. See migrateV13().
+  c.lpgCorrection = 1.20f;
   c.petrolAfr = 14.7f;
   c.petrolDensity = 745.0f;
+  // Retained for record compatibility and export only. No calculation reads
+  // them any more: the gas figure is petrol-equivalent litres times the
+  // coefficient above, and a second, invisible multiplier is precisely the
+  // defect 0.4.37 removes.
   c.lpgAfr = 15.5f;
   c.lpgDensity = 540.0f;
   c.switchSpeedKph = 5;
@@ -367,6 +466,7 @@ bool ConfigStore::migrateV5(const uint8_t* record, ConfigData& destination) {
     destination.brightnessNight = destination.brightnessDay;
   }
   remapStartPageForReorderedPages(destination);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -389,6 +489,7 @@ bool ConfigStore::migrateV6(const uint8_t* record, ConfigData& destination) {
   // this vehicle stops entirely because it has neither a MAF nor PID 5E.
   memcpy(static_cast<void*>(&destination), record, kV6ChecksumOffset);
   remapStartPageForReorderedPages(destination);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -410,6 +511,7 @@ bool ConfigStore::migrateV7(const uint8_t* record, ConfigData& destination) {
   // back as an enumeration is what this line exists to prevent.
   memcpy(static_cast<void*>(&destination), record, kV7FieldsEnd);
   remapStartPageForReorderedPages(destination);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -432,6 +534,7 @@ bool ConfigStore::migrateV8(const uint8_t* record, ConfigData& destination) {
   // moved between tanks by an upgrade.
   memcpy(static_cast<void*>(&destination), record, kV8ChecksumOffset);
   remapStartPageForReorderedPages(destination);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -453,6 +556,7 @@ bool ConfigStore::migrateV9(const uint8_t* record, ConfigData& destination) {
   // consumption on the left, the trip average on the right.
   memcpy(static_cast<void*>(&destination), record, kV9FieldsEnd);
   remapStartPageForReorderedPages(destination);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -472,6 +576,7 @@ bool ConfigStore::migrateV10(const uint8_t* record, ConfigData& destination) {
   // same place. No start-page remap here: a schema-10 record was written by a
   // build that already knows the page order 0.4.28 introduced.
   memcpy(static_cast<void*>(&destination), record, kV10FieldsEnd);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -494,6 +599,7 @@ bool ConfigStore::migrateV11(const uint8_t* record, ConfigData& destination) {
   if (destination.brightnessNight > destination.brightnessDay) {
     destination.brightnessNight = destination.brightnessDay;
   }
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -516,6 +622,29 @@ bool ConfigStore::migrateV12(const uint8_t* record, ConfigData& destination) {
   if (destination.brightnessNight > destination.brightnessDay) {
     destination.brightnessNight = destination.brightnessDay;
   }
+  upgradePreSchema14(destination);
+  destination.schemaVersion = H2G_CONFIG_SCHEMA;
+  destination.checksum = checksum(destination);
+  return valid(destination);
+}
+
+bool ConfigStore::migrateV13(const uint8_t* record, ConfigData& destination) {
+  uint32_t magic = 0, storedChecksum = 0;
+  uint16_t schema = 0;
+  memcpy(&magic, record, sizeof(magic));
+  memcpy(&schema, record + 4, sizeof(schema));
+  memcpy(&storedChecksum, record + kV13ChecksumOffset, sizeof(storedChecksum));
+  if (magic != kMagic || schema != 13 ||
+      storedChecksum != fnv1a(record, kV13ChecksumOffset)) return false;
+
+  destination = defaults();
+  // Schema 13 and schema 14 are the same length, so unlike the earlier
+  // migrations this copy covers every defined byte of the old record: nothing
+  // was appended, and no byte that used to be padding became a field. What
+  // changed is the meaning of two of those bytes, which the shared upgrade
+  // restates in one place for every migration path.
+  memcpy(static_cast<void*>(&destination), record, kV13ChecksumOffset);
+  upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -530,6 +659,11 @@ bool ConfigStore::begin() {
   const size_t storedLength = preferences_.getBytesLength("config");
   bool loaded = false;
   bool needsSave = false;
+  // Set by every branch that migrated a record written before schema 14. The
+  // trip in progress still holds gas litres on the old basis and main.cpp
+  // rescales it once, using lpgBasisScale(). Kept here rather than inside the
+  // migrations because they are static and the scale belongs to the instance.
+  bool preSchema14 = false;
 
   if (storedLength == sizeof(ConfigData)) {
     uint8_t record[sizeof(ConfigData)]{};
@@ -541,6 +675,12 @@ bool ConfigStore::begin() {
       if (schema == H2G_CONFIG_SCHEMA) {
         memcpy(&config_, record, sizeof(config_));
         loaded = valid(config_);
+      } else if (schema == 13) {
+        // Same length, older meaning: the LPG coefficient inside refers to
+        // physical gas litres and the boost scale to the old factory pair.
+        loaded = migrateV13(record, config_);
+        preSchema14 = loaded;
+        needsSave = loaded;
       } else {
         loaded = false;
       }
@@ -549,11 +689,13 @@ bool ConfigStore::begin() {
     uint8_t record[kV12RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record) && migrateV12(record, config_);
+    preSchema14 = loaded;
     needsSave = loaded;
   } else if (storedLength == kV11RecordSize) {
     uint8_t record[kV11RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record) && migrateV11(record, config_);
+    preSchema14 = loaded;
     needsSave = loaded;
   } else if (storedLength == kV10RecordSize) {
     // Schema 9 and schema 10 are both this long, so the stored version says
@@ -566,6 +708,7 @@ bool ConfigStore::begin() {
       memcpy(&schema, record + 4, sizeof(schema));
       loaded = (schema == 10) ? migrateV10(record, config_)
                               : migrateV9(record, config_);
+      preSchema14 = loaded;
       needsSave = loaded;
     }
   } else if (storedLength == kV8RecordSize) {
@@ -582,23 +725,31 @@ bool ConfigStore::begin() {
       memcpy(&schema, record + 4, sizeof(schema));
       loaded = (schema == 8) ? migrateV8(record, config_)
                              : migrateV7(record, config_);
+      preSchema14 = loaded;
       needsSave = loaded;
     }
   } else if (storedLength == kV6RecordSize) {
     uint8_t record[kV6RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record) && migrateV6(record, config_);
+    preSchema14 = loaded;
     needsSave = loaded;
   } else if (storedLength == kV5RecordSize) {
     uint8_t record[kV5RecordSize]{};
     loaded = preferences_.getBytes("config", record, sizeof(record)) ==
                  sizeof(record) && migrateV5(record, config_);
+    preSchema14 = loaded;
     needsSave = loaded;
   }
 
   if (!loaded) {
     config_ = defaults();
     needsSave = true;
+  }
+  if (preSchema14) {
+    // Raw gas litres shrink by this factor when they become petrol-equivalent
+    // litres; the trip in progress is converted by the same one.
+    lpgBasisScale_ = 1.0f / lpgBasisRatio(config_);
   }
   if (!std::isfinite(config_.displaySpeedOffsetKph) ||
       config_.displaySpeedOffsetKph < -20.0f ||

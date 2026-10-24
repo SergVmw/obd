@@ -1295,7 +1295,195 @@ void testEveryBlockTalkingAtOnce() {
   CHECK(!rig.awaitingPid(0x01, 0x0C));
 }
 
+
+// The identifier scan shares the one request slot and the wall-clock budget with
+// the poller, and the portal can start it at any moment. What has to hold is
+// that it never becomes a second talker: it sends nothing while the gauge is
+// driving, it stops the instant service mode ends, and its answers never cost
+// the gauge a reading.
+DidExplorer::Config scanConfig() {
+  DidExplorer::Config config;
+  config.requestId = 0x7E0;
+  config.responseId = 0x7E8;
+  config.service = 0x22;
+  config.firstDid = 0xF180;
+  config.lastDid = 0xF1FF;
+  config.extendedSession = false;
+  return config;
+}
+
+size_t countDidRequests(uint8_t service = 0x22) {
+  size_t count = 0;
+  for (const twai_message_t& frame : h2g_twai_stub::transmitted()) {
+    if (frame.rtr || frame.data_length_code < 4 || frame.extd) continue;
+    if (frame.identifier != 0x7E0) continue;
+    if (frame.data[0] == 0x03 && frame.data[1] == service) ++count;
+  }
+  return count;
+}
+
+// A scan started while the car is being driven would be a diagnostic request
+// nobody asked for, at a moment when every millisecond of the bus belongs to
+// the gauge's own readings. The portal cannot start one - it only opens in
+// service mode - and this is the second lock behind that one.
+void testIdentifierScanIsDroppedOutsideServiceMode() {
+  Rig rig;
+  rig.identifyEngine();
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  rig.pump(20, 25);
+  CHECK(countDidRequests() == 0);
+  CHECK(rig.client.didExplorer().state() == DidExplorer::State::Stopped);
+}
+
+// Service mode ends in three ways - the button, the timeout, a reboot - and they
+// all funnel through pause(false). Handling the stop here rather than in the
+// portal is what makes the three agree.
+void testIdentifierScanStopsWhenServiceModeEnds() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 60 && countDidRequests() == 0; ++i) rig.pump(1, 25);
+  CHECK(countDidRequests() > 0);
+  CHECK(rig.client.didExplorer().running());
+
+  rig.client.pause(false);
+  rig.pump(1, 25);
+  CHECK(!rig.client.didExplorer().running());
+  const size_t sentAtStop = countDidRequests();
+  rig.pump(20, 25);
+  CHECK(countDidRequests() == sentAtStop);
+}
+
+// An answered identifier has to release the request slot, or the scan stalls on
+// its first success and the poller inherits a stuck client afterwards.
+void testIdentifierAnswerIsRecordedAndReleasesTheSlot() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 80 && rig.client.didExplorer().resultCount() == 0; ++i) {
+    // Answer the first identifier as soon as it is the frame in flight.
+    const std::vector<twai_message_t>& frames = h2g_twai_stub::transmitted();
+    if (!frames.empty()) {
+      const twai_message_t& last = frames.back();
+      if (last.data_length_code >= 4 && last.identifier == 0x7E0 &&
+          last.data[1] == 0x22 && rig.client.didExplorer().waiting()) {
+        const uint8_t answer[] = {0x05, 0x62, last.data[2], last.data[3], 0x41,
+                                  0x42};
+        h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+      }
+    }
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().resultCount() > 0);
+  CHECK(rig.client.didExplorer().results()[0].payload[0] == 0x41);
+  CHECK(!rig.client.didExplorer().waiting());
+
+  // And the scan carries on to the next identifier instead of re-asking the one
+  // it just recorded.
+  const uint16_t done = rig.client.didExplorer().currentDid();
+  CHECK(done > 0xF180);
+}
+
+// The BRC gas ECU asks the engine on 0x7DF, so 0x41 answers arrive from 0x7E8
+// while our own 0x22 request is in flight. If the explorer claimed them, the
+// gauge would lose its readings - and worse, would record a Mode 01 answer as a
+// manufacturer identifier.
+void testModeOneAnswersStillReachTheGaugeDuringAScan() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  rig.client.setServicePollingEnabled(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+
+  bool answered = false;
+  bool sawForeignFrame = false;
+  for (int i = 0; i < 400 && !sawForeignFrame; ++i) {
+    if (rig.client.didExplorer().waiting() && !answered) {
+      const uint8_t rpm[] = {0x04, 0x41, 0x0C, 0x1F, 0x40};
+      h2g_twai_stub::queueRx(fromEcu(0x7E8, rpm, sizeof(rpm)));
+      answered = true;
+      rig.pump(1, 25);
+      // The answer was not taken by the scan ...
+      CHECK(rig.client.didExplorer().resultCount() == 0);
+      // ... and the pending identifier request is still outstanding.
+      CHECK(rig.client.didExplorer().waiting());
+      sawForeignFrame = true;
+      break;
+    }
+    rig.pump(1, 25);
+  }
+  CHECK(answered);
+  CHECK(sawForeignFrame);
+}
+
+
+// Most identifiers in a range this wide are not implemented, and an unanswered
+// request is the normal outcome rather than a fault - the engine ECU simply does
+// not reply to 0x22 for an identifier it does not have. What matters is that the
+// client's request slot is released by that silence, because a slot held by a
+// scan would stop the gauge's own polling for as long as the scan ran.
+void testAnUnansweredIdentifierTimesOutAndTheScanAdvances() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 80 && !rig.client.didExplorer().waiting(); ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().waiting());
+  const uint16_t before = rig.client.didExplorer().currentDid();
+
+  for (int i = 0; i < 40 && rig.client.didExplorer().counters().timeout == 0;
+       ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().counters().timeout == 1);
+  CHECK(rig.client.didExplorer().currentDid() == before + 1);
+  CHECK(!rig.client.didExplorer().waiting());
+
+  // And the next identifier goes out, so one unanswered request does not end
+  // the scan.
+  const size_t sent = countDidRequests();
+  for (int i = 0; i < 40 && countDidRequests() == sent; ++i) rig.pump(1, 25);
+  CHECK(countDidRequests() == sent + 1);
+}
+
+// One physical address answers one physical address. A scan configured against
+// 0x7E0 must not consume 0x7E9's traffic, because that is the gearbox, and it is
+// the block whose identifiers are most likely to differ from the engine's.
+void testTheScanKeepsToItsOwnResponder() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 80 && !rig.client.didExplorer().waiting(); ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().waiting());
+
+  const std::vector<twai_message_t>& frames = h2g_twai_stub::transmitted();
+  const twai_message_t& last = frames.back();
+  const uint8_t answer[] = {0x05, 0x62, last.data[2], last.data[3], 0x41, 0x42};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, answer, sizeof(answer)));
+  rig.pump(2, 25);
+  CHECK(rig.client.didExplorer().resultCount() == 0);
+  CHECK(rig.client.didExplorer().waiting());
+}
+
 int main() {
+  test("the identifier scan is dropped outside service mode",
+       testIdentifierScanIsDroppedOutsideServiceMode);
+  test("the identifier scan stops when service mode ends",
+       testIdentifierScanStopsWhenServiceModeEnds);
+  test("an identifier answer is recorded and releases the request slot",
+       testIdentifierAnswerIsRecordedAndReleasesTheSlot);
+  test("Mode 01 answers still reach the gauge during a scan",
+       testModeOneAnswersStillReachTheGaugeDuringAScan);
+  test("an unanswered identifier times out and the scan advances",
+       testAnUnansweredIdentifierTimesOutAndTheScanAdvances);
+  test("the scan keeps to its own responder", testTheScanKeepsToItsOwnResponder);
   test("a manifold picks the engine and speed alone cannot",
        testManifoldDecidesTheEngineAndSpeedAloneCannot);
   test("speed still identifies the engine when no mask is known",

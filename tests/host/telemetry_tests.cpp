@@ -249,9 +249,14 @@ void testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals() {
   ConfigData config = testConfig();
   config.fuelSource = FuelSource::SpeedDensity;
   config.lpgEnabled = true;
-  config.lpgAfr = 15.5f;
-  config.lpgDensity = 540.0f;
   config.lpgCorrection = 1.1f;
+  // Deliberately absurd gas constants. Since 0.4.37 nothing multiplies by them:
+  // the raw figure is petrol-equivalent litres for both fuels, and the ratio
+  // between what the two fuels burn is the coefficient alone. Keeping these
+  // numbers large different here is what makes the property observable - if
+  // they ever reach the calculation again, the two runs below disagree.
+  config.lpgAfr = 10.0f;
+  config.lpgDensity = 400.0f;
   rig.data.rpm.set(750.0f, 2000);
   rig.data.mapKpa.set(30.0f, 2000);
   rig.data.intakeAirC.set(27.0f, 2000);
@@ -262,12 +267,24 @@ void testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals() {
       30000.0 * (750.0 / 120.0) * 0.001497 * 0.42 * 28.97 /
       (8.314 * (27.0 + 273.15));
   const double expectedRawLph =
-      expectedAirGps * 3600.0 / (config.lpgAfr * config.lpgDensity);
+      expectedAirGps * 3600.0 / (config.petrolAfr * config.petrolDensity);
   CHECK(rig.data.fuelMode == FuelMode::Lpg);
   CHECK(rig.data.fuelValueValid);
   CHECK(near(rig.data.currentFuelRawLph, expectedRawLph));
   CHECK(near(rig.data.currentFuelLph, expectedRawLph * config.lpgCorrection));
   CHECK(rig.data.consumptionIsPerHour);
+  const double lpgRawLph = rig.data.currentFuelRawLph;
+
+  // Same engine state, propane constants instead. The raw gas figure must not
+  // move by a single bit.
+  config.lpgAfr = 15.5f;
+  config.lpgDensity = 540.0f;
+  rig.data.rpm.set(750.0f, 2100);
+  rig.data.mapKpa.set(30.0f, 2100);
+  rig.data.intakeAirC.set(27.0f, 2100);
+  rig.data.rawSpeedKph.set(0.0f, 2100);
+  rig.engine.update(2100, config, true);
+  CHECK(near(rig.data.currentFuelRawLph, lpgRawLph));
 
   // RPM and MAP are refreshed, but IAT is now older than its 5-second limit.
   rig.data.rpm.set(750.0f, 8001);
@@ -309,8 +326,8 @@ void testLpgUsesMafAndTracksSeparateCounters() {
   ConfigData config = testConfig();
   config.lpgEnabled = true;
   config.fuelSource = FuelSource::Pid5E;  // LPG still uses MAF, never PID 5E.
-  config.lpgAfr = 10.0f;
-  config.lpgDensity = 500.0f;
+  config.lpgAfr = 10.0f;                  // must not reach the calculation
+  config.lpgDensity = 500.0f;             // nor this one
   config.lpgCorrection = 1.5f;
   rig.data.rpm.set(2200.0f, 2000);
   rig.data.rawSpeedKph.set(36.0f, 2000);
@@ -318,14 +335,19 @@ void testLpgUsesMafAndTracksSeparateCounters() {
   rig.data.mafGps.set(10.0f, 2000);
   rig.engine.update(2000, config, true);
 
+  // A 10 g/s MAF is 3600 s * 10 / (14.7 * 745) = 3.2875 L/h of petrol, and the
+  // gas figure is the same 3.2875 raw litres times the coefficient. PID 5E is
+  // ignored on gas, which is why the 100 L/h below changes nothing.
+  const double expectedRawLph =
+      10.0 * 3600.0 / (config.petrolAfr * config.petrolDensity);
   CHECK(rig.data.fuelMode == FuelMode::Lpg);
   CHECK(rig.data.fuelValueValid);
-  CHECK(near(rig.data.currentFuelRawLph, 7.2));
-  CHECK(near(rig.data.currentFuelLph, 10.8));
-  CHECK(near(rig.trip.rawLpgLiters, 7.2 / 3600.0));
+  CHECK(near(rig.data.currentFuelRawLph, expectedRawLph));
+  CHECK(near(rig.data.currentFuelLph, expectedRawLph * 1.5));
+  CHECK(near(rig.trip.rawLpgLiters, expectedRawLph / 3600.0));
   CHECK(near(rig.trip.lpgDistanceKm, 0.01));
   CHECK(rig.trip.lpgSeconds == 1);
-  CHECK(near(rig.engine.lpgLiters(config), 0.003));
+  CHECK(near(rig.engine.lpgLiters(config), expectedRawLph / 3600.0 * 1.5));
   CHECK(near(rig.engine.averageForCurrentFuel(config), 0.0));
   rig.trip.rawLpgLiters = 0.2;
   rig.trip.lpgDistanceKm = 1.0;
@@ -333,6 +355,64 @@ void testLpgUsesMafAndTracksSeparateCounters() {
 
   config.lpgEnabled = false;
   CHECK(near(rig.engine.lpgLiters(config), 0.0));
+}
+
+// The headline of 0.4.37: gas litres are petrol litres times one visible
+// number, and that number means what its label says.
+//
+// The defect this pins down: the old code divided the same air mass by 15.5 and
+// 540 g/L before the coefficient was applied, so the coefficient labelled 1.20
+// produced 1.20 * 1.3084 = 1.57 of the petrol figure. A gauge that reports 57 %
+// where its owner asked for 20 % is not a calibration error that a pump fill
+// can be blamed for.
+void testLpgIsPetrolTimesTheCoefficient() {
+  Rig rig;
+  ConfigData config = testConfig();
+  config.lpgEnabled = true;
+  // MAF for both legs: the gas branch always reads airflow, and the petrol leg
+  // has to come from the same measurement for the ratio to mean anything.
+  config.fuelSource = FuelSource::Maf;
+
+  auto litresPerHour = [&](bool onGas) {
+    const uint32_t now = onGas ? 3000u : 2000u;
+    rig.data.lpgInputActive = onGas;
+    rig.data.rpm.set(2200.0f, now);
+    rig.data.rawSpeedKph.set(60.0f, now);
+    rig.data.mafGps.set(12.0f, now);
+    rig.engine.update(now, config, onGas);
+    CHECK(rig.data.fuelValueValid);
+    CHECK(rig.data.fuelMode ==
+          (onGas ? FuelMode::Lpg : FuelMode::Petrol));
+    return static_cast<double>(rig.data.currentFuelLph);
+  };
+
+  config.petrolCorrection = 1.0f;
+  config.lpgCorrection = 1.0f;
+  const double petrolLph = litresPerHour(false);
+  const double gasAtOne = litresPerHour(true);
+  CHECK(near(gasAtOne, petrolLph, 1e-9));
+
+  // The factory coefficient is the installer's rule of thumb, exactly.
+  config.lpgCorrection = 1.20f;
+  const double gasAtTwenty = litresPerHour(true);
+  CHECK(near(gasAtTwenty / petrolLph, 1.20, 1e-6));
+
+  // And the constants that used to be a second multiplier are inert.
+  config.lpgCorrection = 1.0f;
+  config.lpgAfr = 10.0f;
+  config.lpgDensity = 400.0f;
+  CHECK(near(litresPerHour(true), petrolLph, 1e-9));
+
+  // The trip and the published figures all read the same coefficient, so the
+  // instantaneous number and the average cannot disagree about the fuel.
+  config.lpgCorrection = 1.20f;
+  rig.trip.rawLpgLiters = 1.0;
+  rig.trip.idleLpgLiters = 0.25;
+  rig.trip.lpgDistanceKm = 10.0;
+  CHECK(near(rig.engine.lpgLiters(config), 1.2));
+  CHECK(near(rig.engine.averageForCurrentFuel(config), 12.0));
+  CHECK(near(rig.engine.averageWhileMoving(config), 9.0));
+  CHECK(near(rig.engine.idleLiters(config), 0.3));
 }
 
 void testDfcoThresholdAndZeroFuelValidity() {
@@ -1019,6 +1099,8 @@ int main() {
        testSpeedDensitySupportsLpgAndRejectsStaleRequiredSignals);
   test("fuel source selection and stale fallback",
        testFuelSourceSelectionAndStaleFallback);
+  test("gas is petrol times one visible coefficient",
+       testLpgIsPetrolTimesTheCoefficient);
   test("LPG uses MAF and separate counters", testLpgUsesMafAndTracksSeparateCounters);
   test("DFCO threshold", testDfcoThresholdAndZeroFuelValidity);
   test("service live refresh without trip integration",
