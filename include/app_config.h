@@ -314,6 +314,12 @@ class ConfigStore {
   bool factoryReset();
   static ConfigData defaults();
 
+  // 1.0 unless begin() upgraded a pre-0.4.37 record, in which case it is the
+  // factor that converts the LPG litres already accumulated in the trip in
+  // progress onto the new petrol-equivalent basis. The trip is not stored by
+  // this class, so the one caller that owns TripState applies it; see main.cpp.
+  float lpgBasisScale() const { return lpgBasisScale_; }
+
  private:
   static constexpr uint32_t kMagic = 0x48324731UL;  // "H2G1"
   static uint32_t checksum(const ConfigData& config);
@@ -326,7 +332,9 @@ class ConfigStore {
   static bool migrateV10(const uint8_t* record, ConfigData& destination);
   static bool migrateV11(const uint8_t* record, ConfigData& destination);
   static bool migrateV12(const uint8_t* record, ConfigData& destination);
+  static bool migrateV13(const uint8_t* record, ConfigData& destination);
 
   Preferences preferences_;
   ConfigData config_{};
+  float lpgBasisScale_ = 1.0f;
 };

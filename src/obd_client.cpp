@@ -95,6 +95,14 @@ void ObdClient::loop(uint32_t now) {
   }
   receiveFrames(now);
 
+  // The identifier scan belongs to the service portal and to nothing else. It
+  // is stopped here rather than in the portal so every way out of service mode
+  // - the button, the portal's timeout, a reboot into OTA - ends it at the same
+  // place, and above every branch below that can return, because a scan that is
+  // only stopped when the scheduler happens to reach that line is a scan that
+  // keeps talking to a parked car after the panel is gone.
+  if (!paused_ && didExplorer_.running()) didExplorer_.stop(now);
+
   // Read the driver's own error counters every second. Unlike alerts, these
   // accumulate in the driver regardless of which events are subscribed, so a
   // periodic read is the cheapest way to see what the bus is doing. Ahead of the
@@ -122,6 +130,9 @@ void ObdClient::loop(uint32_t now) {
   // an explicitly requested service scan/clear, remains asynchronous and may
   // finish while the web service is open.
   if (sendDiagnostics(now)) return;
+
+  if (paused_ && didExplorer_.running() && sendDidRequest(now)) return;
+
   if (paused_ && !servicePollingEnabled_) return;
 
   // VIN is asked right after discovery and is not polled afterwards, because the
@@ -560,6 +571,36 @@ bool ObdClient::sendDiagnostics(uint32_t now) {
   return true;
 }
 
+bool ObdClient::sendDidRequest(uint32_t now) {
+  if (waiting_ || !didExplorer_.due(now)) return false;
+  // Same wall-clock budget as every other request of ours. The scan paces
+  // itself at kGapMs, which is slower than this floor, so the two agree instead
+  // of one silently overriding the other.
+  const uint8_t maxRequests = config_.maxRequestsPerSecond == 0
+                                  ? 1
+                                  : config_.maxRequestsPerSecond;
+  uint32_t minGap = 1000UL / maxRequests;
+  if (minGap < 20) minGap = 20;
+  if (now - lastAnyRequestAt_ < minGap) return false;
+
+  twai_message_t message{};
+  if (!didExplorer_.buildRequest(now, message)) return false;
+  if (twai_transmit(&message, pdMS_TO_TICKS(20)) != ESP_OK) {
+    ++telemetry_.canErrorCount;
+    didExplorer_.transportFailed(now);
+    return false;
+  }
+
+  monitor_.record(message, true, now);
+  waiting_ = true;
+  pendingRequest_ = PendingRequest::Did;
+  pendingPid_ = 0;
+  pendingTimeoutMs_ = DidExplorer::kRequestTimeoutMs;
+  requestSentAt_ = now;
+  lastAnyRequestAt_ = now;
+  return true;
+}
+
 void ObdClient::receiveFrames(uint32_t now) {
   twai_message_t message{};
   uint8_t processed = 0;
@@ -633,6 +674,26 @@ void ObdClient::receiveFrames(uint32_t now) {
       }
       // handleVinFrame owns every terminal transition; when more frames are
       // still expected the request stays pending and waiting.
+      continue;
+    }
+
+    // Before the Mode 01 parser, and strict about what it takes: the explorer
+    // only claims a frame addressed to its own responder that answers its own
+    // outstanding request. Every 0x41 answer on the bus still reaches
+    // parseResponse below.
+    if (didExplorer_.handleFrame(message, now, flowControl,
+                                 needsFlowControl)) {
+      if (needsFlowControl) {
+        if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
+          ++telemetry_.canErrorCount;
+          didExplorer_.transportFailed(now);
+        } else {
+          monitor_.record(flowControl, true, now);
+        }
+      }
+      if (pendingRequest_ == PendingRequest::Did && !didExplorer_.waiting()) {
+        finishPending(false);
+      }
       continue;
     }
 
@@ -1185,6 +1246,10 @@ void ObdClient::finishPending(bool timeout) {
     mode22_.timeout();
   } else if (pendingRequest_ == PendingRequest::Diagnostics && timeout) {
     diagnostics_.timeout(millis());
+  } else if (pendingRequest_ == PendingRequest::Did && timeout) {
+    // A module that does not answer an identifier is the ordinary case in a
+    // scan, not an error: the explorer counts it and moves on.
+    didExplorer_.requestTimedOut(millis());
   }
   // An answered request is proof the bus is alive, so any hold-off in force no
   // longer applies. Without this the poller would sit out the rest of a

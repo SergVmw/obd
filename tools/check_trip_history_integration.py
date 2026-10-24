@@ -34,8 +34,13 @@ def main() -> int:
     assert "kSchema = 1;" in snap_h, "PersistenceSnapshot::kSchema must stay 1"
     assert "sizeof(TripState) == 88" in app_cfg_h or "kTripSlotBytes = 88" in rec_h
 
-    # 2. Config Schema 12 -> 13 invariants (preserving Schema 12 offsets & migration)
-    assert "#define H2G_CONFIG_SCHEMA 13" in version_h
+    # 2. Config Schema 13 -> 14 invariants (preserving Schema 13 offsets &
+    #    migration). The record size did not change; only the version and the
+    #    meaning of one field did, which is what lets a saved configuration move
+    #    without a reset.
+    assert "#define H2G_CONFIG_SCHEMA 14" in version_h
+    assert "kV13RecordSize = 348" in app_cfg_cpp
+    assert "migrateV13" in app_cfg_cpp and "lpgBasisRatio" in app_cfg_cpp
     assert "kV12FieldsEnd = 226" in app_cfg_cpp
     assert "kV12ChecksumOffset = 228" in app_cfg_cpp
     assert "kV13ChecksumOffset = 344" in app_cfg_cpp

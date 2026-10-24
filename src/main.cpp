@@ -402,6 +402,21 @@ void setup() {
   if (!persistence.begin(littleFsStorage, trip, petrolCalibration)) {
     ESP_LOGE(kTag, "Runtime persistence initialization failed");
   }
+  // 0.4.37 moved the gas raw figure from physical litres onto the petrol-
+  // equivalent basis the fuel model now shares with petrol. A trip that was
+  // already running was accumulated in the old unit, and the configuration
+  // migration has already converted the coefficient it will be multiplied by,
+  // so the two halves would otherwise be added together in different units -
+  // a 30 % error on the gas half of exactly one trip, which is the kind of
+  // defect nobody reports because it disappears with the next reset.
+  if (configStore.lpgBasisScale() != 1.0f) {
+    trip.rawLpgLiters *= configStore.lpgBasisScale();
+    trip.idleLpgLiters *= configStore.lpgBasisScale();
+    ESP_LOGW(kTag, "LPG basis migrated: coefficient %.3f, trip litres rescaled",
+             static_cast<double>(configStore.data().lpgCorrection));
+    tripStore.save(trip);
+    persistence.checkpoint(trip, petrolCalibration, configStore.data().saveTrip);
+  }
   const uint32_t bootRtcSec = currentRtcSec();
   if (!tripClock.begin(bootRtcSec)) {
     ESP_LOGE(kTag, "Trip clock initialization failed");

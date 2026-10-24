@@ -11,6 +11,7 @@
 #include "asset_store.h"
 #include "brightness_manager.h"
 #include "can_monitor.h"
+#include "did_store.h"
 #include "dtc_history_persistence.h"
 #include "firmware_slots.h"
 #include "obd_client.h"
@@ -99,6 +100,17 @@ class ServicePortal {
   void sendDtcStatus();
   void startDtcScan();
   void clearDtcs();
+  // Read-only identifier scan. Four of these are mutations of the scanner's own
+  // state, not of the vehicle or the settings, and all of them are confirmed
+  // with the same action header the destructive routes use so a page reload or
+  // a stray form post cannot start a scan by accident.
+  void sendDidStatus();
+  void sendDidExport();
+  void startDidScan();
+  void stopDidScan();
+  void startDidSnapshot();
+  void clearDidStore();
+  void pumpDidActivity(uint32_t now);
   void sendAssetStatus();
   void handleAssetPreflight();
   void handleAssetBody(VisualAssetType type);
@@ -184,6 +196,14 @@ class ServicePortal {
   uint32_t lastCanSnapshotAt_ = 0;
   uint32_t lastDtcScanAt_ = 0;
   uint32_t lastDtcClearAt_ = 0;
+  uint32_t lastDidActionAt_ = 0;
+  DidStore didStore_;
+  // Which snapshot slot the running target scan belongs to, and whether a run
+  // the portal started is still in flight. Both are needed because the scan
+  // ends on its own schedule, not in a request handler.
+  static constexpr size_t kNoSnapshotSlot = 99;
+  size_t activeSnapshotSlot_ = kNoSnapshotSlot;
+  bool didRunActive_ = false;
   uint32_t lastFactoryResetAt_ = 0;
   uint32_t lastLightResetAt_ = 0;
   uint32_t lastOtaAttemptAt_ = 0;

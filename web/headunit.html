@@ -581,11 +581,43 @@ createDial('dial-econ', {
   min: 0, max: 30, steps: 6, unit: 'Л / 100 КМ', marker: 12.0, tip: '#5acaee',
   zones: [[0, 15, '#5af2ac'], [15, 22, '#5acaee'], [22, 30, '#ffbe5a']]
 });
-createDial('dial-boost', {
-  min: -1.0, max: 1.5, steps: 10, unit: 'БАР НАДДУВА', marker: 0.0,
-  fmtTick: function(v) { return (v > 0 ? '+' : '') + v.toFixed(1); },
-  zones: [[-1.0, 0, '#5acaee'], [0, 0.9, '#5af2ac'], [0.9, 1.15, '#ffbe5a'], [1.15, 1.5, '#ff5d6a']]
-});
+// The boost arc is the one dial that is rebuilt at run time: its limits are a
+// device setting, and 0.4.37 moved the factory pair from -1.0..+1.5 to
+// -1.0..+1.2 bar because the stock engine's 1.0 bar peak left the top third of
+// the old arc unreachable. Drawing that scale from a constant here is how the
+// two screens came to disagree, so every snapshot carries the four numbers and
+// this rebuilds only when one of them changes.
+function boostDialConfig(mn, mx, warning, danger) {
+  var span = mx - mn;
+  var steps = Math.round(span / 0.2);
+  if (!(steps >= 4 && steps <= 12)) steps = 10;
+  // Only every other tick is labelled, so an odd count would leave the ceiling
+  // unlabelled and the scale would read as if it ended below its own maximum.
+  if (steps % 2 === 1) steps += 1;
+  var low = mn < 0 ? mn : 0;
+  return {
+    min: mn, max: mx, steps: steps, unit: 'БАР НАДДУВА', marker: 0.0,
+    fmtTick: function(v) { return (v > 0 ? '+' : '') + v.toFixed(1); },
+    zones: [[mn, low, '#5acaee'], [low, warning, '#5af2ac'],
+            [warning, danger, '#ffbe5a'], [danger, mx, '#ff5d6a']]
+  };
+}
+var boostScaleKey = '';
+function applyBoostScale(d) {
+  var mn = d.boostMinBar, mx = d.boostMaxBar, wn = d.boostWarningBar, dg = d.boostDangerBar;
+  if (typeof mn !== 'number' || typeof mx !== 'number' ||
+      typeof wn !== 'number' || typeof dg !== 'number') return;
+  if (!isFinite(mn) || !isFinite(mx) || !isFinite(wn) || !isFinite(dg)) return;
+  if (mx - mn < 0.2 || mn >= 0 || !(wn < dg) || dg > mx) return;
+  var key = mn + '|' + mx + '|' + wn + '|' + dg;
+  if (key === boostScaleKey) return;
+  boostScaleKey = key;
+  createDial('dial-boost', boostDialConfig(mn, mx, wn, dg));
+  // createDial draws the marker at its cfg value, so a rebuild in the middle of
+  // a drive must put the peak back where the previous arc had it.
+  setDialMarker('dial-boost', peakBoostBar);
+}
+createDial('dial-boost', boostDialConfig(-1.0, 1.2, 0.90, 1.05));
 createDial('dial-rpm', {
   min: 0, max: 6000, steps: 6, unit: 'ОБ/МИН (×1000)',
   fmtTick: function(v) { return (v / 1000).toFixed(0); },
@@ -645,6 +677,7 @@ var lastHeadSeq = null;
 var openDetailSeq = null;
 var lastOkAt = 0;
 var lastHostname = 'h2';
+var peakBoostBar = 0;
 
 var hzStyleEl = document.createElement('style');
 document.head.appendChild(hzStyleEl);
@@ -841,15 +874,17 @@ function renderLive(d) {
   $('curIdleShare').textContent = c.idleSharePercent !== null && c.idleSharePercent !== undefined
     ? c.idleSharePercent.toFixed(1) + '%' : '—';
 
+  applyBoostScale(d);
   if (d.boostBar !== null && d.boostBar !== undefined) {
     var bt = signed(d.boostBar, 2);
     setDial('dial-boost', d.boostBar, bt);
     $('lvBoostDig').textContent = bt;
   } else {
-    setDial('dial-boost', -1.0, '—');
+    setDial('dial-boost', DIALS['dial-boost'].min, '—');
     $('lvBoostDig').textContent = '—';
   }
   var peak = d.peakBoostBar || 0;
+  peakBoostBar = peak;
   setDialMarker('dial-boost', peak);
   $('lvPeakBoost').textContent = '▲ ' + signed(peak, 2) + ' бар';
   $('lvMapTxt').textContent = d.mapKpa !== null && d.mapKpa !== undefined ? 'MAP ' + Math.round(d.mapKpa) + ' кПа' : 'MAP —';

@@ -36,6 +36,16 @@ struct StaLiveSnapshot {
   bool hasBoost = false;
   float boostBar = 0.0f;
   float peakBoostBar = 0.0f;
+  // The arc the reading belongs on. The head unit used to keep its own copy of
+  // -1.0..+1.5 and drew a scale the round screen did not agree with, and then
+  // 0.4.37 moved the device to -1.0..+1.2: a dashboard showing a needle against
+  // the wrong stops is worse than one showing no scale at all, because the
+  // number under it still looks right. Published with every snapshot so the two
+  // screens cannot drift again, whatever the owner sets in the portal.
+  float boostMinBar = -1.0f;
+  float boostMaxBar = 1.2f;
+  float boostWarningBar = 0.90f;
+  float boostDangerBar = 1.05f;
   bool hasCoolant = false;
   float coolantC = 0.0f;
   bool hasIat = false;

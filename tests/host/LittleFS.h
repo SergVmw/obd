@@ -12,6 +12,7 @@ class HostLittleFS {
   bool failOpen = false;
   bool failRemove = false;
   bool failMkdir = false;
+  bool failRename = false;
 
   bool exists(const char* path) const {
     return path && files.find(path) != files.end();
@@ -38,6 +39,17 @@ class HostLittleFS {
     return fs::File{};
   }
 
+  bool rename(const char* from, const char* to) {
+    if (failRename || !from || !to) return false;
+    auto found = files.find(from);
+    if (found == files.end()) return false;
+    if (std::strcmp(from, to) != 0) {
+      files[to] = std::move(found->second);
+      files.erase(found);
+    }
+    return true;
+  }
+
   bool remove(const char* path) {
     if (failRemove || !path) return false;
     return files.erase(path) != 0;
@@ -47,7 +59,7 @@ class HostLittleFS {
 
   void reset() {
     files.clear();
-    failOpen = failRemove = failMkdir = false;
+    failOpen = failRemove = failMkdir = failRename = false;
   }
 };
 
