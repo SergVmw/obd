@@ -44,6 +44,9 @@ class DtcHistoryPersistence {
   }
 
  private:
+  // Metadata only. The record itself lives in scanRecord_ while a segment is
+  // being walked: a 1432-byte member of this struct was copied twice per boot,
+  // which is what put the device into a reboot loop with a black screen.
   struct SegmentScan {
     bool exists = false;
     bool hasValid = false;
@@ -54,18 +57,17 @@ class DtcHistoryPersistence {
     // True when the record was read in the schema-1 layout and rewritten into
     // the current one. Drives a rotation so the file stops mixing layouts.
     bool legacy = false;
-    uint8_t record[DtcHistorySnapshot::kRecordBytes]{};
   };
 
   static const char* segmentPath(char segment);
-  SegmentScan scanSegment(char segment) const;
-  bool scanLegacySegment(char segment, SegmentScan& result) const;
-  bool verifyRecordAt(const char* path, size_t offset,
-                      const uint8_t* expected) const;
+  void scanSegment(char segment, SegmentScan& result);
+  bool scanLegacySegment(char segment, SegmentScan& result);
+  bool verifyRecordAt(const char* path, size_t offset, const uint8_t* expected);
   bool writeJournalRecord(const uint8_t* record);
   bool writeNvsRecord(const uint8_t* record);
   bool loadNvsRecord(uint8_t* record);
   bool prepareLatest(const DtcHistoryData& history);
+  bool payloadMatches(const DtcHistoryData& history);
   bool syncJournal();
   bool syncNvs();
   void resetRuntimeState();
@@ -83,6 +85,13 @@ class DtcHistoryPersistence {
   char activeSegment_ = '-';
   size_t activeSegmentBytes_ = 0;
   uint8_t latestRecord_[DtcHistorySnapshot::kRecordBytes]{};
+  // Scratch for "read a record, encode a record, compare a record". All of it
+  // is a member rather than a local: the boot path has 8192 bytes of stack and
+  // one record is 1432.
+  uint8_t scanRecord_[DtcHistorySnapshot::kRecordBytes]{};
+  uint8_t verifyRecord_[DtcHistorySnapshot::kRecordBytes]{};
+  uint8_t legacyRecord_[DtcHistorySnapshot::kLegacyRecordBytes]{};
+  DtcHistorySnapshot::Decoded decoded_{};
   uint32_t latestSequence_ = 0;
   uint32_t journalSequence_ = 0;
   uint32_t nvsSequence_ = 0;

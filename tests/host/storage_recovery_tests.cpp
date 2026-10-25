@@ -480,6 +480,17 @@ std::vector<uint8_t> legacyDtcRecord(uint32_t sequence) {
   return bytes;
 }
 
+// A record whose CRC still matches after the field was changed: the point of
+// these cases is the rule, not the checksum.
+void reject_resealed(uint8_t* record) {
+  const uint32_t crc =
+      storageCrc32(record, DtcHistorySnapshot::kCrcOffset);
+  record[DtcHistorySnapshot::kCrcOffset] = static_cast<uint8_t>(crc);
+  record[DtcHistorySnapshot::kCrcOffset + 1] = static_cast<uint8_t>(crc >> 8);
+  record[DtcHistorySnapshot::kCrcOffset + 2] = static_cast<uint8_t>(crc >> 16);
+  record[DtcHistorySnapshot::kCrcOffset + 3] = static_cast<uint8_t>(crc >> 24);
+}
+
 void testDtcHistoryCarriesOnsetContext() {
   resetEnvironment();
   DtcHistoryData history = dtcHistoryWith(0x0171, DtcHistoryStored, 3);
@@ -577,6 +588,150 @@ void testDtcHistoryCarriesOnsetContext() {
   reserved[entryAt + 42] = 0x01;
   reseal(reserved);
   assert(!DtcHistorySnapshot::valid(reserved.data(), reserved.size()));
+}
+
+// valid() answers "is this a record of the current layout" and decode() answers
+// "what is in it". The split exists because decode() needs a 1416-byte
+// DtcHistoryData, and the boot path cannot afford one on the stack - so the two
+// must agree about which records are acceptable, or a record that passes valid()
+// would be rejected a moment later by decode() and the difference would be
+// invisible until it happened on a real device.
+void testStructureCheckAgreesWithTheDecoder() {
+  resetEnvironment();
+  DtcHistoryData history = dtcHistoryWith(0x0171, DtcHistoryStored, 3);
+  uint8_t good[DtcHistorySnapshot::kRecordBytes]{};
+  assert(DtcHistorySnapshot::encode(9, history, good, sizeof(good)));
+  assert(DtcHistorySnapshot::valid(good, sizeof(good)));
+  assert(DtcHistorySnapshot::sequence(good, sizeof(good)) == 9);
+
+  DtcHistorySnapshot::Decoded decoded{};
+  assert(DtcHistorySnapshot::decode(good, sizeof(good), decoded));
+  assert(decoded.sequence == 9);
+  assert(decoded.history.entryCount == 1);
+
+  // Every structural fault is a failure on both sides.
+  const auto rejects = [&](uint8_t* record, size_t bytes) {
+    assert(!DtcHistorySnapshot::valid(record, bytes));
+    DtcHistorySnapshot::Decoded scratch{};
+    assert(!DtcHistorySnapshot::decode(record, bytes, scratch));
+    // And the decoder leaves nothing half-built behind for a caller that
+    // ignored the return value.
+    assert(scratch.sequence == 0);
+    assert(scratch.history.entryCount == 0);
+  };
+  uint8_t copy[DtcHistorySnapshot::kRecordBytes];
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[0] ^= 0xFF;                       // magic
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[DtcHistorySnapshot::kCrcOffset] ^= 0x01;   // checksum
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[4] = 0x03;                        // schema
+  copy[5] = 0x00;
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[17] = 0x80;                       // flags byte, unknown bit
+  reject_resealed(copy);
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[18] = 0x01;                       // reserved byte
+  reject_resealed(copy);
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[16] = static_cast<uint8_t>(DtcHistoryData::kMaxEntries + 1);
+  reject_resealed(copy);
+  rejects(copy, sizeof(copy));
+
+  std::memcpy(copy, good, sizeof(copy));
+  copy[8] = copy[9] = copy[10] = copy[11] = 0;   // sequence zero
+  reject_resealed(copy);
+  rejects(copy, sizeof(copy));
+
+  // A short buffer is not a record, however good its first 100 bytes look.
+  assert(!DtcHistorySnapshot::valid(good, sizeof(good) - 1));
+  assert(DtcHistorySnapshot::sequence(good, sizeof(good) - 1) == 0);
+
+  // The content rules are checked too, and by the same code: a value that
+  // carries no validity bit is not a measurement, and both functions must say
+  // so. This is the case that would otherwise pass the boot-path scan and be
+  // rejected a moment later by the decoder.
+  DtcHistoryData withCondition = history;
+  withCondition.entries[0].condition.valid = DtcCondition::kAll;
+  withCondition.entries[0].condition.rpm = 1500;
+  uint8_t content[DtcHistorySnapshot::kRecordBytes]{};
+  assert(DtcHistorySnapshot::encode(11, withCondition, content, sizeof(content)));
+  assert(DtcHistorySnapshot::valid(content, sizeof(content)));
+  const size_t entryAt = DtcHistorySnapshot::kEntriesOffset;
+  auto putLe16 = [](uint8_t* bytes, size_t at, uint16_t value) {
+    bytes[at] = static_cast<uint8_t>(value);
+    bytes[at + 1] = static_cast<uint8_t>(value >> 8);
+  };
+  putLe16(content, entryAt + 24, DtcCondition::kAll & ~DtcCondition::kRpm);
+  reject_resealed(content);
+  assert(!DtcHistorySnapshot::valid(content, sizeof(content)));
+  DtcHistorySnapshot::Decoded never{};
+  assert(!DtcHistorySnapshot::decode(content, sizeof(content), never));
+  assert(never.sequence == 0);
+  // Clearing the value makes the record consistent again: what was rejected was
+  // the combination, not the missing bit on its own.
+  putLe16(content, entryAt + 28, 0);
+  reject_resealed(content);
+  assert(DtcHistorySnapshot::valid(content, sizeof(content)));
+}
+
+// Every record buffer in DtcHistoryPersistence is a member now, which is what
+// took 4 416 bytes off the boot stack. The hazard that buys is aliasing: if
+// prepareLatest compared latestRecord_ with itself, or if a read-back landed in
+// the buffer it was being compared against, the comparison would succeed
+// trivially and the store would stop writing while every test still passed.
+void testScratchBuffersDoNotAlias() {
+  resetEnvironment();
+  DtcHistoryData history = dtcHistoryWith(0x0171, DtcHistoryStored, 2);
+  LittleFsStorage storage = mountedStorage();
+  DtcHistoryPersistence persistence;
+  assert(persistence.begin(storage, history));
+  const uint32_t firstSequence = persistence.latestSequence();
+
+  // A change must produce a new sequence and be on disk, not just in memory.
+  DtcHistoryData changed = dtcHistoryWith(0x0171, DtcHistoryStored, 9);
+  changed.entries[0].occurrenceCount = 7;
+  assert(persistence.checkpoint(changed));
+  assert(persistence.latestSequence() > firstSequence);
+  assert(persistence.latestRecordCrcValid());
+
+  DtcHistoryData reloaded{};
+  LittleFsStorage storage2 = mountedStorage();
+  DtcHistoryPersistence reader;
+  assert(reader.begin(storage2, reloaded));
+  assert(reloaded.entryCount == 1);
+  assert(reloaded.entries[0].occurrenceCount == 7);
+  assert(reloaded.changeSequence == 9);
+
+  // The same checkpoint twice writes nothing the second time: the payload did
+  // not move, so the sequence must not either. A self-comparison would always
+  // look equal and this would pass for the wrong reason, so the assertion is on
+  // the sequence advancing when the payload DOES change - above - and staying
+  // put when it does not.
+  const uint32_t steady = persistence.latestSequence();
+  assert(persistence.checkpoint(changed));
+  assert(persistence.latestSequence() == steady);
+
+  // And the failure path: a history that cannot be encoded must be reported,
+  // not quietly treated as "nothing changed". This is the regression the
+  // member-buffer rewrite introduced - prepareLatest answers two questions with
+  // one bool, and checkpoint used to trust it for both.
+  DtcHistoryData broken{};
+  broken.entryCount = 1;   // one entry, all zero: fails validation
+  const uint32_t beforeFailure = persistence.latestSequence();
+  assert(!persistence.checkpoint(broken));
+  assert(persistence.latestSequence() == beforeFailure);
 }
 
 void testDtcHistoryUpgradesASchemaOneStore() {
@@ -828,6 +983,8 @@ int main() {
   testDtcFactoryResetAcceptsJournalWhenNvsCannotOpen();
   testDtcHistorySnapshotAndDurableMirror();
   testDtcHistoryCarriesOnsetContext();
+  testStructureCheckAgreesWithTheDecoder();
+  testScratchBuffersDoNotAlias();
   testDtcHistoryUpgradesASchemaOneStore();
   testDtcHistoryTornJournalFallsBackToNvs();
   testAssetValidationAbAndFallback();

@@ -124,6 +124,13 @@ struct StaRuntimeStatus {
   uint32_t consecutiveFailures = 0;
   char ip[16] = {0};
   char hostname[StaClientLogic::kMaxHostnameLen + 1] = "h2";
+  // Why the last join failed, and how many times it was tried. -1 means the
+  // client never failed. Deliberately not cleared when service mode locks the
+  // radio out for the rest of the boot: the portal is exactly where this is
+  // read, and it is entered only after the radio is gone.
+  int lastReason = -1;
+  uint32_t attempts = 0;
+  uint32_t disconnects = 0;
 };
 
 namespace StaReadOnly {

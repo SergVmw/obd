@@ -234,6 +234,13 @@ class DidStore {
   Ecu engine_{};
   Ecu gearbox_{};
   Snapshot snapshots_[kSlots]{};
+  // Read-back scratch for load() and for the verify pass in writeRecord(). One
+  // Snapshot is about 2 KB and there are three of them: as locals they were
+  // 6 KB of the 8192-byte loopTask stack, on the path that opens the service
+  // portal - the one path that must never fail.
+  Ecu scratchEngine_{};
+  Ecu scratchGearbox_{};
+  Snapshot scratchSnapshots_[kSlots]{};
   bool dirty_ = false;
   bool restoredFromFlash_ = false;
   const char* status_ = "empty";

@@ -181,6 +181,11 @@ html, body {
   var GW_PROBE_PORT = parseInt(Q.gwPort, 10) || 65530;
   var GW_FIRST_OCTETS = Q.gwBase ? Q.gwBase : '192.168';
   var MAX_HOST = Math.min(254, Math.max(2, parseInt(Q.maxHost, 10) || 254));
+  var PROBE_PATH = Q.probe || '/h2probe';
+  // Where the gauge's own access point puts it. Deterministic, and the one
+  // address worth trying before scanning anything: in AP mode the phone is
+  // talking to this device already, it just does not know it.
+  var AP_HOST = Q.apHost || '192.168.4.1';
 
   var foundHost = null;
   var roundNum = 0;
@@ -250,13 +255,43 @@ html, body {
     $('stateBadge').textContent = 'НАЙДЕН';
     $('progBar').className = 'bar-fill ok';
     $('statusTxt').textContent = 'Подключено: ' + host;
-    $('detailTxt').textContent = 'H2 Gauge v' + data.version + ' — переход на панель приборов...';
+    $('detailTxt').textContent = data && data.version
+      ? 'H2 Gauge v' + data.version + ' — переход на панель приборов...'
+      : 'Прибор ответил — переход на панель приборов...';
     if (!NO_REDIRECT) {
       window.location.replace(targetUrl);
     }
   }
 
-  function probeLiveHost(host, timeoutMs, cb) {
+  // Discovery probe. An <img> load is not subject to CORS, so this answers the
+  // same way on Android 7's WebView and on Android 11's Chrome. The JSON probe
+  // below does not: a file:// page reading a cross-origin JSON is blocked
+  // without Access-Control-Allow-Origin, which is exactly why the gauge stopped
+  // being found on the newer phone while manual entry kept working.
+  function probeHostImage(host, timeoutMs, cb) {
+    var img = new Image();
+    var done = false;
+    var timer = null;
+    function finish(ok) {
+      if (done) return;
+      done = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      img.onload = img.onerror = null;
+      // Dropping the src releases the request slot; without it a slow probe
+      // keeps a socket open through the whole sweep.
+      try { img.src = ''; } catch (_) {}
+      cb(ok);
+    }
+    img.onload = function() { finish(true); };
+    img.onerror = function() { finish(false); };
+    timer = setTimeout(function() { finish(false); }, timeoutMs);
+    img.src = 'http://' + host + PROBE_PATH + '?_=' + (+new Date());
+  }
+
+  // Reads the version after the address is known. Best effort by design: on a
+  // browser that blocks the read we still have a confirmed address, and a
+  // redirect that works is worth more than a version string that does not.
+  function confirmHost(host, timeoutMs, cb) {
     var xhr = new XMLHttpRequest();
     var done = false;
     function finish(ok, data) {
@@ -284,6 +319,14 @@ html, body {
     try { xhr.send(null); } catch (_) { finish(false, null); }
   }
 
+  // Confirms an address and opens it. The version read is a separate, optional
+  // step: when it fails the address is still good.
+  function adoptHost(host) {
+    confirmHost(host, 900, function(ok, data) {
+      finishFound(host, ok ? data : null);
+    });
+  }
+
   function scanPrefix(prefix, doneCb) {
     var nextHost = 2;
     var active = 0;
@@ -299,10 +342,10 @@ html, body {
         (function(h) {
           active++;
           var candidate = withPort(prefix + '.' + h);
-          probeLiveHost(candidate, 450, function(ok, data) {
+          probeHostImage(candidate, 450, function(ok) {
             active--;
             if (ok && !foundHost) {
-              finishFound(candidate, data);
+              adoptHost(candidate);
               if (!finished) { finished = true; doneCb(true); }
               return;
             }
@@ -445,10 +488,10 @@ html, body {
     var left = hosts.length, advanced = false;
     for (var i = 0; i < hosts.length; i++) {
       (function(h) {
-        probeLiveHost(h, 420, function(ok, data) {
+        probeHostImage(h, 420, function(ok) {
           left--;
           if (ok && !foundHost) {
-            finishFound(h, data);
+            adoptHost(h);
             if (!advanced) { advanced = true; doneCb(); }
             return;
           }
@@ -474,6 +517,8 @@ html, body {
       if (h && !seenHost[h]) { seenHost[h] = true; directHosts.push(h); }
     }
     if (Q.host) pushDirect(withPort(Q.host));
+    // The gauge's own AP address, before mDNS and before any sweep.
+    if (AP_HOST) pushDirect(withPort(AP_HOST));
     var hashHost = window.location.hash ? window.location.hash.slice(1) : '';
     if (hashHost) pushDirect(withPort(hashHost));
     var lastHost = lsGet('h2_last_host');
@@ -526,10 +571,14 @@ html, body {
     }
     var target = withPort(raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, ''));
     $('statusTxt').textContent = 'Проверка ' + target + '...';
-    probeLiveHost(target, 900, function(ok, data) {
+    probeHostImage(target, 900, function(ok) {
       if (ok) {
-        finishFound(target, data);
+        adoptHost(target);
       } else {
+        // The owner typed an address; a probe that failed here may be a
+        // browser policy rather than a device that is not there, so the
+        // navigation still happens. That path is how the address was reached
+        // before discovery learned to work without CORS.
         rememberHost(target);
         if (!NO_REDIRECT) window.location.href = 'http://' + target + '/';
       }

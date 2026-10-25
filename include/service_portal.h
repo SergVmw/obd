@@ -83,6 +83,8 @@ class ServicePortal {
   bool serviceTimeoutDue(uint32_t now) const;
   void setupRoutes();
   void sendIndex();
+  void sendProbe();
+  void sendProbePreflight();
   void sendConfig();
   void receiveConfig();
   void receiveTime();

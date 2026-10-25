@@ -252,7 +252,10 @@ void ObdDiagnostics::restoreHistory(const DtcHistoryData& history) {
 }
 
 void ObdDiagnostics::resetHistory() {
-  history_ = DtcHistoryData{};
+  // memset, not `= DtcHistoryData{}`: the assignment builds a 1416-byte
+  // temporary on the stack, and this is reachable from the boot path through
+  // the client's initial state.
+  memset(static_cast<void*>(&history_), 0, sizeof(history_));
   publishSummary();
 }
 

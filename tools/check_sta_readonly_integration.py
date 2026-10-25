@@ -184,6 +184,85 @@ check("general.rx_queue_len = 64;" in obd_code, "src/obd_client.cpp must set TWA
 check("rawMv >= 6000U && rawMv <= 20000U" in obd_code,
       "src/obd_client.cpp PID 0x42 handler must reject sensorless 0.000 V / out-of-range module replies")
 
+# 5. The discovery beacon and the page that uses it.
+#
+# This is the 2026-10-25 report: the head unit on Android 7 found the gauge,
+# the phone on Android 11 scanned forever. Android 7's WebView let a file://
+# page read a cross-origin JSON; Chrome applies CORS and the read comes back as
+# onerror with status 0, so the page - which had no other way to recognise the
+# gauge - never found it. The fix is a path that exists only on this device and
+# an <img> load, which no browser subjects to CORS.
+probe_header = (ROOT / "include" / "probe_png.h").read_text(encoding="utf-8")
+check("kPath = \"/h2probe\"" in probe_header, "include/probe_png.h must declare the /h2probe path")
+check("inline const uint8_t* png()" in probe_header,
+      "the beacon must be a function-local static: a namespace-scope constexpr array "
+      "gets one copy per translation unit and cannot be compared across them")
+for rel in ("src/sta_readonly.cpp", "src/service_portal.cpp"):
+    txt = (ROOT / rel).read_text(encoding="utf-8")
+    check('#include "probe_png.h"' in txt, f"{rel} must serve the discovery beacon")
+    check("H2Probe::kPath" in txt, f"{rel} must route /h2probe")
+# The portal must answer a GET on the beacon, not merely mention its path: the
+# OPTIONS registration alone would leave the device unfindable.
+portal_src = (ROOT / "src" / "service_portal.cpp").read_text(encoding="utf-8")
+check('server_.on(H2Probe::kPath, HTTP_GET, [this]() { sendProbe(); });' in portal_src,
+      "ServicePortal must register a GET handler for the beacon: without it the "
+      "gauge answers 302 from onNotFound and an <img> probe fails")
+
+open_html = (ROOT / "web" / "h2-open.html").read_text(encoding="utf-8")
+check("new Image()" in open_html,
+      "h2-open.html must probe with an image load, not only with an XHR: a file:// "
+      "page reading a cross-origin JSON is blocked by CORS on Android 11")
+check("probeHostImage" in open_html, "discovery must go through probeHostImage()")
+check("PROBE_PATH" in open_html, "the beacon path must be a named constant, not an inline literal")
+check("confirmHost" in open_html,
+      "the version read must stay optional: a found address is worth more than a version string")
+# The old name must be gone, so nothing quietly goes back to depending on the
+# JSON probe for discovery.
+check("probeLiveHost" not in open_html,
+      "probeLiveHost must not come back: reading /api/ro/live is the CORS-dependent path "
+      "that fails on Android 11")
+
+# 6. The station failure report.
+#
+# "WIFI: ПОИСК" was the whole story the device could tell: band, hidden SSID, a
+# wrong name, WPA3 and a refused association all look the same from the panel.
+# esp_wifi does say which one it was, and the firmware must keep that number
+# and show it. These checks span the three layers, because a reason captured in
+# one and dropped in the next is the same as no reason at all.
+sta_src = (ROOT / "src" / "sta_readonly.cpp").read_text(encoding="utf-8")
+check("WiFi.onEvent(staWifiEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED)" in sta_src,
+      "src/sta_readonly.cpp must subscribe to the STA disconnect event: it is the "
+      "only place esp_wifi reports why a join failed")
+check("gBridge.diag.noteDisconnect(" in sta_src,
+      "the disconnect reason must be recorded, not just logged")
+check("gBridge.diag.noteAttempt(" in sta_src,
+      "every WiFi.begin() must be counted, or 'never joined' cannot be told from "
+      "'joins and drops'")
+check("sm.phase() == StaClientLogic::Phase::Connecting" in sta_src,
+      "reasons may only be recorded while a join is outstanding: our own "
+      "disconnects on the way into backoff arrive through the same event and "
+      "would bury the real failure under 'assoc_leave'")
+check("out.lastReason = gBridge.diag.lastReason;" in sta_src,
+      "StaReadOnlyRuntime::status() must carry the reason out of the worker")
+# The lockout zeroes the live status on purpose; the diagnostics must survive
+# it, because service mode - where the portal is read - is entered only after
+# the radio is dead.
+check("gBridge.status = StaRuntimeStatus{};" in sta_src,
+      "the lockout path is expected to zero the live status")
+# Comments stripped first: a commented-out assignment still contains the key,
+# and the first version of this check passed on exactly that.
+portal_src = (ROOT / "src" / "service_portal.cpp").read_text(encoding="utf-8")
+portal_code = strip_cpp_comments(portal_src)
+for key in ("lastReason", "lastReasonHint", "attempts", "disconnects"):
+    check(re.search(r'staObj\["%s"\]\s*=' % key, portal_code) is not None,
+          f"the service portal must publish sta.{key} in /api/status")
+portal_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+check('id="staRuntime"' in portal_html,
+      "the portal must have a place to show the station state")
+check("staStatus(s)" in portal_html and "staStatus(null)" in portal_html,
+      "the station state must be refreshed on every status poll and cleared on a "
+      "failed one, or the page keeps showing a stale success")
+
 if failures:
     for f in failures:
         print(f"FAIL: {f}", file=sys.stderr)

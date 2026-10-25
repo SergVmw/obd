@@ -45,6 +45,7 @@ jobs:
           python tools/test_screen_gate.py
           python tools/test_trip_history.py
           python tools/test_sta_readonly.py
+          python tools/test_sta_diagnostic.py
           python tools/test_power_and_rollback.py
 
       - name: Check embedded UI, fonts and OTA invariants
@@ -92,6 +93,13 @@ jobs:
       # struct had never had.
       - name: Build the diagnostic and speed-density images
         run: pio run -e esp32s3_n16r8_diagnostic -e esp32s3_n16r8_diaglong -e esp32s3_n16r8_speeddensity
+
+      # After the build, because the numbers come from the compiler's own
+      # stack-usage files rather than from a grep. This is the check that would
+      # have caught 0.4.39: a release whose boot path needed 8784 bytes of an
+      # 8192-byte stack and never reached the display.
+      - name: Check the boot path fits in the loopTask stack
+        run: python tools/check_boot_stack.py
 
       - name: Check build and committed release artifacts
         run: |

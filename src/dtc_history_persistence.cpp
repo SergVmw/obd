@@ -21,36 +21,36 @@ const char* DtcHistoryPersistence::segmentPath(char segment) {
   return segment == 'B' ? kSegmentBPath : kSegmentAPath;
 }
 
-DtcHistoryPersistence::SegmentScan DtcHistoryPersistence::scanSegment(
-    char segment) const {
-  SegmentScan result;
-  if (!fsMounted_) return result;
+void DtcHistoryPersistence::scanSegment(char segment, SegmentScan& result) {
+  result = SegmentScan{};
+  if (!fsMounted_) return;
   const char* path = segmentPath(segment);
-  if (!LittleFS.exists(path)) return result;
+  if (!LittleFS.exists(path)) return;
   result.exists = true;
 
   fs::File file = LittleFS.open(path, "r");
   if (!file) {
     result.cleanTail = false;
-    return result;
+    return;
   }
   result.fileBytes = file.size();
   if (result.fileBytes > kSegmentBytes) result.cleanTail = false;
   const size_t scanBytes =
       result.fileBytes < kSegmentBytes ? result.fileBytes : kSegmentBytes;
-  uint8_t record[DtcHistorySnapshot::kRecordBytes]{};
+  uint8_t* record = scanRecord_;
   size_t offset = 0;
-  while (offset + sizeof(record) <= scanBytes) {
-    if (file.read(record, sizeof(record)) != sizeof(record) ||
-        !DtcHistorySnapshot::valid(record, sizeof(record))) {
+  while (offset + DtcHistorySnapshot::kRecordBytes <= scanBytes) {
+    if (file.read(record, DtcHistorySnapshot::kRecordBytes) !=
+            DtcHistorySnapshot::kRecordBytes ||
+        !DtcHistorySnapshot::valid(record, DtcHistorySnapshot::kRecordBytes)) {
       result.cleanTail = false;
       break;
     }
     result.hasValid = true;
-    result.validBytes = offset + sizeof(record);
-    result.sequence = DtcHistorySnapshot::sequence(record, sizeof(record));
-    memcpy(result.record, record, sizeof(record));
-    offset += sizeof(record);
+    result.validBytes = offset + DtcHistorySnapshot::kRecordBytes;
+    result.sequence =
+        DtcHistorySnapshot::sequence(record, DtcHistorySnapshot::kRecordBytes);
+    offset += DtcHistorySnapshot::kRecordBytes;
   }
   file.close();
   if (result.validBytes != result.fileBytes) result.cleanTail = false;
@@ -69,11 +69,10 @@ DtcHistoryPersistence::SegmentScan DtcHistoryPersistence::scanSegment(
       result.legacy = true;
     }
   }
-  return result;
 }
 
 bool DtcHistoryPersistence::scanLegacySegment(char segment,
-                                              SegmentScan& result) const {
+                                              SegmentScan& result) {
   if (!fsMounted_) return false;
   const char* path = segmentPath(segment);
   if (!LittleFS.exists(path)) return false;
@@ -84,30 +83,33 @@ bool DtcHistoryPersistence::scanLegacySegment(char segment,
   }
   const size_t scanBytes = file.size() < kSegmentBytes ? file.size()
                                                        : kSegmentBytes;
-  uint8_t record[DtcHistorySnapshot::kLegacyRecordBytes]{};
+  uint8_t* record = legacyRecord_;
   size_t offset = 0;
   uint32_t newestSequence = 0;
   bool found = false;
-  DtcHistorySnapshot::Decoded decoded;
-  while (offset + sizeof(record) <= scanBytes) {
-    if (file.read(record, sizeof(record)) != sizeof(record)) break;
-    if (!DtcHistorySnapshot::decodeLegacy(record, sizeof(record), decoded)) {
+  while (offset + DtcHistorySnapshot::kLegacyRecordBytes <= scanBytes) {
+    if (file.read(record, DtcHistorySnapshot::kLegacyRecordBytes) !=
+        DtcHistorySnapshot::kLegacyRecordBytes) {
       break;
     }
-    if (!found ||
-        DtcHistorySnapshot::sequenceNewer(decoded.sequence, newestSequence)) {
-      newestSequence = decoded.sequence;
+    if (!DtcHistorySnapshot::decodeLegacy(
+            record, DtcHistorySnapshot::kLegacyRecordBytes, decoded_)) {
+      break;
+    }
+    if (!found || DtcHistorySnapshot::sequenceNewer(decoded_.sequence,
+                                                    newestSequence)) {
+      newestSequence = decoded_.sequence;
       // Rewritten into the current layout immediately: the rest of the class
       // only ever sees one record size.
-      if (!DtcHistorySnapshot::encode(decoded.sequence, decoded.history,
-                                      result.record,
-                                      sizeof(result.record))) {
+      if (!DtcHistorySnapshot::encode(decoded_.sequence, decoded_.history,
+                                      scanRecord_,
+                                      DtcHistorySnapshot::kRecordBytes)) {
         found = false;
         break;
       }
       found = true;
     }
-    offset += sizeof(record);
+    offset += DtcHistorySnapshot::kLegacyRecordBytes;
   }
   file.close();
   if (!found) {
@@ -122,17 +124,20 @@ bool DtcHistoryPersistence::scanLegacySegment(char segment,
 }
 
 bool DtcHistoryPersistence::verifyRecordAt(const char* path, size_t offset,
-                                           const uint8_t* expected) const {
+                                           const uint8_t* expected) {
   fs::File file = LittleFS.open(path, "r");
   if (!file || file.size() < offset + DtcHistorySnapshot::kRecordBytes ||
       !file.seek(offset, fs::SeekSet)) {
     if (file) file.close();
     return false;
   }
-  uint8_t record[DtcHistorySnapshot::kRecordBytes]{};
-  const bool readOk = file.read(record, sizeof(record)) == sizeof(record);
+  uint8_t* record = verifyRecord_;
+  const bool readOk =
+      file.read(record, DtcHistorySnapshot::kRecordBytes) ==
+      DtcHistorySnapshot::kRecordBytes;
   file.close();
-  return readOk && DtcHistorySnapshot::valid(record, sizeof(record)) &&
+  return readOk &&
+         DtcHistorySnapshot::valid(record, DtcHistorySnapshot::kRecordBytes) &&
          recordsEqual(record, expected);
 }
 
@@ -199,16 +204,16 @@ bool DtcHistoryPersistence::loadNvsRecord(uint8_t* record) {
                                      DtcHistorySnapshot::kRecordBytes);
   }
   if (stored != DtcHistorySnapshot::kLegacyRecordBytes) return false;
-  uint8_t legacy[DtcHistorySnapshot::kLegacyRecordBytes]{};
-  if (preferences_.getBytes(kNvsKey, legacy, sizeof(legacy)) !=
-      sizeof(legacy)) {
+  if (preferences_.getBytes(kNvsKey, legacyRecord_,
+                            DtcHistorySnapshot::kLegacyRecordBytes) !=
+      DtcHistorySnapshot::kLegacyRecordBytes) {
     return false;
   }
-  DtcHistorySnapshot::Decoded decoded;
-  if (!DtcHistorySnapshot::decodeLegacy(legacy, sizeof(legacy), decoded)) {
+  if (!DtcHistorySnapshot::decodeLegacy(
+          legacyRecord_, DtcHistorySnapshot::kLegacyRecordBytes, decoded_)) {
     return false;
   }
-  if (!DtcHistorySnapshot::encode(decoded.sequence, decoded.history, record,
+  if (!DtcHistorySnapshot::encode(decoded_.sequence, decoded_.history, record,
                                   DtcHistorySnapshot::kRecordBytes)) {
     return false;
   }
@@ -230,7 +235,7 @@ bool DtcHistoryPersistence::writeNvsRecord(const uint8_t* record) {
     nvsHealthy_ = false;
     return false;
   }
-  uint8_t readback[DtcHistorySnapshot::kRecordBytes]{};
+  uint8_t* readback = verifyRecord_;
   if (!loadNvsRecord(readback) || !recordsEqual(readback, record)) {
     ++nvsFailures_;
     nvsHealthy_ = false;
@@ -264,46 +269,52 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
   journalHealthy_ = fsMounted_;
   nvsHealthy_ = preferencesReady_;
 
-  const SegmentScan segmentA = scanSegment('A');
-  const SegmentScan segmentB = scanSegment('B');
-  const SegmentScan* newestSegment = nullptr;
-  char newestSegmentName = '-';
-  if (segmentA.hasValid) {
-    newestSegment = &segmentA;
-    newestSegmentName = 'A';
+  // One record buffer for both segments. The walker fills scanRecord_ and only
+  // the winning record is copied into latestRecord_, so the segment that loses
+  // costs 24 bytes of metadata and nothing else. Keeping two SegmentScan values
+  // alive at once - each carrying a 1432-byte record - was half of what
+  // overflowed the boot stack.
+  SegmentScan scanned;
+  SegmentScan winner;
+  char winnerName = '-';
+  scanSegment('A', scanned);
+  if (scanned.hasValid) {
+    winner = scanned;
+    winnerName = 'A';
+    memcpy(latestRecord_, scanRecord_, sizeof(latestRecord_));
   }
-  if (segmentB.hasValid &&
-      (!newestSegment || DtcHistorySnapshot::sequenceNewer(
-                             segmentB.sequence, newestSegment->sequence))) {
-    newestSegment = &segmentB;
-    newestSegmentName = 'B';
+  scanSegment('B', scanned);
+  if (scanned.hasValid &&
+      (!winner.hasValid ||
+       DtcHistorySnapshot::sequenceNewer(scanned.sequence, winner.sequence))) {
+    winner = scanned;
+    winnerName = 'B';
+    memcpy(latestRecord_, scanRecord_, sizeof(latestRecord_));
   }
-  if (newestSegment) {
-    memcpy(latestRecord_, newestSegment->record, sizeof(latestRecord_));
-    latestSequence_ = newestSegment->sequence;
-    journalSequence_ = newestSegment->sequence;
+  if (winner.hasValid) {
+    latestSequence_ = winner.sequence;
+    journalSequence_ = winner.sequence;
     latestValid_ = true;
-    activeSegment_ = newestSegmentName;
-    activeSegmentBytes_ = newestSegment->fileBytes;
-    activeTailClean_ = newestSegment->cleanTail;
+    activeSegment_ = winnerName;
+    activeSegmentBytes_ = winner.fileBytes;
+    activeTailClean_ = winner.cleanTail;
     // A segment read in the old layout is rewritten now rather than at the next
     // change: the disk carries one record size from here on, which is what the
     // scanner walks by.
-    journalConverted_ = newestSegment->legacy;
+    journalConverted_ = winner.legacy;
     needsRotation_ = !activeTailClean_ ||
                      activeSegmentBytes_ + DtcHistorySnapshot::kRecordBytes >
                          kSegmentBytes;
     recoverySource_ = "littlefs_journal";
   }
 
-  uint8_t nvsRecord[DtcHistorySnapshot::kRecordBytes]{};
   nvsConverted_ = false;
-  if (loadNvsRecord(nvsRecord)) {
+  if (loadNvsRecord(scanRecord_)) {
     nvsSequence_ = DtcHistorySnapshot::sequence(
-        nvsRecord, DtcHistorySnapshot::kRecordBytes);
+        scanRecord_, DtcHistorySnapshot::kRecordBytes);
     if (!latestValid_ || DtcHistorySnapshot::sequenceNewer(
                              nvsSequence_, latestSequence_)) {
-      memcpy(latestRecord_, nvsRecord, sizeof(latestRecord_));
+      memcpy(latestRecord_, scanRecord_, sizeof(latestRecord_));
       latestSequence_ = nvsSequence_;
       latestValid_ = true;
       recoverySource_ = "nvs_mirror";
@@ -311,21 +322,20 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
   }
 
   if (!latestValid_) {
-    history = DtcHistoryData{};
+    std::memset(static_cast<void*>(&history), 0, sizeof(history));
     latestSequence_ = 1;
     latestValid_ = DtcHistorySnapshot::encode(
         latestSequence_, history, latestRecord_, sizeof(latestRecord_));
     recoverySource_ = "empty";
   }
 
-  DtcHistorySnapshot::Decoded decoded;
   if (!latestValid_ || !DtcHistorySnapshot::decode(
-                           latestRecord_, sizeof(latestRecord_), decoded)) {
+                           latestRecord_, sizeof(latestRecord_), decoded_)) {
     ESP_LOGE(kTag, "Unable to create/decode DTC history snapshot");
     return false;
   }
-  history = decoded.history;
-  latestSequence_ = decoded.sequence;
+  history = decoded_.history;
+  latestSequence_ = decoded_.sequence;
 
   // A converted source is written back in the current layout on the first sync,
   // not left in place: the journal segment that held schema 1 is rotated away
@@ -346,19 +356,34 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
   return journalOk || nvsOk;
 }
 
-bool DtcHistoryPersistence::prepareLatest(const DtcHistoryData& history) {
-  if (latestValid_ && DtcHistorySnapshot::payloadEquals(
-                          latestRecord_, sizeof(latestRecord_), history)) {
+bool DtcHistoryPersistence::payloadMatches(const DtcHistoryData& history) {
+  if (!latestValid_) return false;
+  if (!DtcHistorySnapshot::encode(latestSequence_, history, scanRecord_,
+                                  DtcHistorySnapshot::kRecordBytes)) {
     return false;
   }
+  return memcmp(latestRecord_ + DtcHistorySnapshot::kPayloadOffset,
+                scanRecord_ + DtcHistorySnapshot::kPayloadOffset,
+                DtcHistorySnapshot::kPayloadBytes) == 0;
+}
+
+bool DtcHistoryPersistence::prepareLatest(const DtcHistoryData& history) {
   uint32_t nextSequence = latestSequence_ + 1U;
   if (nextSequence == 0) nextSequence = 1;
-  uint8_t candidate[DtcHistorySnapshot::kRecordBytes]{};
-  if (!DtcHistorySnapshot::encode(nextSequence, history, candidate,
-                                  sizeof(candidate))) {
+  // Encoded first, compared second. The comparison used to re-encode into its
+  // own 1432-byte local, and prepareLatest into another; one scratch record for
+  // both is the whole difference.
+  if (!DtcHistorySnapshot::encode(nextSequence, history, scanRecord_,
+                                  DtcHistorySnapshot::kRecordBytes)) {
     return false;
   }
-  memcpy(latestRecord_, candidate, sizeof(latestRecord_));
+  if (latestValid_ &&
+      memcmp(latestRecord_ + DtcHistorySnapshot::kPayloadOffset,
+             scanRecord_ + DtcHistorySnapshot::kPayloadOffset,
+             DtcHistorySnapshot::kPayloadBytes) == 0) {
+    return false;
+  }
+  memcpy(latestRecord_, scanRecord_, sizeof(latestRecord_));
   latestSequence_ = nextSequence;
   latestValid_ = true;
   return true;
@@ -393,10 +418,12 @@ void DtcHistoryPersistence::periodic(uint32_t now,
 }
 
 bool DtcHistoryPersistence::checkpoint(const DtcHistoryData& history) {
-  const bool alreadyCurrent =
-      latestValid_ && DtcHistorySnapshot::payloadEquals(
-                          latestRecord_, sizeof(latestRecord_), history);
-  if (!alreadyCurrent && !prepareLatest(history)) return false;
+  // Two different questions, and collapsing them lost a failure: prepareLatest
+  // returns false both when the payload is unchanged and when it could not be
+  // encoded, so a checkpoint of an unencodable history used to report success
+  // without writing anything. Ask the equality question first, and let the
+  // second call mean only "encode it and keep it".
+  if (!payloadMatches(history) && !prepareLatest(history)) return false;
   const bool journalOk = syncJournal();
   const bool nvsOk = syncNvs();
   lastJournalAttemptAt_ = millis();
@@ -418,7 +445,7 @@ bool DtcHistoryPersistence::factoryReset(DtcHistoryData& history) {
   }
   const bool nvsCleared = preferencesReady_ && preferences_.clear();
   resetRuntimeState();
-  history = DtcHistoryData{};
+  std::memset(static_cast<void*>(&history), 0, sizeof(history));
   latestSequence_ = resetSequence;
   latestValid_ = DtcHistorySnapshot::encode(
       latestSequence_, history, latestRecord_, sizeof(latestRecord_));

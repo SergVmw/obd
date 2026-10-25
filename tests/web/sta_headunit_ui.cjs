@@ -233,6 +233,18 @@ const zlib = require('node:zlib');
   };
 
   let livePollCount = 0;
+  // 1x1 transparent PNG, identical to include/probe_png.h. Read from the header
+  // rather than repeated here, so a change to the beacon cannot pass this test
+  // while the device sends something else.
+  const PROBE_PNG = (() => {
+    const header = fs.readFileSync(path.join(__dirname, '../../include/probe_png.h'), 'utf8');
+    const bytes = [...header.matchAll(/0x([0-9a-fA-F]{2})/g)].map(m => parseInt(m[1], 16));
+    assert.equal(bytes.length, 68, 'probe_png.h must carry exactly 68 bytes');
+    assert.deepEqual(bytes.slice(0, 8), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      'probe_png.h must start with the PNG signature');
+    return Buffer.from(bytes);
+  })();
+
   function makeH2Handler() {
     return (req, res) => {
       const common = {
@@ -253,6 +265,15 @@ const zlib = require('node:zlib');
           'Content-Encoding': 'gzip',
         });
         res.end(htmlGz);
+        return;
+      }
+      if (u.pathname === '/h2probe') {
+        // The beacon, byte for byte what the firmware sends. An <img> decodes
+        // it without any CORS involvement, which is the whole point: the
+        // Android 11 case below runs with no Access-Control-Allow-Origin on
+        // the JSON and still has to find the gauge.
+        res.writeHead(200, { ...common, 'Content-Type': 'image/png' });
+        res.end(PROBE_PNG);
         return;
       }
       if (u.pathname === '/h2-open.html') {
@@ -543,6 +564,65 @@ const zlib = require('node:zlib');
       assert.deepEqual(fileErrors, [], `h2-open.html page errors: ${fileErrors.join('; ')}`);
       await fileCtx.close();
       console.log(`  [ok] file://h2-open.html cold-discovered 127.0.43.187:${lanPort} (ignoring .12 decoy & blackhole subnets) and redirected to live dashboard`);
+
+      // Android 11: the same page, the same gauge, one difference - the JSON
+      // read is blocked by CORS because the response carries no
+      // Access-Control-Allow-Origin. Android 7's WebView allowed it; Chrome
+      // does not, and the 2026-10-25 report was exactly this: the head unit
+      // running Android 7 found the gauge, the phone running Android 11 scanned
+      // forever and only a typed address worked.
+      //
+      // The beacon is what makes it work: an <img> load is not subject to CORS,
+      // so discovery no longer depends on being allowed to read anything.
+      const strictGauge = http.createServer((req, res) => {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        if (u.pathname === '/h2probe') {
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+          res.end(PROBE_PNG);
+          return;
+        }
+        // Deliberately no Access-Control-Allow-Origin, like a server that has
+        // not been taught to answer a file:// page.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ version: '0.4.40', hostname: 'h2', obdConnected: true, cur: {} }));
+      });
+      await new Promise(resolve => strictGauge.listen(0, '127.0.44.77', resolve));
+      const strictPort = strictGauge.address().port;
+      // A device on the same subnet that answers 200 on every path - the decoy
+      // that a payload sniff would have accepted and an image cannot.
+      const talker = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"status":"printer","version":"1.0","hostname":"x","obdConnected":false,"cur":{}}');
+      });
+      await new Promise(resolve => talker.listen(strictPort, '127.0.44.9', resolve));
+      try {
+        const strictCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+        const strictPage = await strictCtx.newPage();
+        const strictErrors = [];
+        strictPage.on('pageerror', e => strictErrors.push(String(e)));
+        // noredirect=1 so the page stays put and the report can be read back:
+        // the redirect itself is covered by the test above.
+        const strictUrl = `file://${openHtmlPath}?prefix=127.0.44&maxHost=250&port=${strictPort}` +
+          `&probe=/h2probe&apHost=&noredirect=1`;
+        await strictPage.goto(strictUrl, { waitUntil: 'domcontentloaded' });
+        await strictPage.waitForFunction(
+          () => document.getElementById('stateBadge').textContent === 'НАЙДЕН',
+          null, { timeout: 15000 });
+        assert.match(await strictPage.textContent('#statusTxt'),
+          /127\.0\.44\.77/, 'the found address must be reported');
+        // No version, because the JSON was unreadable - and the page says so
+        // instead of pretending it read one.
+        assert.match(await strictPage.textContent('#detailTxt'),
+          /Прибор ответил/, 'a found host with unreadable JSON must be reported as found');
+        assert.doesNotMatch(await strictPage.textContent('#detailTxt'),
+          /v0\.4\.40/, 'no version may be invented when the payload could not be read');
+        assert.deepEqual(strictErrors, [], `Android 11 discovery page errors: ${strictErrors.join('; ')}`);
+        await strictCtx.close();
+        console.log(`  [ok] file://h2-open.html found 127.0.44.77:${strictPort} with /api/ro/live blocked by CORS (Android 11 case), decoy .9 ignored`);
+      } finally {
+        await new Promise(r => strictGauge.close(r));
+        await new Promise(r => talker.close(r));
+      }
     } finally {
       for (const s of blackholeSockets) s.destroy();
       decoyServer.close();

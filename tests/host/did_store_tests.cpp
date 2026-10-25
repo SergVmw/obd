@@ -248,6 +248,54 @@ TEST_CASE(refusedRecords) {
     CHECK(!store.recordScan(targets, 2));
   }
 
+// load() and the verify pass inside save() used to read one Ecu and three
+// Snapshot columns into locals: about 6 KB of an 8192-byte loopTask stack, on
+// the path that opens the service portal. They are members now, and the only
+// thing that keeps that safe is a round trip through the real file - a
+// read-back that landed in the buffer it was compared against would agree with
+// itself and save a record nobody can decode.
+TEST_CASE(roundTripThroughScratchBuffers) {
+    LittleFS.reset();
+    DidStore store;
+    store.reset();
+    DidExplorer engine;
+    runShortScan(engine, 0x7E0, {0x05, 0x62, 0xF1, 0x90, 0x4C, 0x47},
+                 {0x05, 0x62, 0xF1, 0x91, 0x41, 0x42});
+    CHECK(store.recordScan(engine, 1));
+
+    DidExplorer::Answer answer{};
+    answer.did = 0xF1A0;
+    answer.length = 2;
+    answer.payload[0] = 0x0A;
+    answer.payload[1] = 0x0B;
+    CHECK(store.beginSnapshot(0, 0x7E0, 0x22, 100));
+    store.captureAnswer(0, true, 47.5f, true, 800.0f, answer);
+    store.finishSnapshot(0, 200, 1750000000UL);
+
+    CHECK(store.save());
+    CHECK(std::strcmp(store.statusName(), "saved") == 0);
+
+    DidStore reloaded;
+    reloaded.reset();
+    CHECK(reloaded.load());
+    CHECK(reloaded.engine() != nullptr);
+    CHECK(reloaded.engine()->entries[0].did == 0xF190);
+    CHECK(reloaded.engine()->entries[0].payload[0] == 0x4C);
+    CHECK(reloaded.engine()->entries[1].did == 0xF191);
+    CHECK(reloaded.foundEntryCount() == 2);
+    // The snapshot column has to survive too: it is the largest part of the
+    // record and the one the scratch buffer was added for.
+    CHECK(reloaded.snapshot(0).complete);
+    CHECK(reloaded.snapshot(0).count == 1);
+    CHECK(reloaded.snapshot(0).entries[0].did == 0xF1A0);
+    CHECK(reloaded.snapshot(0).entries[0].payload[1] == 0x0B);
+    // A record written by the scratch path must be byte-stable: saving twice
+    // without a change must not produce a different file.
+    const auto first = LittleFS.files["/dids.bin"];
+    CHECK(reloaded.save());
+    CHECK(LittleFS.files["/dids.bin"] == first);
+  }
+
 TEST_CASE(snapshotTargetList) {
     LittleFS.reset();
     DidStore store;

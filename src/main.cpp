@@ -83,6 +83,7 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             );
 
 bool serviceMode = false;
+DtcHistoryData recoveredDtcHistory;
 // One run, one peak. The detector turns the RPM stream into start and stop
 // edges so the boost peak can be cleared on the start of every run instead of
 // surviving for days.
@@ -430,7 +431,8 @@ void setup() {
   if (!tripHistory.begin(littleFsStorage)) {
     ESP_LOGW(kTag, "Trip history unavailable");
   }
-  DtcHistoryData recoveredDtcHistory{};
+  // File scope, not a local: 1416 bytes of recovered history inside setup() is
+  // a quarter of the loopTask stack before a single record has been read.
   if (!dtcHistoryPersistence.begin(littleFsStorage, recoveredDtcHistory)) {
     ESP_LOGE(kTag, "DTC history persistence initialization failed");
   }
@@ -562,6 +564,9 @@ void loop() {
     telemetry.staRadioOn = staStat.radioOn;
     telemetry.staConnected = staStat.connected;
     telemetry.staNtpSynced = staStat.ntpSynced;
+    telemetry.staLastReason = staStat.lastReason;
+    telemetry.staAttempts = staStat.attempts;
+    telemetry.staDisconnects = staStat.disconnects;
     strlcpy(telemetry.staIp, staStat.ip, sizeof(telemetry.staIp));
   }
 

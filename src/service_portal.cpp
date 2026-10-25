@@ -1,10 +1,13 @@
 #include "service_portal.h"
 
+#include "sta_diagnostic.h"
+
 #include <cstdlib>
 
 #include "json_writer.h"
 
 #include "pid_names.h"
+#include "probe_png.h"
 #include "sta_client_logic.h"
 #include "storage_mutex.h"
 
@@ -466,6 +469,11 @@ void ServicePortal::setupRoutes() {
 
   server_.on("/", HTTP_GET, [this]() { sendIndex(); });
   server_.on("/generate_204", HTTP_GET, [this]() { sendIndex(); });
+  // The discovery beacon. Registered before every API route and never touched
+  // by onNotFound (which answers 302 and would make an <img> probe fail): the
+  // whole point is that this path exists only on this device.
+  server_.on(H2Probe::kPath, HTTP_GET, [this]() { sendProbe(); });
+  server_.on(H2Probe::kPath, HTTP_OPTIONS, [this]() { sendProbePreflight(); });
   server_.on("/hotspot-detect.html", HTTP_GET, [this]() { sendIndex(); });
 
   server_.on("/api/config", HTTP_GET, [this]() { sendConfig(); });
@@ -644,6 +652,29 @@ void ServicePortal::setupRoutes() {
   });
 }
 
+
+void ServicePortal::sendProbe() {
+  // No touch(): a scan of 254 addresses is not the owner using the portal, and
+  // the service timeout must not be extended by a page looking for the gauge.
+  server_.sendHeader("Access-Control-Allow-Origin", "*");
+  server_.sendHeader("Access-Control-Allow-Private-Network", "true");
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send_P(200, "image/png",
+                 reinterpret_cast<const char*>(H2Probe::png()),
+                 H2Probe::kPngBytes);
+}
+
+void ServicePortal::sendProbePreflight() {
+  // Chrome's Private Network Access sends OPTIONS before a request from a
+  // public page to a private address. Discovery itself never needs it - an
+  // image load is not preflighted - but the same endpoint is the cheapest place
+  // to answer it for anything else that reads this device from a web page.
+  server_.sendHeader("Access-Control-Allow-Origin", "*");
+  server_.sendHeader("Access-Control-Allow-Private-Network", "true");
+  server_.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server_.sendHeader("Access-Control-Max-Age", "600");
+  server_.send(204, "text/plain", "");
+}
 
 void ServicePortal::sendIndex() {
   touch();
@@ -1578,6 +1609,20 @@ void ServicePortal::sendStatus() {
     staObj["connected"] = telemetry_.staConnected;
     staObj["ntpSynced"] = telemetry_.staNtpSynced;
     staObj["ip"] = telemetry_.staIp;
+    // Why the join failed. The display can only say "WIFI: ПОИСК", and the
+    // four causes behind it - band, hidden SSID, another name, refused
+    // handshake - are indistinguishable from the driver's side, so the number
+    // is published as it comes plus a name and one line of plain text.
+    staObj["lastReason"] = telemetry_.staLastReason;
+    staObj["lastReasonName"] =
+        telemetry_.staLastReason < 0 ? "none"
+                                     : StaDiagnostic::reasonCode(telemetry_.staLastReason);
+    staObj["lastReasonHint"] =
+        telemetry_.staLastReason < 0
+            ? "отказов ещё не было"
+            : StaDiagnostic::reasonHint(telemetry_.staLastReason);
+    staObj["attempts"] = telemetry_.staAttempts;
+    staObj["disconnects"] = telemetry_.staDisconnects;
   }
   doc["tripIdleSharePercent"] = engine_.idleShareOfTrip();
   doc["tripIdleLitersPerHour"] = engine_.idleLitersPerHour(config);

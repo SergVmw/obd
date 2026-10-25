@@ -20,6 +20,7 @@
 #include "headunit_web_ui_gz.h"
 #include "littlefs_storage.h"
 #include "sta_client_logic.h"
+#include "probe_png.h"
 #include "sta_readonly.h"
 #include "storage_mutex.h"
 #include "telemetry.h"
@@ -553,6 +554,29 @@ void testStrictReadOnlyHttpWireParserAndAttackSurface() {
       StrictJsonParser jp(resp.jsonBody);
       CHECK(jp.parseDocument());
     }
+  }
+
+  // The discovery beacon. h2-open.html runs from file://, where a modern
+  // browser refuses to read a cross-origin JSON; an <img> load is not subject
+  // to CORS, so this endpoint is what makes the gauge findable on Android 11.
+  {
+    StaHttpResponse probe;
+    StaReadOnly::dispatchRequest("GET", "/h2probe", "", snap, hist, probe);
+    CHECK(probe.statusCode == 200);
+    CHECK(probe.staticBody == H2Probe::png());
+    CHECK(probe.staticLen == H2Probe::kPngBytes);
+    CHECK(probe.jsonBody.empty());
+    CHECK(std::strcmp(probe.contentType, "image/png") == 0);
+    // Byte-identical to the constant, and a real PNG header: a browser that
+    // decodes it is the identity check, so the bytes are the contract.
+    const uint8_t* png = H2Probe::png();
+    CHECK(png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G');
+    CHECK(H2Probe::kPngBytes == 68);
+    // Still read-only: a POST to the beacon is a 405 like every other route.
+    StaHttpResponse posted;
+    StaReadOnly::dispatchRequest("POST", "/h2probe", "", snap, hist, posted);
+    CHECK(posted.statusCode == 405);
+    CHECK(posted.includeAllowGet);
   }
 
   // Non-whitelisted GET endpoints (including AP service portal routes) -> 404:

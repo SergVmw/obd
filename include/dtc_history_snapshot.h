@@ -41,10 +41,19 @@ bool decode(const uint8_t* record, size_t recordBytes, Decoded& output);
 // occurrences and sequences survive; the epochs and the condition did not exist
 // then and are left zero, which the pages read as "unknown".
 bool decodeLegacy(const uint8_t* record, size_t recordBytes, Decoded& output);
+// Full validation - structure and entry rules both - but applied by reading the
+// record in place, one entry at a time, instead of decoding it into a 1416-byte
+// DtcHistoryData. The result is the same yes or no as decode(); the cost is 44
+// bytes of stack instead of 1416, which is what the boot path needed.
 bool valid(const uint8_t* record, size_t recordBytes);
 uint32_t sequence(const uint8_t* record, size_t recordBytes);
+// Compares the payload of a stored record with an in-memory history by
+// re-encoding it into `scratch`, which the caller owns. Taking the buffer as a
+// parameter rather than declaring one keeps the caller's stack frame free of a
+// 1432-byte record: the boot path overflowed an 8 KB stack exactly this way.
 bool payloadEquals(const uint8_t* record, size_t recordBytes,
-                   const DtcHistoryData& history);
+                   const DtcHistoryData& history, uint8_t* scratch,
+                   size_t scratchBytes);
 bool sequenceNewer(uint32_t candidate, uint32_t reference);
 
 }  // namespace DtcHistorySnapshot

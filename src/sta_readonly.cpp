@@ -1,3 +1,5 @@
+#include "probe_png.h"
+#include "sta_diagnostic.h"
 #include "sta_readonly.h"
 
 #include <cmath>
@@ -16,6 +18,7 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 #include <ctime>
+#include <esp_log.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -902,6 +905,15 @@ void dispatchRequest(const char* method, const char* path, const char* query,
     return;
   }
 
+  if (std::strcmp(path, H2Probe::kPath) == 0) {
+    out.statusCode = 200;
+    out.statusText = "OK";
+    out.contentType = "image/png";
+    out.staticBody = H2Probe::png();
+    out.staticLen = H2Probe::kPngBytes;
+    return;
+  }
+
   if (std::strcmp(path, "/api/ro/live") == 0) {
     out.statusCode = 200;
     out.statusText = "OK";
@@ -958,6 +970,8 @@ namespace {
 
 portMUX_TYPE gStaSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
+constexpr const char* kTag = "h2-sta";
+
 struct SharedStaBridge {
   StaClientLogic::ServiceHandoverState handover{};
   char desiredSsid[StaClientLogic::kMaxSsidLen + 1] = {};
@@ -968,9 +982,35 @@ struct SharedStaBridge {
   StaRuntimeStatus status{};
   uint32_t pendingUtcEpochSec = 0;
   TripHistory* tripHistory = nullptr;
+
+  // Why the join failed, kept apart from `status` so that entering service
+  // mode - which zeroes the live status and kills the worker for the rest of
+  // the boot - does not erase the evidence the portal is about to show.
+  StaDiagnostic::Tracker diag{};
+  // Written by the Wi-Fi event task, consumed by the worker loop.
+  int pendingReason = 0;
+  bool pendingReasonValid = false;
+  // True only while a join is actually outstanding. Our own disconnects, made
+  // on the way into backoff or when the screen goes dark, arrive through the
+  // same event with a leave code, and recording those would bury the reason
+  // that matters under our own housekeeping.
+  bool recordingReasons = false;
 };
 
 SharedStaBridge gBridge;
+
+// An esp_wifi failure arrives on the Wi-Fi event task. Only the number is
+// taken here; the decision and the log line belong to the worker loop, so the
+// event task never waits on a lock held by a caller that is mid-connect.
+void staWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  if (event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+  portENTER_CRITICAL(&gStaSpinlock);
+  if (gBridge.recordingReasons) {
+    gBridge.pendingReason = info.wifi_sta_disconnected.reason;
+    gBridge.pendingReasonValid = true;
+  }
+  portEXIT_CRITICAL(&gStaSpinlock);
+}
 
 constexpr uint32_t kFirstRequestWaitMs = 250U;
 constexpr uint32_t kKeepAliveIdleMs = 4500U;
@@ -1245,6 +1285,8 @@ void staTaskMain(void* param) {
   bool ntpReportedForLink = false;
   bool driverTouched = false;
 
+  WiFi.onEvent(staWifiEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
   auto stopNetworkServices = [&]() {
     if (server) {
       server->end();
@@ -1280,6 +1322,9 @@ void staTaskMain(void* param) {
     if (lockedOut) {
       wakeStagger.reset();
       stopNetworkServices();
+      portENTER_CRITICAL(&gStaSpinlock);
+      gBridge.recordingReasons = false;
+      portEXIT_CRITICAL(&gStaSpinlock);
       if (driverTouched || sm.radioOn()) {
         WiFi.disconnect(true, false);
         WiFi.mode(WIFI_OFF);
@@ -1303,6 +1348,31 @@ void staTaskMain(void* param) {
     const StaClientLogic::Action action =
         sm.update(nowMs, staggeredAllowRadio, gotSafeIp, ssid, password, host);
 
+    // A join is outstanding only while the machine is connecting or holding a
+    // link. Everything else in this loop - backoff, screen dark, service mode -
+    // disconnects on purpose, and those echoes must not be reported as
+    // failures of the access point.
+    {
+      bool consumedReason = false;
+      int consumedValue = 0;
+      portENTER_CRITICAL(&gStaSpinlock);
+      gBridge.recordingReasons =
+          sm.phase() == StaClientLogic::Phase::Connecting ||
+          sm.phase() == StaClientLogic::Phase::Connected;
+      if (gBridge.pendingReasonValid) {
+        consumedReason = true;
+        consumedValue = gBridge.pendingReason;
+        gBridge.pendingReasonValid = false;
+        gBridge.diag.noteDisconnect(consumedValue);
+      }
+      portEXIT_CRITICAL(&gStaSpinlock);
+      if (consumedReason) {
+        ESP_LOGW(kTag, "STA: join failed, reason=%d (%s) - %s", consumedValue,
+                 StaDiagnostic::reasonCode(consumedValue),
+                 StaDiagnostic::reasonHint(consumedValue));
+      }
+    }
+
     if (action == StaClientLogic::Action::StopRadio) {
       stopNetworkServices();
       WiFi.disconnect(true, false);
@@ -1314,6 +1384,18 @@ void staTaskMain(void* param) {
     } else if (action == StaClientLogic::Action::StartConnect) {
       stopNetworkServices();
       if (isPermanentLockout()) continue;
+      uint32_t attemptIndex = 0;
+      portENTER_CRITICAL(&gStaSpinlock);
+      gBridge.diag.noteAttempt();
+      attemptIndex = gBridge.diag.attempts;
+      portEXIT_CRITICAL(&gStaSpinlock);
+      // The SSID is printed exactly as the device holds it, so an invisible
+      // trailing space or a different letter case is visible in the log
+      // instead of being argued about. The password is never printed; its
+      // length is, because a truncated one looks like a wrong one.
+      ESP_LOGI(kTag, "STA: connecting to \"%s\" (password %u chars, attempt %u)",
+               ssid, static_cast<unsigned>(strlen(password)),
+               static_cast<unsigned>(attemptIndex));
       driverTouched = true;
       WiFi.persistent(false);
       WiFi.setHostname(host);
@@ -1494,6 +1576,9 @@ StaRuntimeStatus StaReadOnlyRuntime::status() const {
   StaRuntimeStatus out;
   portENTER_CRITICAL(&gStaSpinlock);
   out = gBridge.status;
+  out.lastReason = gBridge.diag.lastReason;
+  out.attempts = gBridge.diag.attempts;
+  out.disconnects = gBridge.diag.disconnects;
   portEXIT_CRITICAL(&gStaSpinlock);
   return out;
 }

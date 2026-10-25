@@ -447,9 +447,13 @@ bool DidStore::slotFromName(const char* name, size_t& slot) {
 }
 
 void DidStore::reset() {
-  engine_ = Ecu{};
-  gearbox_ = Ecu{};
-  for (size_t i = 0; i < kSlots; ++i) snapshots_[i] = Snapshot{};
+  // memset rather than `= Ecu{}` / `= Snapshot{}`: the assignment builds a
+  // temporary of the same size on the stack, and one Snapshot is ~2 KB.
+  std::memset(static_cast<void*>(&engine_), 0, sizeof(engine_));
+  std::memset(static_cast<void*>(&gearbox_), 0, sizeof(gearbox_));
+  for (size_t i = 0; i < kSlots; ++i) {
+    std::memset(static_cast<void*>(&snapshots_[i]), 0, sizeof(snapshots_[i]));
+  }
   dirty_ = false;
   restoredFromFlash_ = false;
   status_ = "empty";
@@ -897,9 +901,9 @@ bool DidStore::writeRecord() {
   const bool magicOk = in.magicMatches();
   const uint16_t version = in.u16();
   in.u16();
-  Ecu engine{};
-  Ecu gearbox{};
-  Snapshot snapshots[kSlots]{};
+  Ecu& engine = scratchEngine_;
+  Ecu& gearbox = scratchGearbox_;
+  Snapshot* snapshots = scratchSnapshots_;
   readEcu(in, engine);
   readEcu(in, gearbox);
   for (size_t i = 0; i < kSlots; ++i) readSnapshot(in, snapshots[i]);
@@ -934,9 +938,9 @@ bool DidStore::load() {
   const bool magicOk = in.magicMatches();
   const uint16_t version = in.u16();
   in.u16();
-  Ecu engine{};
-  Ecu gearbox{};
-  Snapshot snapshots[kSlots]{};
+  Ecu& engine = scratchEngine_;
+  Ecu& gearbox = scratchGearbox_;
+  Snapshot* snapshots = scratchSnapshots_;
   readEcu(in, engine);
   readEcu(in, gearbox);
   for (size_t i = 0; i < kSlots; ++i) readSnapshot(in, snapshots[i]);

@@ -264,6 +264,11 @@ struct TelemetryData {
   bool staConnected = false;
   bool staNtpSynced = false;
   char staIp[16] = {0};
+  // The join failure the firmware last saw, so the portal can name it instead
+  // of leaving the owner with a spinner and no explanation.
+  int staLastReason = -1;
+  uint32_t staAttempts = 0;
+  uint32_t staDisconnects = 0;
   bool lpgInputActive = false;
   FuelMode fuelMode = FuelMode::Unknown;
   // The fuel the engine was actually last running on. With the engine off or the
