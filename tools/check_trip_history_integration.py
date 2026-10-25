@@ -160,9 +160,45 @@ def main() -> int:
             f"String {sample!r} at y={y_pos} is {px_width}px wide vs {chord:.1f}px circular chord!"
         )
 
+    # The charts read the daily summary the table already shows, so the month
+    # can never be two different numbers on two screens. What has to stay true
+    # is the arithmetic and the two rules that keep a picture honest: sum litres
+    # and kilometres rather than averaging daily means, and leave a missing peak
+    # empty instead of drawing a zero.
+    headunit = (ROOT / "web" / "headunit.html").read_text(encoding="utf-8")
+    for page_name, page in (("index.html", html), ("headunit.html", headunit)):
+        assert 'id="chartFuel"' in page, f"{page_name}: the fuel chart is missing"
+        assert 'id="chartSpeed"' in page, f"{page_name}: the speed chart is missing"
+        assert 'id="chartSummary"' in page, f"{page_name}: the period summary is missing"
+        assert "liters * 100 / b.km" in page or "liters*100/b.km" in page, (
+            f"{page_name}: the month figure must be litres over kilometres, not a "
+            "mean of the daily means"
+        )
+        assert "maxSpeedKnown" in page, (
+            f"{page_name}: a day without a known peak must not be drawn as a zero"
+        )
+        # The line is broken at a gap rather than bridged across it: without
+        # this, a missing day gets an interpolated speed it never had.
+        assert ("started=false" in page) or ("started = false" in page), (
+            f"{page_name}: the speed line must break at a day with no value"
+        )
+        assert "totalLiters" in page, (
+            f"{page_name}: the chart must read totalLiters, with petrol+lpg as the "
+            "fallback for an older export"
+        )
+    # The days the chart can plot come from the same endpoint the table uses,
+    # and the window is a view over it rather than a second request.
+    assert "/api/trips/days" in html and "/api/ro/trips/days" in headunit, (
+        "the charts must be fed by the daily summary endpoint on both surfaces"
+    )
+    assert "limit=400" in html, (
+        "the portal must request enough days for a quarter, not only the table page"
+    )
+
     print(
         "Trip history cross-layer integration: 148 B record, 2048-slot /trips.bin, "
-        "40 B NVS context, 240x240 VLW/chord view, Schema 12 (232 B) and both gzip UIs OK"
+        "40 B NVS context, 240x240 VLW/chord view, Schema 12 (232 B), month charts on "
+        "both surfaces and both gzip UIs OK"
     )
     return 0
 

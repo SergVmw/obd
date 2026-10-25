@@ -550,8 +550,104 @@ int main() {
         needFc));
   }
 
+
+  // ---- response pending (0x78) is not an answer -----------------------------
+  {
+    DidExplorer::Config c = baseConfig();
+    c.firstDid = 0xF190;
+    c.lastDid = 0xF191;
+    Rig rig;
+    assert(rig.explorer.start(c, rig.now));
+    twai_message_t out{};
+    assert(rig.build(out));
+
+    // The module says "still working". If this were recorded as a negative
+    // answer, an identifier that exists would be filed as one that does not,
+    // and the real answer, arriving next, would be dropped as unexpected.
+    assert(rig.answer({0x03, 0x7F, 0x22, 0x78}));
+    assert(rig.explorer.waiting());
+    assert(rig.explorer.counters().negative == 0);
+    assert(rig.explorer.counters().scanned == 0);
+    assert(rig.explorer.currentDid() == 0xF190);
+    assert(rig.explorer.takeResponsePending());
+    assert(!rig.explorer.takeResponsePending());
+
+    // The answer to the same request is still claimable.
+    assert(rig.answer({0x05, 0x62, 0xF1, 0x90, 0x56, 0x49}));
+    assert(!rig.explorer.waiting());
+    assert(rig.explorer.counters().positive == 1);
+    assert(rig.explorer.resultCount() == 1);
+    assert(rig.explorer.results()[0].payload[0] == 0x56);
+
+    // A pending that is never followed by an answer is one timeout, not an
+    // answer and not a rescan of the same identifier.
+    rig.now += DidExplorer::kGapMs;
+    assert(rig.build(out));
+    assert(rig.answer({0x03, 0x7F, 0x22, 0x78}));
+    assert(rig.explorer.takeResponsePending());
+    rig.explorer.requestTimedOut(rig.now + 100);
+    assert(rig.explorer.counters().timeout == 1);
+    assert(rig.explorer.counters().scanned == 2);
+    assert(rig.explorer.state() == DidExplorer::State::Finished);
+  }
+
+  // ---- pending on an unsupported service is still not an answer --------------
+  {
+    DidExplorer::Config c = baseConfig();
+    c.firstDid = 0xF190;
+    c.lastDid = 0xF190;
+    Rig rig;
+    assert(rig.explorer.start(c, rig.now));
+    twai_message_t out{};
+    assert(rig.build(out));
+    // Pending for a different service is another tool's traffic.
+    assert(!rig.answer({0x03, 0x7F, 0x10, 0x78}));
+    assert(rig.explorer.counters().negative == 0);
+    assert(!rig.explorer.takeResponsePending());
+  }
+
+  // ---- the outcome map the store reads --------------------------------------
+  {
+    DidExplorer::Config c = baseConfig();
+    c.firstDid = 0xF180;
+    c.lastDid = 0xF183;
+    Rig rig;
+    assert(rig.explorer.start(c, rig.now));
+    twai_message_t out{};
+
+    // F180: answered.
+    assert(rig.build(out));
+    assert(rig.answer({0x05, 0x62, 0xF1, 0x80, 0x41, 0x42}));
+    // F181: refused.
+    rig.now += DidExplorer::kGapMs;
+    assert(rig.build(out));
+    assert(rig.answer({0x03, 0x7F, 0x22, 0x31}));
+    // F182: silent.
+    rig.now += DidExplorer::kGapMs;
+    assert(rig.build(out));
+    rig.explorer.requestTimedOut(rig.now);
+    // F183: answered with nothing at all.
+    rig.now += DidExplorer::kGapMs;
+    assert(rig.build(out));
+    assert(rig.answer({0x04, 0x62, 0xF1, 0x83, 0x00}));
+    assert(rig.explorer.state() == DidExplorer::State::Finished);
+
+    assert(rig.explorer.outcomeState(0xF180) == DidExplorer::Outcome::Data);
+    assert(rig.explorer.outcomeState(0xF181) == DidExplorer::Outcome::Negative);
+    assert(rig.explorer.outcomeNrc(0xF181) == 0x31);
+    assert(rig.explorer.outcomeState(0xF182) == DidExplorer::Outcome::Silent);
+    assert(rig.explorer.outcomeState(0xF183) == DidExplorer::Outcome::Data);
+    // Never swept: outside the range means unknown, not silent.
+    assert(rig.explorer.outcomeState(0xF190) == DidExplorer::Outcome::Unscanned);
+
+    // Visits exist for target runs, where the caller needs the identifier and
+    // the bytes; a range sweep is summarised by the outcome map instead.
+    assert(rig.explorer.visitCount() == 0);
+  }
+
   std::printf("PASS read-only identifier scan: request format, ISO-TP assembly, "
-              "negative answers, timeouts, foreign frames, session handling, "
-              "bounded results, target runs for control snapshots\n");
+              "negative answers, response pending, timeouts, foreign frames, "
+              "session handling, outcome map, bounded results, target runs for "
+              "control snapshots\n");
   return 0;
 }

@@ -65,6 +65,17 @@ struct StaLiveSnapshot {
   float o2Volts = 0.0f;
   bool hasAirflow = false;
   float airflowGps = 0.0f;
+  // The three parameters that were supported by this vehicle and never read.
+  // Published to the head unit because they are the ones worth seeing while
+  // driving on gas: timing that keeps being pulled back says something about the
+  // fuel, and purge on a stationary engine is the first suspect behind a lean
+  // code at idle.
+  bool hasTimingAdvance = false;
+  float timingAdvanceDeg = 0.0f;
+  bool hasDownstreamO2 = false;
+  float downstreamO2Volts = 0.0f;
+  bool hasEvapPurge = false;
+  float evapPurgePct = 0.0f;
 
   bool fuelValid = false;
   bool consumptionPerHour = true;
@@ -82,6 +93,9 @@ struct StaLiveSnapshot {
   uint8_t dtcPending = 0;
   uint8_t dtcPermanent = 0;
   uint16_t firstDtcRaw = 0;
+  bool readinessKnown = false;
+  uint8_t readinessSupported = 0;
+  uint8_t readinessComplete = 0;
 
   bool openMaxSpeedKnown = false;
   float openMaxSpeedKph = 0.0f;

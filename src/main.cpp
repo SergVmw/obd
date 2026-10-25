@@ -12,6 +12,7 @@
 #include "can_monitor.h"
 #include "dashboard_ui.h"
 #include "dtc_history_persistence.h"
+#include "engine_run.h"
 #include "input_manager.h"
 #include "littlefs_storage.h"
 #include "obd_client.h"
@@ -49,6 +50,7 @@ LittleFsStorage littleFsStorage;
 AssetStore assetStore;
 RuntimePersistence persistence;
 DtcHistoryPersistence dtcHistoryPersistence;
+ServiceRefusalStore serviceRefusals;
 TelemetryEngine telemetryEngine(telemetry);
 CanMonitor canMonitor;
 ObdClient obdClient(telemetry, configStore.data(), canMonitor);
@@ -70,8 +72,9 @@ TripHistoryView historyView;
 StaReadOnlyRuntime staRuntime;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             petrolCalibrationStore, persistence,
-                            dtcHistoryPersistence, assetStore, littleFsStorage,
-                            canMonitor, obdClient, brightnessManager,
+                            dtcHistoryPersistence, serviceRefusals, assetStore,
+                            littleFsStorage, canMonitor, obdClient,
+                            brightnessManager,
                             otaDiagnostics, tripClock, tripContext,
                             tripBoundary, tripHistory
 #ifdef H2G_DIAGNOSTIC_BUILD
@@ -80,7 +83,10 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             );
 
 bool serviceMode = false;
-bool engineWasRunning = false;
+// One run, one peak. The detector turns the RPM stream into start and stop
+// edges so the boost peak can be cleared on the start of every run instead of
+// surviving for days.
+EngineRunDetector engineRun;
 // Rollback-by-button state, cleared on every entry to service mode.
 ServiceRollbackController rollbackController;
 uint32_t lastMemoryLogAt = 0;
@@ -429,6 +435,14 @@ void setup() {
     ESP_LOGE(kTag, "DTC history persistence initialization failed");
   }
   obdClient.restoreDtcHistory(recoveredDtcHistory);
+  // What the block said it does not implement, read before the first scan and
+  // carried across boots. A failed read leaves the memo empty: one extra refusal
+  // per service, never a wrong verdict.
+  if (!serviceRefusals.begin()) {
+    ESP_LOGW(kTag, "Service refusal memo unavailable (%s)",
+             serviceRefusals.source());
+  }
+  obdClient.attachDtcContext(&tripClock, &serviceRefusals);
   telemetryEngine.begin(&trip, &petrolCalibration);
   if (!tripContext.begin(millis(), bootRtcSec,
                          tripClock.nowEpochSec(bootRtcSec), trip)) {
@@ -681,10 +695,18 @@ void loop() {
 #ifdef H2G_DIAGNOSTIC_BUILD
   captureDiagnosticTrace(now);
 #endif
-  if (telemetry.rpm.valid(now)) {
-    const bool engineRunning = telemetry.rpm.value > 200.0f;
-    const bool engineStopped = telemetry.rpm.value < 50.0f;
-    if (engineWasRunning && engineStopped) {
+  {
+    const EngineRunDetector::Edge engineEdge =
+        engineRun.update(telemetry.rpm.valid(now), telemetry.rpm.value);
+    if (engineEdge == EngineRunDetector::Edge::Started) {
+      // The peak is a fact about this run of the engine. Left alone it keeps
+      // the one overboost that reached the red zone for days, and the marker on
+      // the dial stops meaning anything: it can no longer show where this drive
+      // actually got to. Both surfaces are cleared here and nowhere else, so
+      // the screen and the head unit can never disagree about the peak.
+      dashboard.resetPeak();
+      staPeakBoostBar = 0.0f;
+    } else if (engineEdge == EngineRunDetector::Edge::Stopped) {
       StorageLock lock;
       const bool legacyTripOk =
           !configStore.data().saveTrip || tripStore.save(trip);
@@ -700,8 +722,6 @@ void loop() {
         ESP_LOGE(kTag, "Engine-stop trip context checkpoint failed");
       }
     }
-    if (engineRunning) engineWasRunning = true;
-    else if (engineStopped) engineWasRunning = false;
   }
 
   if (powerManager.shouldEnterLowVoltageSleep(now, telemetry)) {

@@ -112,6 +112,59 @@ std::vector<uint8_t> withRecomputedCrc(std::vector<uint8_t> bytes) {
   return bytes;
 }
 
+DidExplorer::Config rangeConfig(uint32_t requestId, uint16_t first,
+                               uint16_t last) {
+  DidExplorer::Config config;
+  config.requestId = requestId;
+  config.responseId = requestId + 8;
+  config.service = 0x22;
+  config.firstDid = first;
+  config.lastDid = last;
+  return config;
+}
+
+// `uds` is the raw single-frame body including its PCI byte.
+struct RangeAnswer {
+  uint16_t did;
+  std::vector<uint8_t> uds;
+};
+
+// Walks a whole range, answering the identifiers named in `answers` and leaving
+// the rest silent. This is what the car does, and it is what fills the outcome
+// map the store reads.
+void driveRange(DidExplorer& explorer, uint32_t responseId,
+                const std::vector<RangeAnswer>& answers) {
+  const DidExplorer::Config config = explorer.config();
+  uint32_t now = 0;
+  for (uint32_t did = config.firstDid; did <= config.lastDid; ++did) {
+    now += DidExplorer::kGapMs;
+    twai_message_t out{};
+    CHECK(explorer.buildRequest(now, out));
+    const RangeAnswer* match = nullptr;
+    for (const RangeAnswer& candidate : answers) {
+      if (candidate.did == did) {
+        match = &candidate;
+        break;
+      }
+    }
+    if (match == nullptr) {
+      now += DidExplorer::kRequestTimeoutMs;
+      explorer.requestTimedOut(now);
+      continue;
+    }
+    now += 20;
+    twai_message_t message{};
+    message.identifier = responseId;
+    message.data_length_code = 8;
+    for (size_t i = 0; i < match->uds.size() && i < 8; ++i) {
+      message.data[i] = match->uds[i];
+    }
+    twai_message_t fc{};
+    bool needFc = false;
+    CHECK(explorer.handleFrame(message, now, fc, needFc));
+  }
+}
+
 std::string storeJson(const DidStore& store, bool includeSnapshots = true) {
   h2gjson::JsonBuf buffer(2048);
   store.writeJson(buffer, includeSnapshots);
@@ -164,14 +217,18 @@ TEST_CASE(scanLandsInItsModuleSlot) {
     CHECK(store.gearbox()->count == 2);
     CHECK(store.foundEntryCount() == 3);
 
-    // A second scan of the same module replaces the first rather than merging:
-    // two ranges are not one coverage.
+    // A second sweep of the same range replaces it, because the newest sweep is
+    // the truth about the identifiers it covered.
     DidExplorer again;
     runShortScan(again, 0x7E0, {0x05, 0x62, 0xF1, 0x90, 0x55, 0x66}, {});
     CHECK(store.recordScan(again, 9999));
     CHECK(store.engine()->count == 1);
     CHECK(store.engine()->entries[0].payload[0] == 0x55);
     CHECK(store.engine()->updatedAtMs == 9999);
+    // ... and the silence it produced replaced the silence of the first sweep.
+    CHECK(store.engine()->silentCount == 1);
+    CHECK(store.engine()->silent[0].first == 0xF191);
+    CHECK(store.engine()->silent[0].last == 0xF191);
   }
 
 TEST_CASE(refusedRecords) {
@@ -488,7 +545,291 @@ TEST_CASE(exportBody) {
     CHECK(shortJson.size() < json.size());
 
     std::printf("---JSON-BEGIN---\n%s\n---JSON-END---\n", json.c_str());
+}
+
+// A sweep must add to what is known, not replace it. The first real run of this
+// feature swept one range, and a second sweep of a different range threw the
+// first one away - which is exactly the data the owner was collecting.
+TEST_CASE(disjointSweepsAddUp) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+
+  DidExplorer first;
+  CHECK(first.start(rangeConfig(0x7E0, 0xF180, 0xF183), 0));
+  driveRange(first, 0x7E8, {{0xF180, {0x04, 0x62, 0xF1, 0x80, 0x01}},
+                            {0xF182, {0x03, 0x7F, 0x22, 0x31}}});
+  CHECK(store.recordScan(first, 100));
+  CHECK(store.engine()->count == 1);
+  // Two runs, because the negative answer in the middle separates them.
+  CHECK(store.engine()->silentCount == 2);
+  CHECK(store.engine()->silent[0].first == 0xF181);
+  CHECK(store.engine()->silent[0].last == 0xF181);
+  CHECK(store.engine()->silent[1].first == 0xF183);
+  CHECK(store.engine()->silent[1].last == 0xF183);
+
+  // A second, disjoint range: everything from the first survives.
+  DidExplorer second;
+  CHECK(second.start(rangeConfig(0x7E0, 0x0110, 0x0113), 200));
+  driveRange(second, 0x7E8, {{0x0111, {0x04, 0x62, 0x01, 0x11, 0x22}}});
+  CHECK(store.recordScan(second, 300));
+  CHECK(store.engine()->count == 2);
+  CHECK(store.engine()->entries[0].did == 0x0111);
+  CHECK(store.engine()->entries[1].did == 0xF180);
+  CHECK(store.engine()->scanCount == 2);
+  // Two runs from the first sweep, two more from the second: F181, F183,
+  // F110, and the pair F112-F113.
+  CHECK(store.engine()->silentCount == 4);
+  uint16_t silent[8] = {0};
+  CHECK(store.collectSilentTargets(0x7E0, silent, 8) == 5);
+
+  // Totals are the sum of both sweeps, so the export still adds up.
+  CHECK(store.engine()->counters.scanned == 8);
+  CHECK(store.engine()->counters.positive == 2);
+  CHECK(store.engine()->counters.negative == 1);
+
+  // And a snapshot targets every identifier that answered, across both ranges.
+  uint16_t targets[8] = {0};
+  CHECK(store.collectTargets(0x7E0, targets, 8) == 2);
+}
+
+// Re-sweeping one range must leave the other range alone, including where the
+// new range falls inside an old silence run and has to split it.
+TEST_CASE(reSweepingOneRangeLeavesTheOtherAlone) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+  DidExplorer wide;
+  CHECK(wide.start(rangeConfig(0x7E0, 0x0100, 0x0107), 0));
+  driveRange(wide, 0x7E8, {{0x0100, {0x04, 0x62, 0x01, 0x00, 0x01}}});
+  CHECK(store.recordScan(wide, 10));
+  CHECK(store.engine()->silentCount == 1);
+  CHECK(store.engine()->silent[0].first == 0x0101);
+  CHECK(store.engine()->silent[0].last == 0x0107);
+
+  // Sweep the middle of that silence and find it answering now.
+  DidExplorer middle;
+  CHECK(middle.start(rangeConfig(0x7E0, 0x0103, 0x0105), 20));
+  driveRange(middle, 0x7E8, {{0x0104, {0x04, 0x62, 0x01, 0x04, 0x09}}});
+  CHECK(store.recordScan(middle, 30));
+  // One run split into two, with the identifiers that answered removed.
+  CHECK(store.engine()->silentCount == 2);
+  bool left = false, right = false;
+  for (size_t i = 0; i < store.engine()->silentCount; ++i) {
+    const DidStore::SilentRun& run = store.engine()->silent[i];
+    // F103 and F105 are silent in the new sweep too, so they fold back into
+    // the runs on either side: the hole is only the identifier that answered.
+    if (run.first == 0x0101 && run.last == 0x0103) left = true;
+    if (run.first == 0x0105 && run.last == 0x0107) right = true;
   }
+  CHECK(left && right);
+  CHECK(store.engine()->count == 2);
+  uint16_t silent[8] = {0};
+  CHECK(store.collectSilentTargets(0x7E0, silent, 8) == 6);
+}
+
+// A retry sweep is how the retry list shrinks: identifiers that answer this
+// time join the results and leave the silence.
+TEST_CASE(aRetrySweepRemovesWhatItAnswers) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+  DidExplorer sweep;
+  CHECK(sweep.start(rangeConfig(0x7E0, 0xF1A0, 0xF1A3), 0));
+  driveRange(sweep, 0x7E8, {{0xF1A0, {0x04, 0x62, 0xF1, 0xA0, 0x11}}});
+  CHECK(store.recordScan(sweep, 100));
+  CHECK(store.engine()->silentCount == 1);
+  uint16_t silent[8] = {0};
+  const size_t silentCount = store.collectSilentTargets(0x7E0, silent, 8);
+  CHECK(silentCount == 3);
+
+  DidExplorer retry;
+  DidExplorer::Config config = rangeConfig(0x7E0, 0xF1A0, 0xF1A3);
+  CHECK(retry.startTargets(config, silent, silentCount, 200));
+  twai_message_t out{};
+  twai_message_t fc{};
+  bool needFc = false;
+  const uint8_t answers[3][6] = {{0x05, 0x62, 0xF1, 0xA1, 0x01, 0x02},
+                                 {0x05, 0x62, 0xF1, 0xA2, 0x03, 0x04},
+                                 {0x06, 0x62, 0xF1, 0xA3, 0x05, 0x06}};
+  for (size_t i = 0; i < 3; ++i) {
+    CHECK(retry.buildRequest(200 + i * 100, out));
+    twai_message_t message{};
+    message.identifier = 0x7E8;
+    message.data_length_code = 8;
+    for (size_t b = 0; b < 6; ++b) message.data[b] = answers[i][b];
+    CHECK(retry.handleFrame(message, 210 + i * 100, fc, needFc));
+  }
+  CHECK(retry.state() == DidExplorer::State::Finished);
+  CHECK(store.recordRetry(retry, 600));
+  CHECK(store.engine()->count == 4);
+  uint16_t left[8] = {0};
+  CHECK(store.collectSilentTargets(0x7E0, left, 8) == 0);
+
+  // A retry that still gets silence keeps it on the list.
+  DidExplorer stubborn;
+  const uint16_t stillSilent[] = {0xF1A1};
+  CHECK(stubborn.startTargets(rangeConfig(0x7E0, 0xF1A0, 0xF1A3), stillSilent,
+                              1, 700));
+  CHECK(stubborn.buildRequest(700, out));
+  stubborn.requestTimedOut(900);
+  CHECK(store.recordRetry(stubborn, 950));
+  CHECK(store.collectSilentTargets(0x7E0, left, 8) == 1);
+}
+
+// The negative response codes are aggregated by code: after a sweep of a range
+// a block does not implement, "three times requestOutOfRange" is the honest
+// summary and a per-identifier table of the same code says nothing more.
+TEST_CASE(negativeCodesAreCounted) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+  DidExplorer sweep;
+  CHECK(sweep.start(rangeConfig(0x7E0, 0xF1A0, 0xF1A3), 0));
+  driveRange(sweep, 0x7E8, {{0xF1A0, {0x03, 0x7F, 0x22, 0x31}},
+                            {0xF1A1, {0x03, 0x7F, 0x22, 0x31}},
+                            {0xF1A2, {0x03, 0x7F, 0x22, 0x22}}});
+  CHECK(store.recordScan(sweep, 10));
+  CHECK(store.engine()->nrcCount == 2);
+  uint32_t total = 0;
+  for (size_t i = 0; i < store.engine()->nrcCount; ++i) {
+    total += store.engine()->nrc[i].count;
+  }
+  CHECK(total == 3);
+  CHECK(store.engine()->count == 0);
+  CHECK(store.engine()->silentCount == 1);
+  CHECK(store.engine()->silent[0].first == 0xF1A3);
+}
+
+// The record has to survive a round trip with all of it: ranges, silence, codes
+// and twenty-byte payloads.
+TEST_CASE(mergedRecordRoundTrips) {
+  LittleFS.reset();
+  {
+    DidStore store;
+    store.reset();
+    DidExplorer first;
+    CHECK(first.start(rangeConfig(0x7E0, 0xF188, 0xF18B), 0));
+    driveRange(first, 0x7E8, {{0xF188, {0x06, 0x62, 0xF1, 0x88, 0x41, 0x42, 0x43}},
+                              {0xF18A, {0x03, 0x7F, 0x22, 0x31}}});
+    CHECK(store.recordScan(first, 100));
+    DidExplorer second;
+    CHECK(second.start(rangeConfig(0x7E0, 0x0110, 0x0113), 200));
+    driveRange(second, 0x7E8, {{0x0112, {0x04, 0x62, 0x01, 0x12, 0x99}}});
+    CHECK(store.recordScan(second, 300));
+    CHECK(store.save());
+  }
+  DidStore store;
+  store.reset();
+  CHECK(store.load());
+  CHECK(store.engine()->count == 2);
+  CHECK(store.engine()->scanCount == 2);
+  CHECK(store.engine()->silentCount == 4);
+  CHECK(store.engine()->nrcCount == 1);
+  CHECK(store.engine()->entries[0].did == 0x0112);
+  CHECK(store.engine()->entries[1].did == 0xF188);
+  CHECK(store.engine()->entries[1].length == 3);
+  CHECK(store.engine()->entries[1].payload[2] == 0x43);
+}
+
+
+// The first real sweep of this feature cut the VIN and three other answers at
+// twelve bytes, and a VIN cut at twelve is not a VIN. Twenty bytes is the UDS
+// payload for an identifier plus its data, and the longest answer the engine
+// block gives is a seventeen-character VIN.
+TEST_CASE(aLongAnswerIsKeptWhole) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+  DidExplorer engine;
+  CHECK(engine.start(rangeConfig(0x7E0, 0xF190, 0xF190), 0));
+  twai_message_t out{};
+  CHECK(engine.buildRequest(0, out));
+  // 0x14 = twenty UDS bytes: 62 F1 90 plus a seventeen-character VIN.
+  const char* vin = "LGWEE4A41JH901646";
+  twai_message_t first{};
+  first.identifier = 0x7E8;
+  first.data_length_code = 8;
+  first.data[0] = 0x10;
+  first.data[1] = 0x14;
+  first.data[2] = 0x62;
+  first.data[3] = 0xF1;
+  first.data[4] = 0x90;
+  for (size_t i = 0; i < 3; ++i) first.data[5 + i] = static_cast<uint8_t>(vin[i]);
+  twai_message_t fc{};
+  bool needFc = false;
+  CHECK(engine.handleFrame(first, 10, fc, needFc));
+  CHECK(needFc);
+  // Six bytes in the first frame, then two seven-byte frames: twenty in all.
+  for (size_t block = 0; block < 2; ++block) {
+    twai_message_t next{};
+    next.identifier = 0x7E8;
+    next.data_length_code = 8;
+    next.data[0] = static_cast<uint8_t>(0x21 + block);
+    for (size_t i = 0; i < 7; ++i) {
+      const size_t index = 3 + block * 7 + i;
+      next.data[1 + i] = index < 17 ? static_cast<uint8_t>(vin[index]) : 0;
+    }
+    CHECK(engine.handleFrame(next, 20 + block * 10, fc, needFc));
+  }
+  CHECK(engine.state() == DidExplorer::State::Finished);
+  CHECK(store.recordScan(engine, 100));
+  CHECK(store.engine()->count == 1);
+  const DidStore::Entry& entry = store.engine()->entries[0];
+  CHECK(entry.did == 0xF190);
+  CHECK(entry.length == 17);
+  CHECK(!entry.truncated);
+  CHECK(entry.payload[11] == static_cast<uint8_t>('9'));
+  CHECK(entry.payload[16] == static_cast<uint8_t>('6'));
+}
+
+
+// A retry that answers an identifier in the middle of a silent run has to split
+// that run, or the identifiers on either side of it disappear from the retry
+// list and are never asked about again.
+TEST_CASE(aRetryThatAnswersInTheMiddleSplitsTheRun) {
+  LittleFS.reset();
+  DidStore store;
+  store.reset();
+  DidExplorer sweep;
+  CHECK(sweep.start(rangeConfig(0x7E0, 0xF1A0, 0xF1A3), 0));
+  driveRange(sweep, 0x7E8, {{0xF1A0, {0x04, 0x62, 0xF1, 0xA0, 0x11}}});
+  CHECK(store.recordScan(sweep, 100));
+  CHECK(store.engine()->silentCount == 1);
+  CHECK(store.engine()->silent[0].first == 0xF1A1);
+  CHECK(store.engine()->silent[0].last == 0xF1A3);
+
+  // Only the middle identifier answers this time.
+  DidExplorer retry;
+  const uint16_t middle[] = {0xF1A2};
+  CHECK(retry.startTargets(rangeConfig(0x7E0, 0xF1A0, 0xF1A3), middle, 1, 200));
+  twai_message_t out{};
+  CHECK(retry.buildRequest(200, out));
+  twai_message_t answer{};
+  answer.identifier = 0x7E8;
+  answer.data_length_code = 8;
+  answer.data[0] = 0x05;
+  answer.data[1] = 0x62;
+  answer.data[2] = 0xF1;
+  answer.data[3] = 0xA2;
+  answer.data[4] = 0x33;
+  answer.data[5] = 0x44;
+  twai_message_t fc{};
+  bool needFc = false;
+  CHECK(retry.handleFrame(answer, 210, fc, needFc));
+  CHECK(store.recordRetry(retry, 300));
+
+  bool left = false, right = false;
+  for (size_t i = 0; i < store.engine()->silentCount; ++i) {
+    const DidStore::SilentRun& run = store.engine()->silent[i];
+    if (run.first == 0xF1A1 && run.last == 0xF1A1) left = true;
+    if (run.first == 0xF1A3 && run.last == 0xF1A3) right = true;
+  }
+  CHECK(left && right);
+  CHECK(store.engine()->count == 2);
+  uint16_t silent[8] = {0};
+  CHECK(store.collectSilentTargets(0x7E0, silent, 8) == 2);
+}
 
 int main() {
   std::printf("%d identifier store tests passed\n", testsRun);

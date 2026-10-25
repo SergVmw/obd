@@ -155,6 +155,12 @@ void testEngineDataPidSet() {
   CHECK(isEngineDataPid(0x5E));
   CHECK(isEngineDataPid(0x05));
   CHECK(isEngineDataPid(0x11));
+  // The three parameters this gauge started reading in 0.4.39 are engine data
+  // for the same reason the other nine are: a transmission has no ignition
+  // timing, no downstream oxygen sensor and no evaporative canister.
+  CHECK(isEngineDataPid(0x0E));
+  CHECK(isEngineDataPid(0x15));
+  CHECK(isEngineDataPid(0x2E));
   // Mask requests: any ECU may answer them.
   CHECK(isEngineDataPid(0x00));
   CHECK(isEngineDataPid(0x20));

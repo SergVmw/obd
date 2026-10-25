@@ -36,6 +36,7 @@ const vm = require('node:vm');
     delayRemainingMs: 0, pending: 'none', calibrationReady: false,
     observedMinAdc: 1790, observedMaxAdc: 1810, adcClipped: false, storageHealthy: true,
   };
+  let dtcMemoHeader = null;
   const dtcFixture = {
     ok: true, engineEcuId: '0x7E8', engineEcuLocked: true,
     mil: { known: true, commandedOn: false, latchedThisBoot: true,
@@ -46,6 +47,22 @@ const vm = require('node:vm');
       lastNegativeService: 0, lastNegativeResponseCode: 0,
       responsePending: false, responsePendingCount: 0 },
     counts: { stored: 1, pending: 0, permanent: 0, total: 1 },
+    readiness: { known: true, sparkIgnition: true, raw: '07 C2 82',
+      updatedAgeMs: 900, monitors: [
+        { id: 'misfire', name: 'Пропуски воспламенения', supported: true, complete: true },
+        { id: 'fuelSystem', name: 'Топливная система', supported: true, complete: true },
+        { id: 'components', name: 'Компоненты (CCM)', supported: true, complete: true },
+        { id: 'catalyst', name: 'Катализатор', supported: true, complete: false },
+        { id: 'heatedCatalyst', name: 'Катализатор с подогревом', supported: true, complete: false },
+        { id: 'evap', name: 'Адсорбер (EVAP)', supported: false, complete: false },
+        { id: 'secondaryAir', name: 'Вторичный воздух', supported: false, complete: false },
+        { id: 'acRefrigerant', name: 'Хладагент кондиционера', supported: false, complete: false },
+        { id: 'o2Sensor', name: 'Датчик кислорода', supported: true, complete: false },
+        { id: 'o2Heater', name: 'Подогрев датчика кислорода', supported: true, complete: true },
+        { id: 'egr', name: 'EGR / фазовращатель', supported: true, complete: false },
+      ] },
+    serviceMemo: { storageHealthy: true, source: 'nvs', restoredFromFlash: true,
+      count: 1, writes: 1, failures: 0, mask: 512, services: ['0x0A'] },
     codes: [{ code: 'P0301', raw: 0x0301, kind: 'stored', ecuId: '0x7E8',
       description: 'Пропуски зажигания: цилиндр 1', misfire: true }],
     history: { count: 2, changeSequence: 7, truncated: false,
@@ -55,11 +72,19 @@ const vm = require('node:vm');
         { code: 'P0301', raw: 0x0301, ecuId: '0x7E8',
           description: 'Пропуски зажигания: цилиндр 1', misfire: true,
           currentlyListed: true, historicalOnly: false, occurrenceCount: 2,
-          seenKinds: ['pending', 'stored'], lastKnownPresentKinds: ['stored'] },
+          seenKinds: ['pending', 'stored'], lastKnownPresentKinds: ['stored'],
+          firstSeenEpoch: 1750000000, lastSeenEpoch: 1750003600,
+          condition: { valid: 255, speedKph: 52.3, rpm: 2150, mapKpa: 46.5,
+            coolantC: 88, intakeC: 31.5, loadPct: 28.4,
+            shortTrimPct: -3.25, longTrimPct: 7.5 } },
         { code: 'P0302', raw: 0x0302, ecuId: '0x7E8',
           description: 'Пропуски зажигания: цилиндр 2', misfire: true,
           currentlyListed: false, historicalOnly: true, occurrenceCount: 1,
-          seenKinds: ['pending'], lastKnownPresentKinds: [] },
+          seenKinds: ['pending'], lastKnownPresentKinds: [],
+          firstSeenEpoch: null, lastSeenEpoch: null,
+          condition: { valid: 0, speedKph: null, rpm: null, mapKpa: null,
+            coolantC: null, intakeC: null, loadPct: null,
+            shortTrimPct: null, longTrimPct: null } },
       ] },
     clear: { result: 'never', inProgress: false, available: true,
       preclearScanComplete: false, snapshotPreserved: false,
@@ -97,10 +122,12 @@ const vm = require('node:vm');
             pending: false, pollingActive: true, discoveryDone: true },
           fuelSelection: 'LPG', lpgEnabled: true, lpgInputActive: true,
           fuelMode: 'UNKNOWN', fuelModeReason: 'rpm_stale', rpm: null, rpmAgeMs: 3500,
+          timingAdvanceDeg: 21.5, downstreamO2V: 0.455, evapPurgePct: 0,
           dtc: { milKnown: true, milCommandedOn: false,
             milLatchedThisBoot: true, ecuReportedCount: 1, storedCount: 1,
             pendingCount: 0, permanentCount: 0, firstCode: 'P0301', misfire: true,
-            scanInProgress: false }, ota: { runningPartition: 'app0', runningAddress: 0x10000,
+            scanInProgress: false, readinessKnown: true, readinessSupported: 6,
+            readinessComplete: 4, refusedServices: ['0x0A'] }, ota: { runningPartition: 'app0', runningAddress: 0x10000,
             maxImageBytes: 2097152, probeBytes: 288, idleTimeoutMs: 2000, totalTimeoutMs: 180000,
             bootPartition: 'app0', bootAddress: 0x10000, nextPartition: 'app1', nextAddress: 0x410000,
             runningState: 'valid', resetReason: 'software', diagnosticsStorageHealthy: true,
@@ -178,6 +205,13 @@ const vm = require('node:vm');
       if (url.pathname === '/api/diagnostics/dtc/scan') {
         dtcScanHeader = req.headers()['x-h2g-action'];
         return json({ ok: true, accepted: true, operation: 'scanning' });
+      }
+      if (url.pathname === '/api/diagnostics/dtc/service-memo/clear') {
+        dtcMemoHeader = req.headers()['x-h2g-action'];
+        dtcFixture.serviceMemo.services = [];
+        dtcFixture.serviceMemo.count = 0;
+        dtcFixture.serviceMemo.storageHealthy = true;
+        return json({ ok: true, forgotten: 1, storageHealthy: true, scanStarted: true });
       }
       if (url.pathname === '/api/diagnostics/dtc/clear') {
         dtcClearHeader = req.headers()['x-h2g-action'];
@@ -275,6 +309,42 @@ const vm = require('node:vm');
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /P0302/);
     assert.match(await page.locator('#dtcHistoryRows').textContent(), /Исчез \/ история/);
     assert.match(await page.locator('#dtcHistoryState').textContent(), /LittleFS: OK, NVS: OK, CRC: OK/);
+    // Readiness: availability and completeness are separate columns, and a
+    // monitor the car does not have says so instead of "не готов".
+    const readinessRows = await page.locator('#dtcReadinessRows tr').count();
+    assert.equal(readinessRows, 11, 'every monitor in the answer must have a row');
+    assert.match(await page.locator('#dtcReadinessRows').textContent(), /Пропуски воспламенения/);
+    assert.match(await page.locator('#dtcReadinessRows').textContent(), /монитора нет/);
+    assert.doesNotMatch(
+      await page.locator('#dtcReadinessRows tr', { hasText: 'Адсорбер (EVAP)' }).textContent(),
+      /не готов/, 'a monitor the block does not support cannot be "not ready"');
+    assert.match(await page.locator('#dtcReadinessState').textContent(), /Готовы 4 из 8/);
+    assert.match(await page.locator('#dtcReadinessState').textContent(), /искровое/);
+    assert.match(await page.locator('#dtcReadinessState').textContent(), /07 C2 82/);
+    // Service memo: the refused service is named, with where the note came from.
+    assert.match(await page.locator('#dtcMemoState').textContent(), /0x0A/);
+    assert.match(await page.locator('#dtcMemoState').textContent(), /восстановлена из NVS/);
+    // Onset context and time: a dated row for the code with a snapshot, and a
+    // dash - not a zero - for the one carried without a synced clock.
+    const historyText = await page.locator('#dtcHistoryRows').textContent();
+    assert.match(historyText, /RPM 2150/);
+    assert.match(historyText, /MAP 47 кПа/);  // 46.5 rounds to 47 at zero decimals
+    assert.match(historyText, /LTFT 7\.5 %/);
+    assert.match(historyText, /\d\d\.\d\d\.\d{4} \d\d:\d\d/);
+    assert.match(historyText, /последний раз/);
+    assert.match(historyText, /не записано/);
+    // The three parameters that were supported and never read.
+    assert.equal(await page.locator('#diagAngle').textContent(), '21.5° до ВМТ');
+    assert.equal(await page.locator('#diagO2Down').textContent(), '0.455 В');
+    assert.equal(await page.locator('#diagPurge').textContent(), '0 %');
+    assert.match(await page.locator('#diagParamsState').textContent(), /«—» означает/);
+    await page.evaluate(() => diagParams({ timingAdvanceDeg: null, downstreamO2V: null, evapPurgePct: null }));
+    assert.equal(await page.locator('#diagAngle').textContent(), '—');
+    assert.match(await page.locator('#diagParamsState').textContent(), /Значений нет/);
+    await page.evaluate(() => diagParams({ timingAdvanceDeg: 0, downstreamO2V: 0.02, evapPurgePct: 12 }));
+    assert.equal(await page.locator('#diagAngle').textContent(), '0.0° до ВМТ',
+      'a measured zero is a value, not a dash');
+    await page.evaluate(() => status());
     // The RAM-only temporary override is gone. What must hold is that the two
     // real sliders still move the reported brightness and that touching them
     // posts nothing until the settings are saved: the override used to look
@@ -304,6 +374,14 @@ const vm = require('node:vm');
     dtcFixture.clear.postClearVerificationPending = false;
     await page.evaluate(value => renderDtcs(value), dtcFixture);
     await page.click('.tab[data-tab="obd"]');
+    // Forgetting the memo is a POST with its own action header, and it names the
+    // service it forgot so the page can say what changed.
+    await page.click('#dtcForgetMemo');
+    await page.waitForFunction(() => document.getElementById('msg').textContent.includes('Памятка отказов очищена'));
+    assert.equal(dtcMemoHeader, 'dtc-service-memo');
+    await page.evaluate(value => renderDtcs(value), dtcFixture);
+    assert.match(await page.locator('#dtcMemoState').textContent(),
+      /Отказанных сервисов нет/);
     await page.click('#dtcRefresh');
     assert.equal(dtcScanHeader, 'dtc-scan');
     await page.check('#dtcClearAck');

@@ -14,6 +14,14 @@
 // and that must now be refused.
 #include "obd_diagnostics.h"
 
+// The refusal memo is backed by NVS. The host stub keeps its state in static
+// members that each suite defines for itself, so this suite carries its own
+// copy; without it the memo has nowhere to write and the link fails.
+std::map<std::string, std::vector<uint8_t>> Preferences::storage;
+bool Preferences::failWrite = false;
+bool Preferences::failBegin = false;
+size_t Preferences::writes = 0;
+
 #include <cstdio>
 #include <functional>
 #include <vector>

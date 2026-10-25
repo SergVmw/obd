@@ -55,8 +55,8 @@ for name, text in (("did_explorer.cpp", EXPLORER), ("did_store.cpp", STORE),
               f"{name} must not touch the network stack: found {forbidden!r}")
 check(PORTAL_H.count("server_(80)") == 1 and "server_(80)" not in PORTAL,
       "ServicePortal must own exactly one WebServer, constructed on port 80")
-check(PORTAL.count("server_.on(\"/api/dids") == 6,
-      "the six identifier routes must be registered on the portal's own server")
+check(PORTAL.count("server_.on(\"/api/dids") == 7,
+      "the seven identifier routes must be registered on the portal's own server")
 check("WiFiServer" not in PORTAL and "AsyncWebServer" not in PORTAL,
       "the portal must not open a second listener for the identifier scan")
 
@@ -109,7 +109,10 @@ check("didExplorer_.requestTimedOut(millis());" in OBD,
 # 5. The export and the record. What the scan found has to outlive the session.
 check('kFilePath = "/dids.bin"' in STORE_H,
       "the identifier record must live in a file of its own")
-check("kFormatVersion = 1" in STORE_H, "the record format must stay versioned")
+check("kFormatVersion = 2" in STORE_H, "the record format must stay versioned")
+check("kMaxPayload = 20" in EXPLORER_H,
+      "the payload cap must fit a VIN with its identifier, or the export lies "
+      "about what the module answered")
 check("storageCrc32Update" in STORE and "storageCrc32Finish" in STORE,
       "the record must be protected by a CRC")
 check("LittleFS.rename(kTempPath, kFilePath)" in STORE,
@@ -118,6 +121,31 @@ check("didStore_.save()" in PORTAL and "didStore_.load()" in PORTAL,
       "the portal must load the record when it opens and save it when a run ends")
 check("Content-Disposition" in PORTAL and "h2g-dids-" in PORTAL,
       "the export route must serve the record as a download")
+check("tripClock_.nowEpochSec(currentRtcSec())" in PORTAL.split("void ServicePortal::sendDidExport")[1][:4000],
+      "the export name must come from the synced clock, not from the RTC counter")
+check("h2g-dids-unsynced-clock.json" in PORTAL,
+      "an unsynced clock must say so in the file name instead of inventing a time")
+
+
+# 5b. A new sweep adds to the record instead of replacing it, and the outcome of
+# every identifier is kept so a retry can be aimed rather than blind.
+for symbol in ("clearRange", "addSilentRun", "addNrcCode", "collectSilentTargets",
+               "recordRetry"):
+    check(symbol in STORE, f"the store must merge sweeps: {symbol} is missing")
+check("recordRetry" in PORTAL and "/api/dids/retry" in PORTAL,
+      "the retry route must exist, or the outcome map is collected for nothing")
+check('"did-retry"' in PORTAL, "the retry route must require its action header")
+for key in ('"restoredFromFlash"', '"scans"', '"silent"', '"negativeCodes"'):
+    check(key in STORE, f"the export must describe the sweep: {key} is missing")
+check("Outcome::Silent" in EXPLORER and "outcomeState" in EXPLORER_H,
+      "the explorer must publish what happened to every identifier")
+
+# 5c. A module may say "still working". That is not an answer and must not be
+# recorded as one, and it must not hold the single request slot forever.
+check("kResponsePending = 0x78" in EXPLORER,
+      "the explorer must recognise the response-pending negative code")
+check("kDidAbsoluteTimeoutMs" in OBD and "didRequestAt_" in OBD,
+      "a pending answer must restart the short wait, bounded by an absolute deadline")
 
 # 6. Three control snapshots, each one run against one module.
 check("kSlots = 3" in STORE_H, "there are exactly three control snapshots")
@@ -137,16 +165,17 @@ check("/api/dids" not in STA,
 
 # 8. The page and the firmware must agree, and the embedded copy must be current.
 for route in ("/api/dids", "/api/dids/scan", "/api/dids/stop",
-              "/api/dids/snapshot", "/api/dids/clear", "/api/dids/export"):
+              "/api/dids/snapshot", "/api/dids/clear", "/api/dids/export",
+              "/api/dids/retry"):
     check(route in PORTAL, f"{route} is not registered by the portal")
 for element in ("didEcu", "didService", "didFirst", "didLast", "didExtended",
                 "didStart", "didStop", "didExport", "didClear", "didState",
                 "didRows", "didSnapState", "didSnapRows", "didSnapIgnition",
-                "didSnapIdle", "didSnapLoad", "didExplorer"):
+                "didSnapIdle", "didSnapLoad", "didExplorer", "didRetry"):
     check(f'id="{element}"' in HTML, f"the portal page is missing id={element}")
 check("'X-H2G-Action':header" in HTML,
       "the page must send the confirmation header on every identifier action")
-for header in ("did-scan", "did-stop", "did-clear", "did-snapshot"):
+for header in ("did-scan", "did-stop", "did-clear", "did-snapshot", "did-retry"):
     check(f"'{header}'" in HTML,
           f"the page must name the {header} action, so a reload cannot start a scan")
     check(f'"{header}"' in PORTAL,
@@ -164,5 +193,6 @@ if failures:
 print("DID explorer integration: single port-80 listener, read-only services "
       "22/21 plus session 10 03 and 3E 00, bounded range and pacing, no frames "
       "outside service mode, versioned CRC record with export, three "
-      "one-module control snapshots stamped with MAP and RPM, page and "
+      "one-module control snapshots stamped with MAP and RPM, merged sweeps "
+      "with silence ranges and negative codes, targeted retry, page and "
       "embedded UI in sync")

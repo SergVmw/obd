@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include "driver/twai.h"
 #include "dtc_history.h"
+#include "service_refusal_store.h"
 #include "telemetry.h"
 
 enum class DtcKind : uint8_t {
@@ -20,6 +21,13 @@ enum class DtcCategoryStatus : uint8_t {
   Malformed = 5,
   TransportError = 6,
   NegativeResponse = 7,
+  // The block answered this service with NRC 0x11 in an earlier session and the
+  // request was not sent. Distinct from Unsupported on purpose: Unsupported is a
+  // verdict about this scan, arrived at from a negative response or from a
+  // silence beside a working service, while Refused says the answer is known to
+  // be the same as last time and was not asked again. They read the same on the
+  // dash and mean different things in a report.
+  RefusedService = 8,
 };
 
 enum class DtcOperation : uint8_t {
@@ -57,6 +65,20 @@ struct DtcEntry {
   DtcKind kind = DtcKind::Stored;
 };
 
+// One readiness monitor as the block reported it in PID 01 bytes C and D.
+//
+// Two bits per monitor and they do not mean the same thing: availability is 1
+// when supported, completeness is 0 when complete. Reading them the same way is
+// the classic way to print "не готов" about a monitor the car does not have, so
+// they are carried separately and `supported` is checked before `complete` is
+// shown anywhere.
+struct DtcMonitorStatus {
+  const char* id = "";
+  const char* nameRu = "";
+  bool supported = false;
+  bool complete = false;
+};
+
 struct ObdDiagnosticsState {
   static constexpr size_t kMaxEntries = 32;
   static constexpr uint8_t kCategoryCount =
@@ -92,6 +114,21 @@ struct ObdDiagnosticsState {
   uint32_t monitorUpdatedAt = 0;
   uint32_t firstMilSeenAt = 0;
   uint32_t lastMilSeenAt = 0;
+
+  // PID 01 data bytes B, C and D, exactly as received. Four bytes of the answer
+  // were already arriving and three of them were being thrown away: B says
+  // whether the continuous monitors are supported and finished, C and D say the
+  // same for the once-per-trip monitors, and the read-back of readiness after a
+  // clear is the only independent check that the clear did what it claimed.
+  //
+  // Stored raw because the meaning of C and D depends on B3 (spark or
+  // compression ignition) and a decoded copy would need a flag to say which
+  // table produced it.
+  uint8_t monitorDataB = 0;
+  uint8_t monitorDataC = 0;
+  uint8_t monitorDataD = 0;
+  bool readinessKnown = false;
+  uint32_t readinessUpdatedAt = 0;
 
   DtcEntry entries[kMaxEntries]{};
   uint8_t entryCount = 0;
@@ -168,6 +205,27 @@ class ObdDiagnostics {
 
   bool observeMonitorStatus(uint8_t statusByte, uint32_t now,
                             uint32_t responseId);
+  // Bytes B, C and D of the same PID 01 answer. Separate from the call above so
+  // an older block that answers with one byte still sets the lamp and the count.
+  bool observeReadiness(const uint8_t* data, size_t length, uint32_t now,
+                        uint32_t responseId);
+  // Readiness monitors decoded from those bytes. Empty id means "not computed".
+  static void decodeReadiness(uint8_t dataB, uint8_t dataC, uint8_t dataD,
+                              DtcMonitorStatus* out, size_t capacity,
+                              size_t& count);
+  static bool sparkIgnition(uint8_t dataB);
+  // Wall-clock source for DTC history: a function and the object it reads.
+  // Null leaves every timestamp at zero, which the history and the pages read as
+  // "the clock was not synced", and is the truthful answer rather than a
+  // plausible-looking zero.
+  using EpochProvider = uint32_t (*)(void* context);
+  void setEpochSource(EpochProvider provider, void* context) {
+    epochProvider_ = provider;
+    epochContext_ = context;
+  }
+  void setRefusalStore(ServiceRefusalStore* store) { refusals_ = store; }
+  const ServiceRefusalStore* refusalStore() const { return refusals_; }
+  uint32_t epochNow() const;
   bool observeEngineResponse(uint32_t responseId, uint8_t pid, bool identityEvidence);
 void noteRpmAnswer(uint32_t responseId, bool identityEvidence);
 void tryBindEngine();
@@ -242,12 +300,19 @@ void tryBindEngine();
   bool processVerificationPayload(const uint8_t* payload, size_t length,
                                   uint32_t now);
   bool replaceCategory(DtcKind kind, const uint8_t* bytes, size_t length,
-                       uint16_t responseId, bool authoritative);
+                       uint16_t responseId, bool authoritative, uint32_t now);
   void removeCategory(DtcKind kind);
   void appendCode(DtcKind kind, uint16_t raw, uint16_t responseId);
   void updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
                              size_t length, uint16_t responseId,
-                             bool authoritative);
+                             bool authoritative, uint32_t now);
+  DtcCondition captureCondition(uint32_t now) const;
+  // Starts reading `kind`, or records RefusedService and moves on. Returns true
+  // when a request was actually begun.
+  bool beginCategoryRead(DtcKind kind);
+  void beginScanChain(uint32_t now, DtcKind from);
+  void advanceToNextCategory(uint32_t now, DtcKind finished);
+  static Request requestForKind(DtcKind kind);
   DtcHistoryEntry* findHistory(uint16_t raw, uint16_t responseId);
   DtcHistoryEntry& allocateHistory(uint16_t raw, uint16_t responseId);
   uint32_t nextHistoryChange();
@@ -257,6 +322,9 @@ void tryBindEngine();
   void setError(const char* error);
 
   TelemetryData& telemetry_;
+  EpochProvider epochProvider_ = nullptr;
+  void* epochContext_ = nullptr;
+  ServiceRefusalStore* refusals_ = nullptr;
   ObdDiagnosticsState state_{};
   DtcHistoryData history_{};
   Request request_ = Request::None;

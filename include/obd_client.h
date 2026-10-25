@@ -7,6 +7,7 @@
 #include "did_explorer.h"
 #include "mode22.h"
 #include "obd_diagnostics.h"
+#include "trip_clock.h"
 #include "obd_request_timing.h"
 #include "telemetry.h"
 #include "pins.h"
@@ -124,6 +125,19 @@ bool identityDiscriminates() const;
     diagnostics_.restoreHistory(history);
   }
   void resetDtcHistory() { diagnostics_.resetHistory(); }
+  // Both are attached once, after the stores they read are up. Neither is owned
+  // here: the trip clock belongs to main and the refusal memo to the portal,
+  // which is where the reset route lives.
+  void attachDtcContext(TripClock* clock, ServiceRefusalStore* refusals) {
+    // The provider is a free function in trip_clock.cpp, so a suite that never
+    // calls this never links against the clock or against NVS.
+    diagnostics_.setEpochSource(clock != nullptr ? &tripClockEpochNow : nullptr,
+                                clock);
+    diagnostics_.setRefusalStore(refusals);
+  }
+  const ServiceRefusalStore* serviceRefusals() const {
+    return diagnostics_.refusalStore();
+  }
 
   // VIN as read from the vehicle, or an empty string while it is unknown. It
   // is fetched once after discovery and never polled again, so it costs no
@@ -247,6 +261,10 @@ bool identityDiscriminates() const;
   uint8_t pendingPid_ = 0;
   uint32_t pendingTimeoutMs_ = 0;
   uint32_t requestSentAt_ = 0;
+  // When the identifier request was first sent. A "response pending" answer
+  // moves requestSentAt_ forward, and this is what stops that from repeating
+  // without limit.
+  uint32_t didRequestAt_ = 0;
   ObdRequestTiming diagnosticTiming_;
   uint32_t lastAnyRequestAt_ = 0;
 
@@ -306,7 +324,7 @@ bool identityDiscriminates() const;
   // both lengths out let them disagree, and they did: adding one PID to the
   // ordinary profile produced a definition of kPollProfile[15] against a
   // declaration of [14], which is a build failure rather than a wrong mask.
-  static constexpr uint8_t kPollCount = 14;
+  static constexpr uint8_t kPollCount = 17;
   // The Speed-Density test image never requests unsupported PID 10 (MAF) or
   // PID 5E (fuel rate). It replaces MAF polling with IAT (PID 0F).
   static constexpr PollItem kPollProfile[kPollCount] = {
@@ -314,8 +332,11 @@ bool identityDiscriminates() const;
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
       {0x0D, 200},   // speed
+      {0x0E, 500},   // ignition timing advance, diagnostics on gas
       {0x0F, 1000},  // intake air temperature for Speed-Density
       {0x11, 200},   // absolute throttle position
+      {0x15, 1000},  // O2 sensor 2, downstream of the catalyst
+      {0x2E, 1000},  // commanded EVAP purge
       {0x44, 250},   // commanded equivalence ratio
       {0x06, 500},   // short-term fuel trim bank 1
       {0x07, 500},   // long-term fuel trim bank 1
@@ -338,15 +359,18 @@ bool identityDiscriminates() const;
       {0x33, 10000}  // barometric pressure
   };
 #else
-  static constexpr uint8_t kPollCount = 17;
+  static constexpr uint8_t kPollCount = 20;
   static constexpr PollItem kPollProfile[kPollCount] = {
       {0x01, 500},   // monitor status / MIL / confirmed DTC count
       {0x0B, 100},   // MAP
       {0x0C, 150},   // RPM
       {0x0D, 200},   // speed
+      {0x0E, 500},   // ignition timing advance, diagnostics on gas
       {0x0F, 1000},  // IAT, requested only in Speed-Density mode
       {0x10, 200},   // MAF, skipped in Speed-Density mode
       {0x11, 200},   // absolute throttle position, DFCO only
+      {0x15, 1000},  // O2 sensor 2, downstream of the catalyst
+      {0x2E, 1000},  // commanded EVAP purge
       {0x5E, 200},   // fuel rate, skipped in Speed-Density mode
       // 0x44 commanded equivalence ratio used to sit here. It is absent from
       // this vehicle's support mask, so it never reached the bus anyway, and

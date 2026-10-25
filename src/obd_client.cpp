@@ -9,6 +9,11 @@ namespace {
 constexpr const char* kTag = "OBD";
 constexpr uint8_t kMaxRxFramesPerLoop = 16;
 constexpr uint32_t kRxTimeBudgetUs = 2000;
+// The longest a single identifier may occupy the request slot, however many
+// times the module answers "response pending". UDS P2* is a few seconds, and a
+// scan that waits longer than this for one identifier is not making progress
+// either way.
+constexpr uint32_t kDidAbsoluteTimeoutMs = 5000;
 }
 
 constexpr uint8_t ObdClient::kDiscoveryPids_[5];
@@ -87,10 +92,21 @@ void ObdClient::loop(uint32_t now) {
   // first observed after P2/P2* or the absolute deadline cannot revive the
   // request, including when ordinary polling is paused in service mode.
   if (waiting_) {
-    const bool expired = pendingRequest_ == PendingRequest::Diagnostics
-                             ? diagnosticTiming_.expired(now)
-                             : (pendingTimeoutMs_ != 0 &&
-                                now - requestSentAt_ >= pendingTimeoutMs_);
+    bool expired = false;
+    if (pendingRequest_ == PendingRequest::Diagnostics) {
+      expired = diagnosticTiming_.expired(now);
+    } else if (pendingRequest_ == PendingRequest::Did) {
+      // A "response pending" answer restarts the short window, so the absolute
+      // deadline is what stops an ECU that keeps saying 0x78 from holding the
+      // single request slot forever. UDS P2* is a few seconds; this is the
+      // longest a scan may wait for one identifier.
+      expired = (now - didRequestAt_ >= kDidAbsoluteTimeoutMs) ||
+                (pendingTimeoutMs_ != 0 &&
+                 now - requestSentAt_ >= pendingTimeoutMs_);
+    } else {
+      expired = pendingTimeoutMs_ != 0 &&
+                now - requestSentAt_ >= pendingTimeoutMs_;
+    }
     if (expired) finishPending(true);
   }
   receiveFrames(now);
@@ -597,6 +613,7 @@ bool ObdClient::sendDidRequest(uint32_t now) {
   pendingPid_ = 0;
   pendingTimeoutMs_ = DidExplorer::kRequestTimeoutMs;
   requestSentAt_ = now;
+  didRequestAt_ = now;
   lastAnyRequestAt_ = now;
   return true;
 }
@@ -683,6 +700,12 @@ void ObdClient::receiveFrames(uint32_t now) {
     // parseResponse below.
     if (didExplorer_.handleFrame(message, now, flowControl,
                                  needsFlowControl)) {
+      // "Still working" is a consumed frame that is not an answer: restart the
+      // wait rather than letting the identifier time out under it.
+      if (didExplorer_.takeResponsePending() &&
+          pendingRequest_ == PendingRequest::Did) {
+        requestSentAt_ = now;
+      }
       if (needsFlowControl) {
         if (twai_transmit(&flowControl, pdMS_TO_TICKS(20)) != ESP_OK) {
           ++telemetry_.canErrorCount;
@@ -941,6 +964,27 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
         odometerLastKm_ = km;
         odometerSeen_ = true;
         telemetry_.odometerKm.set(km, now);
+      }
+      break;
+    case 0x0E:
+      if (payloadLength >= 2) {
+        // J1979: (A / 2) - 64, degrees before TDC. Negative means after TDC.
+        telemetry_.timingAdvanceDeg.set(
+            static_cast<float>(a) / 2.0f - 64.0f, now);
+      }
+      break;
+    case 0x15:
+      if (payloadLength >= 2) {
+        // Bank 1 sensor 2, 0.005 V per bit. A real narrow-band sensor parked
+        // near 0.45 V says the catalyst is working; one that swings with
+        // PID 14 says it is not.
+        telemetry_.o2Sensor2Voltage.set(static_cast<float>(a) * 0.005f, now);
+      }
+      break;
+    case 0x2E:
+      if (payloadLength >= 2) {
+        telemetry_.evapPurgePercent.set(static_cast<float>(a) * 100.0f / 255.0f,
+                                        now);
       }
       break;
     case 0x33:

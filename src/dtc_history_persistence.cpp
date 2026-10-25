@@ -54,7 +54,71 @@ DtcHistoryPersistence::SegmentScan DtcHistoryPersistence::scanSegment(
   }
   file.close();
   if (result.validBytes != result.fileBytes) result.cleanTail = false;
+
+  if (!result.hasValid) {
+    // Nothing in this segment parses as the current record. Before calling it
+    // empty, look for the previous layout: the segments are rewritten on the
+    // first write after a conversion, so this runs at most once per vehicle, and
+    // it is the difference between carrying a recorded fault across the upgrade
+    // and silently losing it.
+    SegmentScan legacy;
+    if (scanLegacySegment(segment, legacy)) {
+      result = legacy;
+      result.validBytes = 0;   // force rotation onto the current layout
+      result.cleanTail = false;
+      result.legacy = true;
+    }
+  }
   return result;
+}
+
+bool DtcHistoryPersistence::scanLegacySegment(char segment,
+                                              SegmentScan& result) const {
+  if (!fsMounted_) return false;
+  const char* path = segmentPath(segment);
+  if (!LittleFS.exists(path)) return false;
+  fs::File file = LittleFS.open(path, "r");
+  if (!file) {
+    file.close();
+    return false;
+  }
+  const size_t scanBytes = file.size() < kSegmentBytes ? file.size()
+                                                       : kSegmentBytes;
+  uint8_t record[DtcHistorySnapshot::kLegacyRecordBytes]{};
+  size_t offset = 0;
+  uint32_t newestSequence = 0;
+  bool found = false;
+  DtcHistorySnapshot::Decoded decoded;
+  while (offset + sizeof(record) <= scanBytes) {
+    if (file.read(record, sizeof(record)) != sizeof(record)) break;
+    if (!DtcHistorySnapshot::decodeLegacy(record, sizeof(record), decoded)) {
+      break;
+    }
+    if (!found ||
+        DtcHistorySnapshot::sequenceNewer(decoded.sequence, newestSequence)) {
+      newestSequence = decoded.sequence;
+      // Rewritten into the current layout immediately: the rest of the class
+      // only ever sees one record size.
+      if (!DtcHistorySnapshot::encode(decoded.sequence, decoded.history,
+                                      result.record,
+                                      sizeof(result.record))) {
+        found = false;
+        break;
+      }
+      found = true;
+    }
+    offset += sizeof(record);
+  }
+  file.close();
+  if (!found) {
+    result = SegmentScan{};
+    return false;
+  }
+  result.exists = true;
+  result.hasValid = true;
+  result.fileBytes = scanBytes;
+  result.sequence = newestSequence;
+  return true;
 }
 
 bool DtcHistoryPersistence::verifyRecordAt(const char* path, size_t offset,
@@ -125,16 +189,31 @@ bool DtcHistoryPersistence::writeJournalRecord(const uint8_t* record) {
 }
 
 bool DtcHistoryPersistence::loadNvsRecord(uint8_t* record) {
-  if (!preferencesReady_ || !record ||
-      preferences_.getBytesLength(kNvsKey) !=
-          DtcHistorySnapshot::kRecordBytes) {
+  if (!preferencesReady_ || !record) return false;
+  const size_t stored = preferences_.getBytesLength(kNvsKey);
+  if (stored == DtcHistorySnapshot::kRecordBytes) {
+    return preferences_.getBytes(kNvsKey, record,
+                                 DtcHistorySnapshot::kRecordBytes) ==
+               DtcHistorySnapshot::kRecordBytes &&
+           DtcHistorySnapshot::valid(record,
+                                     DtcHistorySnapshot::kRecordBytes);
+  }
+  if (stored != DtcHistorySnapshot::kLegacyRecordBytes) return false;
+  uint8_t legacy[DtcHistorySnapshot::kLegacyRecordBytes]{};
+  if (preferences_.getBytes(kNvsKey, legacy, sizeof(legacy)) !=
+      sizeof(legacy)) {
     return false;
   }
-  return preferences_.getBytes(kNvsKey, record,
-                               DtcHistorySnapshot::kRecordBytes) ==
-             DtcHistorySnapshot::kRecordBytes &&
-         DtcHistorySnapshot::valid(record,
-                                   DtcHistorySnapshot::kRecordBytes);
+  DtcHistorySnapshot::Decoded decoded;
+  if (!DtcHistorySnapshot::decodeLegacy(legacy, sizeof(legacy), decoded)) {
+    return false;
+  }
+  if (!DtcHistorySnapshot::encode(decoded.sequence, decoded.history, record,
+                                  DtcHistorySnapshot::kRecordBytes)) {
+    return false;
+  }
+  nvsConverted_ = true;
+  return true;
 }
 
 bool DtcHistoryPersistence::writeNvsRecord(const uint8_t* record) {
@@ -207,6 +286,10 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
     activeSegment_ = newestSegmentName;
     activeSegmentBytes_ = newestSegment->fileBytes;
     activeTailClean_ = newestSegment->cleanTail;
+    // A segment read in the old layout is rewritten now rather than at the next
+    // change: the disk carries one record size from here on, which is what the
+    // scanner walks by.
+    journalConverted_ = newestSegment->legacy;
     needsRotation_ = !activeTailClean_ ||
                      activeSegmentBytes_ + DtcHistorySnapshot::kRecordBytes >
                          kSegmentBytes;
@@ -214,6 +297,7 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
   }
 
   uint8_t nvsRecord[DtcHistorySnapshot::kRecordBytes]{};
+  nvsConverted_ = false;
   if (loadNvsRecord(nvsRecord)) {
     nvsSequence_ = DtcHistorySnapshot::sequence(
         nvsRecord, DtcHistorySnapshot::kRecordBytes);
@@ -242,6 +326,12 @@ bool DtcHistoryPersistence::begin(LittleFsStorage& storage,
   }
   history = decoded.history;
   latestSequence_ = decoded.sequence;
+
+  // A converted source is written back in the current layout on the first sync,
+  // not left in place: the journal segment that held schema 1 is rotated away
+  // (its tail is no longer clean), and the NVS mirror is forced by pretending
+  // it is at sequence zero, which no real sequence can equal.
+  if (nvsConverted_) nvsSequence_ = 0;
 
   const bool journalOk = syncJournal();
   const bool nvsOk = syncNvs();
@@ -276,8 +366,10 @@ bool DtcHistoryPersistence::prepareLatest(const DtcHistoryData& history) {
 
 bool DtcHistoryPersistence::syncJournal() {
   if (!latestValid_) return false;
-  if (journalSequence_ == latestSequence_) return true;
-  return writeJournalRecord(latestRecord_);
+  if (journalSequence_ == latestSequence_ && !journalConverted_) return true;
+  const bool written = writeJournalRecord(latestRecord_);
+  if (written) journalConverted_ = false;
+  return written;
 }
 
 bool DtcHistoryPersistence::syncNvs() {

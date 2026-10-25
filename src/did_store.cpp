@@ -189,6 +189,40 @@ void writeEcu(RecordWriter& out, const DidStore::Ecu& ecu) {
     out.u8(entry.length);
     out.bytes(entry.payload, DidStore::kMaxPayload);
   }
+  out.u8(ecu.runsTruncated ? 1 : 0);
+  const uint8_t scanCount = static_cast<uint8_t>(
+      ecu.scanCount > DidStore::kMaxScans ? DidStore::kMaxScans : ecu.scanCount);
+  out.u8(scanCount);
+  for (uint8_t i = 0; i < scanCount; ++i) {
+    const DidStore::ScanRecord& record = ecu.scans[i];
+    out.u16(record.firstDid);
+    out.u16(record.lastDid);
+    out.u8(record.service);
+    out.u32(record.atMs);
+    out.u32(record.elapsedMs);
+    out.u32(record.counters.scanned);
+    out.u32(record.counters.positive);
+    out.u32(record.counters.negative);
+    out.u32(record.counters.timeout);
+    out.u32(record.counters.dropped);
+    out.u8(record.counters.lastNrc);
+  }
+  const uint8_t silentCount = static_cast<uint8_t>(
+      ecu.silentCount > DidStore::kMaxSilentRuns ? DidStore::kMaxSilentRuns
+                                                 : ecu.silentCount);
+  out.u8(silentCount);
+  for (uint8_t i = 0; i < silentCount; ++i) {
+    out.u16(ecu.silent[i].first);
+    out.u16(ecu.silent[i].last);
+  }
+  const uint8_t nrcCount = static_cast<uint8_t>(
+      ecu.nrcCount > DidStore::kMaxNrcCodes ? DidStore::kMaxNrcCodes
+                                            : ecu.nrcCount);
+  out.u8(nrcCount);
+  for (uint8_t i = 0; i < nrcCount; ++i) {
+    out.u8(ecu.nrc[i].code);
+    out.u32(ecu.nrc[i].count);
+  }
 }
 
 void readEcu(RecordReader& in, DidStore::Ecu& ecu) {
@@ -224,6 +258,52 @@ void readEcu(RecordReader& in, DidStore::Ecu& ecu) {
       entry.length = length > DidStore::kMaxPayload ? DidStore::kMaxPayload : length;
       std::memcpy(entry.payload, payload, sizeof(entry.payload));
       ecu.count = i + 1;
+    } else {
+      in.markCorrupt();
+    }
+  }
+  ecu.runsTruncated = in.u8() != 0;
+  const uint8_t scanCount = in.u8();
+  for (size_t i = 0; i < scanCount; ++i) {
+    DidStore::ScanRecord record{};
+    record.firstDid = in.u16();
+    record.lastDid = in.u16();
+    record.service = in.u8();
+    record.atMs = in.u32();
+    record.elapsedMs = in.u32();
+    record.counters.scanned = in.u32();
+    record.counters.positive = in.u32();
+    record.counters.negative = in.u32();
+    record.counters.timeout = in.u32();
+    record.counters.dropped = in.u32();
+    record.counters.lastNrc = in.u8();
+    if (i < DidStore::kMaxScans) {
+      ecu.scans[i] = record;
+      ecu.scanCount = i + 1;
+    } else {
+      in.markCorrupt();
+    }
+  }
+  const uint8_t silentCount = in.u8();
+  for (size_t i = 0; i < silentCount; ++i) {
+    DidStore::SilentRun run{};
+    run.first = in.u16();
+    run.last = in.u16();
+    if (i < DidStore::kMaxSilentRuns) {
+      ecu.silent[i] = run;
+      ecu.silentCount = i + 1;
+    } else {
+      in.markCorrupt();
+    }
+  }
+  const uint8_t nrcCount = in.u8();
+  for (size_t i = 0; i < nrcCount; ++i) {
+    DidStore::NrcCount entry{};
+    entry.code = in.u8();
+    entry.count = in.u32();
+    if (i < DidStore::kMaxNrcCodes) {
+      ecu.nrc[i] = entry;
+      ecu.nrcCount = i + 1;
     } else {
       in.markCorrupt();
     }
@@ -371,8 +451,7 @@ void DidStore::reset() {
   gearbox_ = Ecu{};
   for (size_t i = 0; i < kSlots; ++i) snapshots_[i] = Snapshot{};
   dirty_ = false;
-  loadedFromFlash_ = false;
-  saved_ = false;
+  restoredFromFlash_ = false;
   status_ = "empty";
 }
 
@@ -388,41 +467,284 @@ void DidStore::copyEntry(Entry& dst, uint16_t did, uint8_t service,
   if (payload && keep != 0) std::memcpy(dst.payload, payload, keep);
 }
 
-bool DidStore::recordScan(const DidExplorer& explorer, uint32_t nowMs) {
-  const DidExplorer::Config& config = explorer.config();
-  Ecu* target = nullptr;
-  if (config.requestId == 0x7E0) {
-    target = &engine_;
-  } else if (config.requestId == 0x7E1) {
-    target = &gearbox_;
-  } else {
-    // Only the two responders this vehicle has. A scan of anything else is not
-    // stored rather than stored under a name that would mislead a later reader.
+DidStore::Ecu* DidStore::moduleFor(const DidExplorer& explorer,
+                                   bool& outKnown) {
+  const uint32_t requestId = explorer.config().requestId;
+  outKnown = true;
+  if (requestId == 0x7E0) return &engine_;
+  if (requestId == 0x7E1) return &gearbox_;
+  // Only the two responders this vehicle has. A scan of anything else is not
+  // stored rather than stored under a name that would mislead a later reader.
+  outKnown = false;
+  return nullptr;
+}
+
+void DidStore::clearRange(Ecu& ecu, uint16_t first, uint16_t last) {
+  // A sweep is the truth about the identifiers it covered, so anything already
+  // held for them is dropped before the new outcome is added. Without this a
+  // block that started answering after the first sweep would keep showing up as
+  // silent forever, and the retry list would never shrink.
+  size_t kept = 0;
+  for (size_t i = 0; i < ecu.count; ++i) {
+    const uint16_t did = ecu.entries[i].did;
+    if (did < first || did > last) ecu.entries[kept++] = ecu.entries[i];
+  }
+  ecu.count = kept;
+
+  size_t runKept = 0;
+  for (size_t i = 0; i < ecu.silentCount; ++i) {
+    const SilentRun run = ecu.silent[i];
+    if (run.last < first || run.first > last) {
+      ecu.silent[runKept++] = run;
+      continue;
+    }
+    // Trimming the covered span can split a run in two.
+    if (run.first < first) {
+      ecu.silent[runKept].first = run.first;
+      ecu.silent[runKept].last = static_cast<uint16_t>(first - 1);
+      ++runKept;
+    }
+    if (run.last > last) {
+      ecu.silent[runKept].first = static_cast<uint16_t>(last + 1);
+      ecu.silent[runKept].last = run.last;
+      ++runKept;
+    }
+  }
+  ecu.silentCount = runKept > kMaxSilentRuns ? kMaxSilentRuns : runKept;
+  if (runKept > kMaxSilentRuns) ecu.runsTruncated = true;
+}
+
+void DidStore::addSilentRun(Ecu& ecu, uint16_t first, uint16_t last) {
+  if (first > last) return;
+  if (ecu.silentCount >= kMaxSilentRuns) {
+    ecu.runsTruncated = true;
+    return;
+  }
+  ecu.silent[ecu.silentCount].first = first;
+  ecu.silent[ecu.silentCount].last = last;
+  ++ecu.silentCount;
+  // Coalesce adjacent and overlapping runs. Silence arrives in blocks, so this
+  // keeps the retry list as a handful of ranges instead of one entry per
+  // identifier.
+  bool merged = true;
+  while (merged) {
+    merged = false;
+    for (size_t i = 0; i < ecu.silentCount && !merged; ++i) {
+      for (size_t j = i + 1; j < ecu.silentCount; ++j) {
+        const uint32_t aFirst = ecu.silent[i].first, aLast = ecu.silent[i].last;
+        const uint32_t bFirst = ecu.silent[j].first, bLast = ecu.silent[j].last;
+        if (bFirst > aLast + 1u || aFirst > bLast + 1u) continue;
+        ecu.silent[i].first = static_cast<uint16_t>(aFirst < bFirst ? aFirst : bFirst);
+        ecu.silent[i].last = static_cast<uint16_t>(aLast > bLast ? aLast : bLast);
+        ecu.silent[j] = ecu.silent[ecu.silentCount - 1];
+        --ecu.silentCount;
+        merged = true;
+        break;
+      }
+    }
+  }
+}
+
+void DidStore::addNrcCode(Ecu& ecu, uint8_t code) {
+  for (size_t i = 0; i < ecu.nrcCount; ++i) {
+    if (ecu.nrc[i].code == code) {
+      ++ecu.nrc[i].count;
+      return;
+    }
+  }
+  if (ecu.nrcCount >= kMaxNrcCodes) return;
+  ecu.nrc[ecu.nrcCount].code = code;
+  ecu.nrc[ecu.nrcCount].count = 1;
+  ++ecu.nrcCount;
+}
+
+bool DidStore::upsertEntry(Ecu& ecu, uint16_t did, uint8_t service,
+                           const uint8_t* data, size_t length,
+                           bool truncated) {
+  size_t index = 0;
+  while (index < ecu.count && ecu.entries[index].did < did) ++index;
+  if (index < ecu.count && ecu.entries[index].did == did) {
+    copyEntry(ecu.entries[index], did, service, data, length, truncated);
+    return true;
+  }
+  if (ecu.count >= kMaxEntries) {
+    ecu.truncated = true;
     return false;
   }
-  if (explorer.mode() != DidExplorer::Mode::RangeScan) return false;
+  for (size_t i = ecu.count; i > index; --i) ecu.entries[i] = ecu.entries[i - 1];
+  copyEntry(ecu.entries[index], did, service, data, length, truncated);
+  ++ecu.count;
+  return true;
+}
 
-  *target = Ecu{};
-  target->present = true;
-  target->requestId = static_cast<uint16_t>(config.requestId);
-  target->responseId = static_cast<uint16_t>(config.responseId);
+void DidStore::pruneSilent(Ecu& ecu, uint16_t did) {
+  for (size_t i = 0; i < ecu.silentCount; ++i) {
+    SilentRun& run = ecu.silent[i];
+    if (did < run.first || did > run.last) continue;
+    if (run.first == run.last) {
+      run = ecu.silent[ecu.silentCount - 1];
+      --ecu.silentCount;
+      return;
+    }
+    if (did == run.first) {
+      ++run.first;
+    } else if (did == run.last) {
+      --run.last;
+    } else {
+      // The identifier sat in the middle: split the run around it.
+      if (ecu.silentCount >= kMaxSilentRuns) {
+        ecu.runsTruncated = true;
+        return;
+      }
+      SilentRun tail;
+      tail.first = static_cast<uint16_t>(did + 1);
+      tail.last = run.last;
+      run.last = static_cast<uint16_t>(did - 1);
+      ecu.silent[ecu.silentCount++] = tail;
+    }
+    return;
+  }
+}
+
+void DidStore::addScanRecord(Ecu& ecu, const ScanRecord& record) {
+  // The same range swept twice is one row, not two: the second sweep replaced
+  // the first for every identifier it covered.
+  for (size_t i = 0; i < ecu.scanCount; ++i) {
+    if (ecu.scans[i].firstDid == record.firstDid &&
+        ecu.scans[i].lastDid == record.lastDid &&
+        ecu.scans[i].service == record.service) {
+      ecu.scans[i] = record;
+      return;
+    }
+  }
+  if (ecu.scanCount >= kMaxScans) {
+    for (size_t i = 1; i < kMaxScans; ++i) ecu.scans[i - 1] = ecu.scans[i];
+    --ecu.scanCount;
+    ecu.runsTruncated = true;
+  }
+  ecu.scans[ecu.scanCount++] = record;
+}
+
+bool DidStore::recordScan(const DidExplorer& explorer, uint32_t nowMs) {
+  if (explorer.mode() != DidExplorer::Mode::RangeScan) return false;
+  bool known = false;
+  Ecu* target = moduleFor(explorer, known);
+  if (!known || target == nullptr) return false;
+
+  const DidExplorer::Config& config = explorer.config();
+  const uint16_t first = config.firstDid;
+  const uint16_t last = config.lastDid;
+
+  if (!target->present) {
+    *target = Ecu{};
+    target->present = true;
+    target->requestId = static_cast<uint16_t>(config.requestId);
+    target->responseId = static_cast<uint16_t>(config.responseId);
+  }
   target->service = config.service;
   target->updatedAtMs = nowMs;
-  target->truncated = explorer.resultsTruncated();
+
+  clearRange(*target, first, last);
+
+  // The sweep's own bookkeeping, kept per range and added to the module total.
+  ScanRecord record{};
+  record.firstDid = first;
+  record.lastDid = last;
+  record.service = config.service;
+  record.atMs = nowMs;
+  record.elapsedMs = explorer.elapsedMs(nowMs);
   const DidExplorer::Counters& counters = explorer.counters();
-  target->counters.scanned = counters.scanned;
-  target->counters.positive = counters.positive;
-  target->counters.negative = counters.negative;
-  target->counters.timeout = counters.timeout;
-  target->counters.dropped = counters.dropped;
+  record.counters.scanned = counters.scanned;
+  record.counters.positive = counters.positive;
+  record.counters.negative = counters.negative;
+  record.counters.timeout = counters.timeout;
+  record.counters.dropped = counters.dropped;
+  record.counters.lastNrc = counters.lastNrc;
+  addScanRecord(*target, record);
+  target->counters.scanned += counters.scanned;
+  target->counters.positive += counters.positive;
+  target->counters.negative += counters.negative;
+  target->counters.timeout += counters.timeout;
+  target->counters.dropped += counters.dropped;
   target->counters.lastNrc = counters.lastNrc;
-  target->count = explorer.resultCount();
-  if (target->count > kMaxEntries) target->count = kMaxEntries;
-  for (size_t i = 0; i < target->count; ++i) {
-    const DidExplorer::Result& result = explorer.results()[i];
-    copyEntry(target->entries[i], result.did, result.service, result.payload,
-              result.length, result.truncated);
+
+  uint16_t runStart = 0;
+  bool inRun = false;
+  for (uint32_t did = first; did <= last; ++did) {
+    const uint16_t id = static_cast<uint16_t>(did);
+    switch (explorer.outcomeState(id)) {
+      case DidExplorer::Outcome::Data:
+        if (inRun) {
+          addSilentRun(*target, runStart, static_cast<uint16_t>(did - 1));
+          inRun = false;
+        }
+        break;
+      case DidExplorer::Outcome::Negative:
+        if (inRun) {
+          addSilentRun(*target, runStart, static_cast<uint16_t>(did - 1));
+          inRun = false;
+        }
+        addNrcCode(*target, explorer.outcomeNrc(id));
+        break;
+      case DidExplorer::Outcome::Silent:
+        if (!inRun) {
+          runStart = id;
+          inRun = true;
+        }
+        break;
+      case DidExplorer::Outcome::Unscanned:
+        // A sweep that was stopped early covers only part of its range, and the
+        // part it never reached is not evidence of silence.
+        if (inRun) {
+          addSilentRun(*target, runStart, static_cast<uint16_t>(did - 1));
+          inRun = false;
+        }
+        break;
+    }
   }
+  if (inRun) addSilentRun(*target, runStart, last);
+
+  for (size_t i = 0; i < explorer.resultCount(); ++i) {
+    const DidExplorer::Result& result = explorer.results()[i];
+    upsertEntry(*target, result.did, result.service, result.payload,
+                result.length, result.truncated);
+  }
+
+  dirty_ = true;
+  status_ = "unsaved";
+  return true;
+}
+
+bool DidStore::recordRetry(const DidExplorer& explorer, uint32_t nowMs) {
+  if (explorer.mode() != DidExplorer::Mode::Targets) return false;
+  bool known = false;
+  Ecu* target = moduleFor(explorer, known);
+  if (!known || target == nullptr) return false;
+  if (!target->present) return false;
+
+  target->updatedAtMs = nowMs;
+  for (size_t i = 0; i < explorer.visitCount(); ++i) {
+    const DidExplorer::Visit& visit = explorer.visit(i);
+    switch (visit.outcome) {
+      case DidExplorer::Outcome::Data:
+        upsertEntry(*target, visit.did, target->service, visit.payload,
+                    visit.length, false);
+        pruneSilent(*target, visit.did);
+        break;
+      case DidExplorer::Outcome::Negative:
+        pruneSilent(*target, visit.did);
+        addNrcCode(*target, visit.nrc);
+        break;
+      case DidExplorer::Outcome::Silent:
+        // Still silent: it stays on the retry list, and saying so is what keeps
+        // a retry honest after an earlier retry had cleared it.
+        addSilentRun(*target, visit.did, visit.did);
+        break;
+      case DidExplorer::Outcome::Unscanned:
+        break;
+    }
+  }
+  ++target->counters.scanned;
   dirty_ = true;
   status_ = "unsaved";
   return true;
@@ -441,6 +763,26 @@ size_t DidStore::collectTargets(uint16_t requestId, uint16_t* out,
   size_t written = 0;
   for (size_t i = 0; i < module->count && written < capacity; ++i) {
     out[written++] = module->entries[i].did;
+  }
+  return written;
+}
+
+size_t DidStore::collectSilentTargets(uint16_t requestId, uint16_t* out,
+                                        size_t capacity) const {
+  if (!out || capacity == 0) return 0;
+  const Ecu* module = nullptr;
+  if (requestId == 0x7E0) {
+    module = engine_.present ? &engine_ : nullptr;
+  } else if (requestId == 0x7E1) {
+    module = gearbox_.present ? &gearbox_ : nullptr;
+  }
+  if (!module) return 0;
+  size_t written = 0;
+  for (size_t i = 0; i < module->silentCount && written < capacity; ++i) {
+    const SilentRun& run = module->silent[i];
+    for (uint32_t did = run.first; did <= run.last && written < capacity; ++did) {
+      out[written++] = static_cast<uint16_t>(did);
+    }
   }
   return written;
 }
@@ -520,7 +862,6 @@ bool DidStore::save() {
     return false;
   }
   dirty_ = false;
-  saved_ = true;
   status_ = "saved";
   return true;
 }
@@ -576,7 +917,6 @@ bool DidStore::writeRecord() {
     LittleFS.remove(kTempPath);
     return false;
   }
-  loadedFromFlash_ = true;
   return true;
 }
 
@@ -617,8 +957,7 @@ bool DidStore::load() {
   gearbox_ = gearbox;
   for (size_t i = 0; i < kSlots; ++i) snapshots_[i] = snapshots[i];
   dirty_ = false;
-  loadedFromFlash_ = true;
-  saved_ = true;
+  restoredFromFlash_ = true;
   status_ = "loaded";
   return true;
 }
@@ -667,8 +1006,8 @@ void DidStore::writeJson(h2gjson::JsonBuf& out, bool includeSnapshots,
   out.strVal(status_);
   out.key("dirty");
   out.boolVal(dirty_);
-  out.key("loadedFromFlash");
-  out.boolVal(loadedFromFlash_);
+  out.key("restoredFromFlash");
+  out.boolVal(restoredFromFlash_);
   out.key("found");
   out.u32Val(static_cast<uint32_t>(foundEntryCount()));
   out.ch('}');
@@ -715,6 +1054,77 @@ void DidStore::writeJson(h2gjson::JsonBuf& out, bool includeSnapshots,
     out.ch('}');
     out.key("count");
     out.u32Val(static_cast<uint32_t>(ecu.count));
+    // What has been swept, so a report says which ranges are covered rather
+    // than only what the most recent one found.
+    out.key("scans");
+    out.ch('[');
+    for (size_t i = 0; i < ecu.scanCount; ++i) {
+      const ScanRecord& record = ecu.scans[i];
+      if (i != 0) out.ch(',');
+      out.ch('{');
+      writeHex16(buffer, sizeof(buffer), record.firstDid);
+      out.key("first", false);
+      out.strVal(buffer);
+      writeHex16(buffer, sizeof(buffer), record.lastDid);
+      out.key("last");
+      out.strVal(buffer);
+      writeHex8(buffer, sizeof(buffer), record.service);
+      out.key("service");
+      out.strVal(buffer);
+      out.key("elapsedMs");
+      out.u32Val(record.elapsedMs);
+      out.key("scanned");
+      out.u32Val(record.counters.scanned);
+      out.key("positive");
+      out.u32Val(record.counters.positive);
+      out.key("negative");
+      out.u32Val(record.counters.negative);
+      out.key("timeout");
+      out.u32Val(record.counters.timeout);
+      out.ch('}');
+    }
+    out.ch(']');
+    // Silence as ranges: this is the retry list, and a module that does not
+    // implement a block of identifiers produces exactly one of these.
+    out.key("silent");
+    out.ch('{');
+    out.key("truncated", false);
+    out.boolVal(ecu.runsTruncated);
+    out.key("count");
+    uint32_t silentTotal = 0;
+    for (size_t i = 0; i < ecu.silentCount; ++i) {
+      silentTotal += static_cast<uint32_t>(ecu.silent[i].last) -
+                     ecu.silent[i].first + 1;
+    }
+    out.u32Val(silentTotal);
+    out.key("ranges");
+    out.ch('[');
+    for (size_t i = 0; i < ecu.silentCount; ++i) {
+      if (i != 0) out.ch(',');
+      out.ch('{');
+      writeHex16(buffer, sizeof(buffer), ecu.silent[i].first);
+      out.key("first", false);
+      out.strVal(buffer);
+      writeHex16(buffer, sizeof(buffer), ecu.silent[i].last);
+      out.key("last");
+      out.strVal(buffer);
+      out.ch('}');
+    }
+    out.ch(']');
+    out.ch('}');
+    out.key("negativeCodes");
+    out.ch('[');
+    for (size_t i = 0; i < ecu.nrcCount; ++i) {
+      if (i != 0) out.ch(',');
+      out.ch('{');
+      writeHex8(buffer, sizeof(buffer), ecu.nrc[i].code);
+      out.key("code", false);
+      out.strVal(buffer);
+      out.key("count");
+      out.u32Val(ecu.nrc[i].count);
+      out.ch('}');
+    }
+    out.ch(']');
     out.key("results");
     out.ch('[');
     for (size_t i = 0; i < ecu.count; ++i) {

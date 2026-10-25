@@ -8,6 +8,7 @@ constexpr uint8_t kServiceReadByLocalIdentifier = 0x21;
 constexpr uint8_t kPositiveReadByIdentifier = 0x62;   // 0x22 + 0x40
 constexpr uint8_t kPositiveReadByLocalId = 0x61;      // 0x21 + 0x40
 constexpr uint8_t kNegativeResponse = 0x7F;
+constexpr uint8_t kResponsePending = 0x78;
 constexpr uint8_t kServiceDiagnosticSessionControl = 0x10;
 constexpr uint8_t kPositiveSessionControl = 0x50;
 constexpr uint8_t kServiceTesterPresent = 0x3E;
@@ -119,6 +120,12 @@ bool DidExplorer::start(const Config& config, uint32_t nowMs) {
   resultCount_ = 0;
   resultsTruncated_ = false;
   for (size_t i = 0; i < kMaxResults; ++i) results_[i] = Result{};
+  for (size_t i = 0; i < kMaxRange; ++i) outcomes_[i] = OutcomeEntry{};
+  outcomeBase_ = config.firstDid;
+  outcomeSpan_ = static_cast<uint16_t>(config.lastDid - config.firstDid + 1);
+  for (size_t i = 0; i < kMaxSnapshotTargets; ++i) visits_[i] = Visit{};
+  visitCount_ = 0;
+  responsePending_ = false;
   std::memset(buffer_, 0, sizeof(buffer_));
   expectedLength_ = 0;
   receivedLength_ = 0;
@@ -176,6 +183,12 @@ void DidExplorer::clear() {
   resultCount_ = 0;
   resultsTruncated_ = false;
   for (size_t i = 0; i < kMaxResults; ++i) results_[i] = Result{};
+  for (size_t i = 0; i < kMaxRange; ++i) outcomes_[i] = OutcomeEntry{};
+  for (size_t i = 0; i < kMaxSnapshotTargets; ++i) visits_[i] = Visit{};
+  visitCount_ = 0;
+  outcomeBase_ = 0;
+  outcomeSpan_ = 0;
+  responsePending_ = false;
   std::memset(buffer_, 0, sizeof(buffer_));
   expectedLength_ = 0;
   receivedLength_ = 0;
@@ -285,6 +298,49 @@ void DidExplorer::recordResult(uint16_t did, uint8_t service,
   std::memcpy(result.payload, data, keep);
 }
 
+void DidExplorer::recordOutcome(Outcome outcome, uint8_t nrc) {
+  const uint16_t did = activeDid();
+  if (did < outcomeBase_) return;
+  const uint32_t index = static_cast<uint32_t>(did) - outcomeBase_;
+  if (index >= outcomeSpan_ || index >= kMaxRange) return;
+  outcomes_[index].state = static_cast<uint8_t>(outcome);
+  outcomes_[index].nrc = nrc;
+}
+
+void DidExplorer::recordVisit(uint16_t did, Outcome outcome, uint8_t nrc,
+                              const uint8_t* data, size_t length) {
+  if (visitCount_ >= kMaxSnapshotTargets) return;
+  Visit& visit = visits_[visitCount_++];
+  visit = Visit{};
+  visit.did = did;
+  visit.outcome = outcome;
+  visit.nrc = nrc;
+  if (outcome != Outcome::Data || data == nullptr) return;
+  const size_t keep = length > kMaxPayload ? kMaxPayload : length;
+  visit.length = static_cast<uint8_t>(keep);
+  std::memcpy(visit.payload, data, keep);
+}
+
+DidExplorer::Outcome DidExplorer::outcomeState(uint16_t did) const {
+  if (did < outcomeBase_) return Outcome::Unscanned;
+  const uint32_t index = static_cast<uint32_t>(did) - outcomeBase_;
+  if (index >= outcomeSpan_ || index >= kMaxRange) return Outcome::Unscanned;
+  return static_cast<Outcome>(outcomes_[index].state);
+}
+
+uint8_t DidExplorer::outcomeNrc(uint16_t did) const {
+  if (did < outcomeBase_) return 0;
+  const uint32_t index = static_cast<uint32_t>(did) - outcomeBase_;
+  if (index >= outcomeSpan_ || index >= kMaxRange) return 0;
+  return outcomes_[index].nrc;
+}
+
+bool DidExplorer::takeResponsePending() {
+  const bool pending = responsePending_;
+  responsePending_ = false;
+  return pending;
+}
+
 void DidExplorer::acceptPayload(const uint8_t* uds, size_t length,
                                 uint32_t nowMs) {
   if (pending_ == Pending::Session) {
@@ -301,22 +357,30 @@ void DidExplorer::acceptPayload(const uint8_t* uds, size_t length,
     return;
   }
   if (pending_ == Pending::Scan) {
+    const bool targets = mode_ == Mode::Targets;
     if (uds[0] == kNegativeResponse) {
       ++counters_.negative;
       counters_.lastNrc = length >= 3 ? uds[2] : 0;
-      if (mode_ == Mode::Targets) {
+      recordOutcome(Outcome::Negative, counters_.lastNrc);
+      if (targets) {
+        recordVisit(activeDid(), Outcome::Negative, counters_.lastNrc, nullptr,
+                    0);
         pushAnswer(uds, length, static_cast<int8_t>(counters_.lastNrc), false);
       }
     } else if (config_.service == kServiceReadByIdentifier) {
       ++counters_.positive;
-      if (mode_ == Mode::Targets) {
+      recordOutcome(Outcome::Data, 0);
+      if (targets) {
+        recordVisit(activeDid(), Outcome::Data, 0, uds + 3, length - 3);
         pushAnswer(uds + 3, length - 3, -1, false);
       } else {
         recordResult(activeDid(), config_.service, uds + 3, length - 3);
       }
     } else {
       ++counters_.positive;
-      if (mode_ == Mode::Targets) {
+      recordOutcome(Outcome::Data, 0);
+      if (targets) {
+        recordVisit(activeDid(), Outcome::Data, 0, uds + 2, length - 2);
         pushAnswer(uds + 2, length - 2, -1, false);
       } else {
         recordResult(activeDid(), config_.service, uds + 2, length - 2);
@@ -396,7 +460,11 @@ void DidExplorer::requestTimedOut(uint32_t nowMs) {
   }
   if (pending_ == Pending::Scan) {
     ++counters_.timeout;
-    if (mode_ == Mode::Targets) pushAnswer(nullptr, 0, -1, true);
+    recordOutcome(Outcome::Silent, 0);
+    if (mode_ == Mode::Targets) {
+      recordVisit(activeDid(), Outcome::Silent, 0, nullptr, 0);
+      pushAnswer(nullptr, 0, -1, true);
+    }
     advance();
   } else if (pending_ == Pending::Session) {
     // A module that will not open an extended session is still worth scanning
@@ -442,6 +510,14 @@ bool DidExplorer::handleFrame(const twai_message_t& in, uint32_t nowMs,
       return true;
     }
     if (!payloadMatches(uds, udsLength)) return false;
+    // Response pending: the module has taken the request and is still working.
+    // Recording it as an answer would record "this identifier does not exist"
+    // for one that does, and moving on would lose the real answer entirely.
+    if (uds[0] == kNegativeResponse && udsLength >= 3 &&
+        uds[2] == kResponsePending) {
+      responsePending_ = true;
+      return true;
+    }
     acceptPayload(uds, udsLength, nowMs);
     return true;
   }

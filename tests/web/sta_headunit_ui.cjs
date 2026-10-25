@@ -50,6 +50,9 @@ const zlib = require('node:zlib');
     trimSumPct: 0.0,
     trimWarn: false,
     o2V: 0.683,
+    timingAdvance: 21.5,
+    downstreamO2: 0.455,
+    evapPurge: 0,
     airflowGps: 9.85,
     fuelValid: true,
     perHour: false,
@@ -57,7 +60,8 @@ const zlib = require('node:zlib');
     fuelLph: 6.37,
     windowL100: 14.2,
     clock: { synced: true, epochSec: 1792664040, utcOffsetMin: 180, localDate: '2026-10-22', localTime: '11:14' },
-    dtc: { milOn: false, stored: 0, pending: 0, permanent: 0, firstCode: '' },
+    dtc: { milOn: false, stored: 0, pending: 0, permanent: 0, firstCode: '',
+      readinessKnown: true, readinessSupported: 6, readinessComplete: 4 },
     history: { ready: true, healthy: true, headSequence: 2 },
     cur: {
       startEpochSec: 1792661556,
@@ -183,6 +187,21 @@ const zlib = require('node:zlib');
     corruptTail: false,
     days: [
       {
+        date: '2026-10-23',
+        dateUnknown: false,
+        tripCount: 2,
+        distanceKm: 30.0,
+        petrolLiters: 0.50,
+        lpgLiters: 5.50,
+        movingAverageL100: 17.5,
+        averageL100: 20.0,
+        preMoveSeconds: 60,
+        inTripIdleSeconds: 200,
+        // No peak for this day: the chart must leave it out, not draw a zero.
+        maxSpeedKnown: false,
+        maxSpeedKph: null,
+      },
+      {
         date: '2026-10-22',
         dateUnknown: false,
         tripCount: 1,
@@ -307,6 +326,13 @@ const zlib = require('node:zlib');
       assert.equal(trimTransform, 'rotate(0deg)', `${vp.label}: 0% trim sum must sit at 12 o'clock (0deg)`);
       assert.equal(await page.textContent('#lvFuelLoop'), 'PID 03 0x02');
       assert.equal(await page.textContent('#lvO2'), '0.68 В');
+      // The three parameters the block supports and the gauge never asked for.
+      // The zero purge is a value, not a dash: an engine at idle with no purge
+      // scheduled really does command 0 %, and the two must not look alike.
+      assert.equal(await page.textContent('#lvAngle'), '21.5');
+      assert.equal(await page.textContent('#lvO2Down'), '0.455 В');
+      assert.equal(await page.textContent('#lvPurge'), '0%');
+      assert.match(await page.textContent('#lvDtcSub'), /Мониторы: 4\/6/);
 
       // 3. Check zero horizontal overflow on every tab:
       for (const tabId of ['cur', 'live', 'hist', 'days']) {
@@ -315,6 +341,30 @@ const zlib = require('node:zlib');
           document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
         assert.equal(overflow, false, `${vp.label}: horizontal overflow detected on tab ${tabId}`);
       }
+
+      // 3b. The month chart on the days tab. The head unit is the screen the
+      //     owner actually looks at, so the same two rules as the portal apply:
+      //     the month figure is litres over kilometres, and a day without a
+      //     peak speed stays empty instead of becoming a zero.
+      await page.click('.tab[data-tab="days"]');
+      await page.waitForFunction(() => document.querySelectorAll('#chartFuel rect').length > 0,
+        null, { timeout: 5000 });
+      const monthSum = await page.textContent('#chartSummary');
+      // Two dated days: 18.42 km / 3.33 L and 30.0 km / 6.0 L, so 48.42 km and
+      // 9.33 L. Weighted: 19.3 L/100. The mean of the two daily means is 19.0,
+      // which is exactly the number this must NOT show.
+      assert.match(monthSum, /48\.4 км/, `${vp.label}: chart must sum the dated days, got ${monthSum}`);
+      assert.match(monthSum, /19\.3 л\/100 км/, `${vp.label}: weighted figure wrong: ${monthSum}`);
+      assert.ok(!monthSum.includes('19.0 л/100'), `${vp.label}: the month is a mean of means`);
+      assert.equal(await page.$$eval('#chartFuel rect', rs => rs.length), 2,
+        `${vp.label}: the undated day has no place on a date axis`);
+      assert.equal(await page.$$eval('#chartSpeed circle', rs => rs.length), 1,
+        `${vp.label}: the day without a peak must stay empty, not become a zero`);
+      // And the line must not be drawn through that gap: with one point and one
+      // gap the path holds a single "M" and no "L" at all.
+      const speedPath = await page.$eval('#chartSpeed path', el => el.getAttribute('d'));
+      assert.ok(!speedPath.includes('L'),
+        `${vp.label}: the line was bridged across a day with no peak: ${speedPath}`);
 
       assert.deepEqual(errors, [], `${vp.label}: unexpected console/page errors: ${errors.join('; ')}`);
       await context.close();
@@ -371,11 +421,20 @@ const zlib = require('node:zlib');
 
     // Simulate live Check Engine P0171 + closed trip #3 appearing at 4 Hz without manual reload:
     const pollsBefore = livePollCount;
-    liveState.dtc = { milOn: true, stored: 1, pending: 1, permanent: 0, firstCode: 'P0171' };
+    liveState.dtc = { milOn: true, stored: 1, pending: 1, permanent: 0,
+      firstCode: 'P0171', readinessKnown: true, readinessSupported: 8,
+      readinessComplete: 5 };
     liveState.history.headSequence = 3;
     tripsPayload.headSequence = 3;
     tripsPayload.total = 3;
     await page.waitForFunction(() => document.getElementById('milPill')?.textContent === 'CHECK P0171');
+    await page.waitForFunction(() => /Мониторы: 5\/8/.test(document.getElementById('lvDtcSub').textContent));
+    // A parameter the block stops answering is a dash, never a stale number and
+    // never a zero: the head unit has no room for an explanation.
+    liveState.timingAdvance = null;
+    await page.waitForFunction(() => document.getElementById('lvAngle').textContent === '—');
+    liveState.timingAdvance = 21.5;
+    await page.waitForFunction(() => document.getElementById('lvAngle').textContent === '21.5');
     await page.waitForFunction(() => document.getElementById('tabHist')?.textContent === 'Поездки (3)');
     assert.ok(livePollCount > pollsBefore, '4 Hz poller must advance automatically');
 

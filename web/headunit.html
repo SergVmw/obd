@@ -285,6 +285,13 @@ body:not(.digits-only) .digits-alt { display: none !important; }
   flex-direction: column;
   gap: 4px;
 }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px; }
+.chart-card { background: #0b1512; border: 1px solid #ffffff14; border-radius: 12px; padding: 10px; min-width: 0; }
+.chart-title { color: #8fa6a0; font-size: 11px; margin-bottom: 6px; }
+.chart { display: block; width: 100%; height: auto; }
+.chart text { fill: #7d948c; font-size: 10px; }
+.chart-sum { color: #8fa6a0; font-size: 11px; margin-bottom: 10px; }
+@media (max-width: 720px) { .charts { grid-template-columns: 1fr; } }
 .days-grid .tbl-head, .days-grid .tbl-row {
   grid-template-columns: 140px 76px 106px 124px 106px 106px 98px 102px 1fr;
 }
@@ -465,6 +472,12 @@ body:not(.digits-only) .digits-alt { display: none !important; }
           <div class="sub"><span>ДК1 (PID 14): <b id="lvO2">—</b></span><span>ПХХ (DFCO): <b id="lvDfco">нет</b></span></div>
         </div>
 
+        <div class="card">
+          <div class="lbl"><span>Угол, ДК2, продувка</span><span>PID 0E · 15 · 2E</span></div>
+          <div class="mid"><span id="lvAngle">—</span><span class="u">° до ВМТ</span></div>
+          <div class="sub"><span>ДК2: <b id="lvO2Down">—</b></span><span>Продувка: <b id="lvPurge">—</b></span></div>
+        </div>
+
         <div class="card" id="cardDtc">
           <div class="lbl"><span>Диагностика ДВС</span><span>MODE 03 / 07 / 0A</span></div>
           <div class="mid" id="lvDtcMain"><span class="c-lpg">Ошибок нет</span></div>
@@ -485,6 +498,17 @@ body:not(.digits-only) .digits-alt { display: none !important; }
     </section>
 
     <section id="view-days" class="view">
+      <div class="charts">
+        <div class="chart-card">
+          <div class="chart-title">Расход, л/100 км</div>
+          <svg class="chart" id="chartFuel" viewBox="0 0 640 200" role="img" aria-label="Расход топлива по дням"></svg>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Скорость, км/ч</div>
+          <svg class="chart" id="chartSpeed" viewBox="0 0 640 200" role="img" aria-label="Скорость по дням"></svg>
+        </div>
+      </div>
+      <div class="chart-sum" id="chartSummary">Данных пока нет.</div>
       <div class="table-wrap days-grid">
         <div class="tbl-head">
           <div>Дата</div><div>Поездок</div><div>Пробег</div><div>Топливо (Б / Г)</div>
@@ -785,6 +809,13 @@ function renderLive(d) {
   var dtc = d.dtc || {};
   var mil = $('milPill');
   var cardDtc = $('cardDtc');
+  // Readiness is a count here, not a list: the portal prints all eleven
+  // monitors, and the card has room for one short phrase. "6/8" is enough to
+  // notice that the block has not finished its own tests after a clear.
+  var readyTxt = 'Мониторы: —';
+  if (dtc.readinessKnown) {
+    readyTxt = 'Мониторы: ' + (dtc.readinessComplete || 0) + '/' + (dtc.readinessSupported || 0);
+  }
   if (dtc.milOn || (dtc.stored || 0) > 0) {
     var code = dtc.firstCode || 'ENGINE';
     mil.className = 'pill pill-fault';
@@ -792,19 +823,19 @@ function renderLive(d) {
     cardDtc.classList.add('accent-danger');
     $('lvDtcMain').innerHTML = '<span class="c-danger">' + esc(code) + ' · Check Engine</span>';
     $('lvDtcSub').innerHTML = '<span>MIL: <b class="c-danger">' + (dtc.milOn ? 'ВКЛ' : 'выкл') +
-      '</b></span><span>Сохр: <b>' + (dtc.stored || 0) + '</b> · Ожид: <b>' + (dtc.pending || 0) + '</b></span>';
+      '</b></span><span>Сохр: <b>' + (dtc.stored || 0) + '</b> · Ожид: <b>' + (dtc.pending || 0) + '</b> · ' + readyTxt + '</span>';
   } else if ((dtc.pending || 0) > 0) {
     mil.className = 'pill pill-ok';
     mil.textContent = 'ДВС OK';
     cardDtc.classList.remove('accent-danger');
     $('lvDtcMain').innerHTML = '<span class="c-warn">' + esc(dtc.firstCode || 'Ожид.') + ' · Ожидаемая</span>';
-    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>' + dtc.pending + '</b></span>';
+    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>' + dtc.pending + '</b> · ' + readyTxt + '</span>';
   } else {
     mil.className = 'pill pill-ok';
     mil.textContent = 'ДВС OK';
     cardDtc.classList.remove('accent-danger');
     $('lvDtcMain').innerHTML = '<span class="c-lpg">Ошибок нет</span>';
-    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>0</b></span>';
+    $('lvDtcSub').innerHTML = '<span>MIL: <b>выкл</b></span><span>Сохр: <b>0</b> · Ожид: <b>0</b> · ' + readyTxt + '</span>';
   }
 
   var c = d.cur || {};
@@ -955,6 +986,9 @@ function renderLive(d) {
   $('lvFuelLoop').textContent = d.fuelLoop || '—';
   $('lvO2').textContent = d.o2V !== null && d.o2V !== undefined ? d.o2V.toFixed(2) + ' В' : '—';
   $('lvDfco').textContent = d.dfco ? 'активен' : 'нет';
+  $('lvAngle').textContent = d.timingAdvance !== null && d.timingAdvance !== undefined ? d.timingAdvance.toFixed(1) : '—';
+  $('lvO2Down').textContent = d.downstreamO2 !== null && d.downstreamO2 !== undefined ? d.downstreamO2.toFixed(3) + ' В' : '—';
+  $('lvPurge').textContent = d.evapPurge !== null && d.evapPurge !== undefined ? Math.round(d.evapPurge) + '%' : '—';
 
   var seq = d.history ? d.history.headSequence : null;
   if (seq !== null && seq !== lastHeadSeq) {
@@ -1029,8 +1063,165 @@ function renderTrips(data) {
   }
 }
 
+// The month view is drawn from the same daily summary the table shows, and the
+// arithmetic is the one that makes a month honest: litres and kilometres are
+// summed, never averaged across days. Two things are deliberately left blank -
+// a day without a fuel figure, and a day without a peak speed - because a zero
+// would read as "стоял" and a straight line across a gap would invent a speed
+// the module never reported.
+var chartDays = [];
+
+function chartStep(raw) {
+  if (!(raw > 0)) return 1;
+  var pow = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+  var norm = raw / pow;
+  var mult = norm <= 1 ? 1 : (norm <= 2 ? 2 : (norm <= 5 ? 5 : 10));
+  return mult * pow;
+}
+
+function chartBuckets(days, windowSize) {
+  var dated = [];
+  var i;
+  for (i = 0; i < days.length; i++) {
+    var d = days[i];
+    if (d && !d.dateUnknown && d.date) dated.push(d);
+  }
+  dated.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+  var selected = dated.slice(Math.max(0, dated.length - windowSize));
+  var out = [];
+  if (windowSize <= 31) {
+    for (i = 0; i < selected.length; i++) {
+      var s = selected[i];
+      out.push({
+        label: s.date.substring(8) + '.' + s.date.substring(5, 7),
+        km: Number(s.distanceKm || 0),
+        // totalLiters is what the firmware sends; the fallback keeps an older
+        // export readable instead of drawing an empty month from missing data.
+        liters: Number(s.totalLiters !== undefined && s.totalLiters !== null
+          ? s.totalLiters
+          : (Number(s.petrolLiters || 0) + Number(s.lpgLiters || 0))),
+        avg: (s.avgMovingSpeedKph === null || s.avgMovingSpeedKph === undefined) ? null : Number(s.avgMovingSpeedKph),
+        max: (s.maxSpeedKnown && s.maxSpeedKph !== null && s.maxSpeedKph !== undefined) ? Number(s.maxSpeedKph) : null
+      });
+    }
+    return out;
+  }
+  var weeks = [];
+  var current = null;
+  for (i = 0; i < selected.length; i++) {
+    var day = selected[i];
+    var t = Date.parse(day.date + 'T00:00:00Z');
+    if (isNaN(t)) continue;
+    var monday = new Date(t - (((new Date(t)).getUTCDay() + 6) % 7) * 86400000);
+    var key = monday.toISOString().substring(0, 10);
+    if (!current || current.key !== key) {
+      current = { key: key, label: key.substring(8) + '.' + key.substring(5, 7), km: 0, liters: 0, avgSum: 0, avgN: 0, max: null };
+      weeks.push(current);
+    }
+    current.km += Number(day.distanceKm || 0);
+    current.liters += Number(day.totalLiters || 0);
+    if (day.avgMovingSpeedKph !== null && day.avgMovingSpeedKph !== undefined) {
+      current.avgSum += Number(day.avgMovingSpeedKph);
+      current.avgN++;
+    }
+    if (day.maxSpeedKnown && day.maxSpeedKph !== null && day.maxSpeedKph !== undefined) {
+      if (current.max === null || Number(day.maxSpeedKph) > current.max) current.max = Number(day.maxSpeedKph);
+    }
+  }
+  for (i = 0; i < weeks.length; i++) {
+    weeks[i].avg = weeks[i].avgN ? weeks[i].avgSum / weeks[i].avgN : null;
+  }
+  return weeks;
+}
+
+function chartDraw(id, buckets, kind) {
+  var svg = document.getElementById(id);
+  if (!svg) return;
+  var W = 640, H = 200, L = 34, R = 8, T = 10, B = 24;
+  if (!buckets.length) {
+    svg.innerHTML = '<text x="320" y="100" text-anchor="middle">Нет данных</text>';
+    return;
+  }
+  var plotW = W - L - R, plotH = H - T - B;
+  var i, v;
+  var maxV = 0;
+  for (i = 0; i < buckets.length; i++) {
+    v = kind === 'fuel' ? (buckets[i].km > 0 ? buckets[i].liters * 100 / buckets[i].km : null)
+                        : (kind === 'avg' ? buckets[i].avg : buckets[i].max);
+    if (v !== null && v > maxV) maxV = v;
+  }
+  if (kind === 'fuel') maxV = Math.max(maxV, 10);
+  if (kind === 'speed') maxV = Math.max(maxV, 60);
+  var step = chartStep(maxV / 4);
+  maxV = step * Math.ceil(maxV / step);
+  var n = buckets.length;
+  var slot = plotW / n;
+  var out = '';
+  var yOf = function (val) { return T + plotH - (val / maxV) * plotH; };
+  for (i = 0; i <= 4; i++) {
+    var gv = step * i, gy = yOf(gv);
+    out += '<line x1="' + L + '" y1="' + gy.toFixed(1) + '" x2="' + (W - R) + '" y2="' + gy.toFixed(1) + '" stroke="rgba(255,255,255,0.08)"/>';
+    out += '<text x="' + (L - 5) + '" y="' + (gy + 3).toFixed(1) + '" text-anchor="end">' + (gv >= 10 ? Math.round(gv) : gv.toFixed(1)) + '</text>';
+  }
+  if (kind === 'fuel') {
+    for (i = 0; i < n; i++) {
+      var b = buckets[i];
+      if (b.km <= 0 || b.liters <= 0) continue;
+      var val = b.liters * 100 / b.km;
+      var h = Math.max(1, (val / maxV) * plotH);
+      var x = L + i * slot + slot * 0.18;
+      var w = Math.max(1, slot * 0.64);
+      out += '<rect x="' + x.toFixed(1) + '" y="' + (T + plotH - h).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="1.5" fill="#5ef0a8" opacity="0.82"/>';
+    }
+  } else {
+    var path = '', started = false;
+    for (i = 0; i < n; i++) {
+      v = kind === 'avg' ? buckets[i].avg : buckets[i].max;
+      var cx = L + i * slot + slot / 2;
+      if (v === null || v === undefined) { started = false; continue; }
+      path += (started ? 'L' : 'M') + cx.toFixed(1) + ' ' + yOf(v).toFixed(1) + ' ';
+      started = true;
+    }
+    out += '<path d="' + path + '" fill="none" stroke="#63c8ff" stroke-width="2" stroke-linejoin="round"/>';
+    if (kind === 'max') {
+      for (i = 0; i < n; i++) {
+        if (buckets[i].max === null || buckets[i].max === undefined) continue;
+        var px = L + i * slot + slot / 2;
+        out += '<circle cx="' + px.toFixed(1) + '" cy="' + yOf(buckets[i].max).toFixed(1) + '" r="2.4" fill="#63c8ff"/>';
+      }
+    }
+  }
+  var every = Math.max(1, Math.ceil(n / 8));
+  for (i = 0; i < n; i++) {
+    if (i % every !== 0 && i !== n - 1) continue;
+    var lx = L + i * slot + slot / 2;
+    out += '<text x="' + lx.toFixed(1) + '" y="' + (H - 7) + '" text-anchor="middle">' + buckets[i].label + '</text>';
+  }
+  svg.innerHTML = out;
+}
+
+function renderCharts() {
+  var buckets = chartBuckets(chartDays, 31);
+  chartDraw('chartFuel', buckets, 'fuel');
+  chartDraw('chartSpeed', buckets, 'max');
+  var sum = document.getElementById('chartSummary');
+  if (!sum) return;
+  if (!buckets.length) { sum.textContent = 'Завершённых поездок с датой пока нет.'; return; }
+  var km = 0, liters = 0, peak = null, i;
+  for (i = 0; i < buckets.length; i++) {
+    km += buckets[i].km;
+    liters += buckets[i].liters;
+    if (buckets[i].max !== null && (peak === null || buckets[i].max > peak)) peak = buckets[i].max;
+  }
+  var per100 = km > 0 ? (liters * 100 / km).toFixed(1) : '—';
+  sum.textContent = 'За 31 день: ' + km.toFixed(1) + ' км · ' + liters.toFixed(1) + ' л · ' + per100 + ' л/100 км' +
+    (peak !== null ? ' · пик ' + Math.round(peak) + ' км/ч' : '');
+}
+
 function renderDays(data) {
   var list = (data && data.days) || [];
+  chartDays = list;
+  renderCharts();
   var totalDays = (data && data.totalDays !== undefined && data.totalDays !== null) ? data.totalDays : list.length;
   $('tabDays').textContent = 'По дням (' + totalDays + ')';
   if (!list.length) {
@@ -1089,7 +1280,7 @@ function getJson(url, timeoutMs, onOk, onErr) {
 
 function loadHistory() {
   getJson('/api/ro/trips?limit=50&_=' + (+new Date()), 2000, renderTrips, null);
-  getJson('/api/ro/trips/days?limit=31&_=' + (+new Date()), 2000, renderDays, null);
+  getJson('/api/ro/trips/days?limit=95&_=' + (+new Date()), 2000, renderDays, null);
 }
 
 function schedulePoll(delayMs) {

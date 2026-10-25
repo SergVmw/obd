@@ -6,6 +6,14 @@
 
 uint32_t currentRtcSec();
 
+// The same reading as TripClock::nowEpochSec(currentRtcSec()) - UTC seconds, or
+// zero when the clock has never been synced - behind a function pointer so that
+// a module can ask for the time without linking against the clock or knowing
+// where it lives. The DTC history needs a timestamp and nothing else from this
+// header, and a timestamp is not a reason to pull an NVS-backed class into the
+// ten host suites that only exercise the diagnostic state machine.
+uint32_t tripClockEpochNow(void* context);
+
 struct TripLocalDateTime {
   int32_t year = 0;
   uint8_t month = 0;

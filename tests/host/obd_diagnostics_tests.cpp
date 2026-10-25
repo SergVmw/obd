@@ -5,6 +5,14 @@
 #include <vector>
 
 #include "obd_diagnostics.h"
+
+// The refusal memo is backed by NVS. The host stub keeps its state in static
+// members that each suite defines for itself, so this suite carries its own
+// copy; without it the memo has nowhere to write and the link fails.
+std::map<std::string, std::vector<uint8_t>> Preferences::storage;
+bool Preferences::failWrite = false;
+bool Preferences::failBegin = false;
+size_t Preferences::writes = 0;
 #include "obd_request_timing.h"
 
 uint32_t hostMillis = 0;
@@ -72,6 +80,19 @@ void identifyEngine(ObdDiagnostics& diagnostics, uint16_t id = 0x7E8) {
 void finishEmptyScan(ObdDiagnostics& diagnostics, uint32_t now) {
   build(diagnostics, now, 0x7E0, 1, 0x03);
   accept(diagnostics, frame(0x7E8, {0x01, 0x43}), now + 1);
+  build(diagnostics, now + 2, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x47}), now + 3);
+  build(diagnostics, now + 4, 0x7E0, 1, 0x0A);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x4A}), now + 5);
+}
+
+// One scan that reports a single stored code and nothing elsewhere.
+void finishFaultScan(ObdDiagnostics& diagnostics, uint32_t now,
+                     uint16_t rawCode) {
+  const uint8_t high = static_cast<uint8_t>(rawCode >> 8);
+  const uint8_t low = static_cast<uint8_t>(rawCode & 0xFF);
+  build(diagnostics, now, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x04, 0x43, 0x01, high, low}), now + 1);
   build(diagnostics, now + 2, 0x7E0, 1, 0x07);
   accept(diagnostics, frame(0x7E8, {0x01, 0x47}), now + 3);
   build(diagnostics, now + 4, 0x7E0, 1, 0x0A);
@@ -1083,6 +1104,336 @@ void testTwoTestersAskingTheSameParameterIsOneAnswer() {
   CHECK(shared.state().operation == DtcOperation::VerifyRpm);
 }
 
+
+// An epoch provider with a context, exactly as the firmware wires the trip
+// clock: the state machine reads a number and knows nothing about where it came
+// from, which is what lets this suite test the history without NVS or an RTC.
+uint32_t epochSourceValue = 0;
+uint32_t epochFromContext(void* context) {
+  return *static_cast<uint32_t*>(context);
+}
+
+void testReadinessBytesAreDecoded() {
+  DtcMonitorStatus monitors[16];
+  size_t count = 0;
+
+  // Spark ignition, every continuous monitor supported and finished.
+  //   B = 0b0000_0111: misfire, fuel system and components supported; none of
+  //       the completeness bits 4..6 set, so all three are complete.
+  //   C = 0b1100_0010: heated catalyst (C1), oxygen sensor heater (C6) and EGR
+  //       (C7) supported; evaporative system (C2) not.
+  //   D = 0b1000_0010: completeness is inverted - a set bit means NOT complete -
+  //       so the oxygen sensor heater is complete and the other two are not.
+  ObdDiagnostics::decodeReadiness(0x07, 0xC2, 0x82, monitors, 16, count);
+  CHECK(count == 11);
+  CHECK(ObdDiagnostics::sparkIgnition(0x07));
+  CHECK(std::strcmp(monitors[0].id, "misfire") == 0);
+  CHECK(monitors[0].supported && monitors[0].complete);
+  CHECK(monitors[1].supported && monitors[1].complete);
+  CHECK(monitors[2].supported && monitors[2].complete);
+  CHECK(std::strcmp(monitors[3].id, "catalyst") == 0);
+  CHECK(!monitors[3].supported);
+  CHECK(!monitors[3].complete);
+  CHECK(std::strcmp(monitors[4].id, "heatedCatalyst") == 0);
+  CHECK(monitors[4].supported);
+  CHECK(!monitors[4].complete);
+  CHECK(std::strcmp(monitors[5].id, "evap") == 0);
+  CHECK(!monitors[5].supported);  // C2 clear: this car claims no leak test
+  CHECK(std::strcmp(monitors[8].id, "o2Sensor") == 0);
+  CHECK(!monitors[8].supported);
+  CHECK(std::strcmp(monitors[9].id, "o2Heater") == 0);
+  CHECK(monitors[9].supported && monitors[9].complete);
+  CHECK(std::strcmp(monitors[10].id, "egr") == 0);
+  CHECK(monitors[10].supported && !monitors[10].complete);
+
+  // Compression ignition: B3 set changes the table AND the count, because the
+  // positions whose meaning differs between revisions are not reported at all.
+  ObdDiagnostics::decodeReadiness(0x0F, 0x41, 0x00, monitors, 16, count);
+  CHECK(!ObdDiagnostics::sparkIgnition(0x0F));
+  CHECK(count == 8);
+  CHECK(std::strcmp(monitors[3].id, "nmhcCatalyst") == 0);
+  CHECK(monitors[3].supported);
+  CHECK(monitors[3].complete);
+  CHECK(std::strcmp(monitors[5].id, "exhaustGasSensor") == 0);
+  CHECK(std::strcmp(monitors[7].id, "egr") == 0);
+
+  // The continuous three write their completeness into bits 4..6 of byte B, the
+  // non-continuous ones into byte D. A car whose D word happens to have 4..6 set
+  // is the only case that tells the two reads apart, and it is a real one: after
+  // a battery reset the non-continuous monitors are all unfinished while the
+  // continuous ones have already run.
+  //   B = 0x07 -> supported 0..2, completeness bits clear: all three complete.
+  //   D = 0xF2 -> bits 4..6 set, so under the wrong read none of them would be.
+  ObdDiagnostics::decodeReadiness(0x07, 0xC2, 0xF2, monitors, 16, count);
+  CHECK(count == 11);
+  CHECK(monitors[0].complete && monitors[1].complete && monitors[2].complete);
+  CHECK(!monitors[4].complete);   // heated catalyst: supported by C1, D1 set
+  CHECK(!monitors[9].complete);   // oxygen sensor heater: C6 supported, D6 set
+  CHECK(!monitors[10].complete);  // EGR: C7 supported, D7 set
+  size_t supported = 0;
+  size_t complete = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (monitors[i].supported) ++supported;
+    if (monitors[i].complete) ++complete;
+  }
+  CHECK(supported == 6);
+  CHECK(complete == 3);   // the three continuous ones, and nothing else
+
+  // Nothing supported, everything zero: the monitor list still exists and none
+  // of the entries claim to be ready for a test that will never run.
+  ObdDiagnostics::decodeReadiness(0x00, 0x00, 0x00, monitors, 16, count);
+  CHECK(count == 11);
+  for (size_t i = 0; i < count; ++i) {
+    CHECK(!monitors[i].supported);
+    CHECK(!monitors[i].complete);
+  }
+}
+
+void testReadinessIsStoredAndCounted() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  identifyEngine(diagnostics);
+  CHECK(diagnostics.observeReadiness(nullptr, 4, 1000, 0x7E8) == false);
+  const uint8_t shortAnswer[3] = {0x00, 0x07, 0xC2};
+  CHECK(!diagnostics.observeReadiness(shortAnswer, 3, 1000, 0x7E8));
+  CHECK(!diagnostics.state().readinessKnown);
+
+  const uint8_t answer[4] = {0x00, 0x07, 0xC2, 0x82};
+  CHECK(diagnostics.observeReadiness(answer, 4, 1000, 0x7E8));
+  CHECK(diagnostics.state().readinessKnown);
+  CHECK(diagnostics.state().monitorDataB == 0x07);
+  CHECK(diagnostics.state().monitorDataC == 0xC2);
+  CHECK(diagnostics.state().monitorDataD == 0x82);
+  CHECK(diagnostics.state().readinessUpdatedAt == 1000);
+  // Six supported monitors (three continuous, three non-continuous), four of
+  // which are complete: the oxygen sensor heater finished while the heated
+  // catalyst and EGR have not.
+  CHECK(telemetry.dtcReadinessKnown);
+  CHECK(telemetry.dtcReadinessSupported == 6);
+  CHECK(telemetry.dtcReadinessComplete == 4);
+
+  // A refusal from another block must not overwrite the engine's readiness.
+  CHECK(!diagnostics.observeReadiness(answer, 4, 2000, 0x7E9));
+  CHECK(diagnostics.state().readinessUpdatedAt == 1000);
+}
+
+void testNewCodeGetsEpochAndCondition() {
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  uint32_t epoch = 1750000000UL;
+  diagnostics.setEpochSource(&epochFromContext, &epoch);
+  identifyEngine(diagnostics);
+
+  // Conditions a few hundred milliseconds before the scan happens.
+  const uint32_t now = 10000;
+  telemetry.rpm.set(2150.0f, now - 300);
+  telemetry.mapKpa.set(46.5f, now - 200);
+  telemetry.coolantC.set(88.0f, now - 250);
+  telemetry.intakeAirC.set(31.0f, now - 250);
+  telemetry.engineLoadPct.set(28.4f, now - 150);
+  telemetry.rawSpeedKph.set(52.0f, now - 200);
+  telemetry.shortFuelTrimPercent.set(-3.25f, now - 400);
+  telemetry.longFuelTrimPercent.set(7.5f, now - 400);
+
+  CHECK(diagnostics.requestScan(now));
+  finishFaultScan(diagnostics, now, 0x0171);
+
+  CHECK(diagnostics.history().entryCount == 1);
+  const DtcHistoryEntry& entry = diagnostics.history().entries[0];
+  CHECK(entry.raw == 0x0171);
+  CHECK(entry.firstSeenEpoch == epoch);
+  CHECK(entry.lastSeenEpoch == epoch);
+  CHECK(entry.condition.valid == DtcCondition::kAll);
+  CHECK(entry.condition.rpm == 2150);
+  CHECK(entry.condition.mapKpa10 == 465);
+  CHECK(entry.condition.coolantC10 == 880);
+  CHECK(entry.condition.intakeC10 == 310);
+  CHECK(entry.condition.loadPct10 == 284);
+  CHECK(entry.condition.speedKph10 == 520);
+  CHECK(entry.condition.shortTrimPct100 == -325);
+  CHECK(entry.condition.longTrimPct100 == 750);
+
+  // A second scan in which the code is still there moves only the last-seen
+  // time. The onset snapshot stays the onset snapshot: overwriting it with the
+  // conditions of the tenth recurrence would answer a different question.
+  telemetry.rpm.set(3900.0f, now + 500);
+  telemetry.mapKpa.set(120.0f, now + 500);
+  epoch += 3600;
+  CHECK(diagnostics.requestScan(now + 1000));
+  finishFaultScan(diagnostics, now + 1000, 0x0171);
+  CHECK(diagnostics.history().entryCount == 1);
+  CHECK(diagnostics.history().entries[0].firstSeenEpoch == 1750000000UL);
+  CHECK(diagnostics.history().entries[0].lastSeenEpoch == 1750003600UL);
+  CHECK(diagnostics.history().entries[0].condition.rpm == 2150);
+  CHECK(diagnostics.history().entries[0].condition.mapKpa10 == 465);
+
+  // With no clock the timestamps are zero, which the pages read as "not
+  // synced". A stale signal is not recorded at all: the validity bit is the
+  // only thing that separates "was not measured" from "measured as zero".
+  TelemetryData untimed;
+  ObdDiagnostics noClock(untimed);
+  noClock.setEpochSource(&epochFromContext, &epoch);
+  epoch = 0;
+  identifyEngine(noClock);
+  untimed.rpm.set(800.0f, 100);            // 3.9 s old: outside the window
+  untimed.mapKpa.set(0.0f, 3900);          // fresh, and genuinely zero
+  CHECK(noClock.requestScan(4000));
+  finishFaultScan(noClock, 4000, 0x0300);
+  CHECK(noClock.history().entryCount == 1);
+  const DtcHistoryEntry& bare = noClock.history().entries[0];
+  CHECK(bare.firstSeenEpoch == 0);
+  CHECK(bare.lastSeenEpoch == 0);
+  CHECK(!bare.condition.has(DtcCondition::kRpm));
+  CHECK(bare.condition.rpm == 0);
+  CHECK(bare.condition.has(DtcCondition::kMap));
+  CHECK(bare.condition.mapKpa10 == 0);
+
+  // A clock that is running but has never been set is worse than no clock: it
+  // hands out uptime seconds, which look like a real date until someone reads
+  // them. Anything before the floor is stored as unknown, and the condition is
+  // still captured because the two facts do not depend on each other.
+  TelemetryData early;
+  ObdDiagnostics unsynced(early);
+  uint32_t uptime = 120;
+  unsynced.setEpochSource(&epochFromContext, &uptime);
+  identifyEngine(unsynced);
+  early.rpm.set(1500.0f, 5000);
+  CHECK(unsynced.requestScan(5000));
+  finishFaultScan(unsynced, 5000, 0x0172);
+  CHECK(unsynced.history().entryCount == 1);
+  const DtcHistoryEntry& noDate = unsynced.history().entries[0];
+  CHECK(noDate.raw == 0x0172);
+  CHECK(noDate.firstSeenEpoch == 0);
+  CHECK(noDate.lastSeenEpoch == 0);
+  CHECK(noDate.condition.has(DtcCondition::kRpm));
+  CHECK(noDate.condition.rpm == 1500);
+}
+
+void testRefusedServiceIsNotAskedAgain() {
+  Preferences::storage.clear();
+  Preferences::writes = 0;
+  ServiceRefusalStore store;
+  CHECK(store.begin());
+  CHECK(!store.restoredFromFlash());
+  CHECK(store.refusedCount() == 0);
+
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  diagnostics.setRefusalStore(&store);
+  identifyEngine(diagnostics);
+  const uint32_t now = 5000;
+  CHECK(diagnostics.requestScan(now));
+
+  build(diagnostics, now, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x43, 0x00}), now + 1);
+  build(diagnostics, now + 2, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x47, 0x00}), now + 3);
+  build(diagnostics, now + 4, 0x7E0, 1, 0x0A);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x0A, 0x11}), now + 5);
+
+  CHECK(diagnostics.state().operation == DtcOperation::Idle);
+  CHECK(diagnostics.state().permanentStatus ==
+        DtcCategoryStatus::Unsupported);
+  CHECK(store.refused(0x0A));
+  CHECK(store.refusedCount() == 1);
+  CHECK(store.writes() == 1);
+  CHECK(std::strcmp(
+            ObdDiagnostics::categoryStatusName(DtcCategoryStatus::RefusedService),
+            "service_refused") == 0);
+
+  // The memo survives a reboot because it is a property of the vehicle, not of
+  // the boot: a fresh store over the same NVS namespace must remember.
+  ServiceRefusalStore rebooted;
+  CHECK(rebooted.begin());
+  CHECK(rebooted.restoredFromFlash());
+  CHECK(rebooted.refused(0x0A));
+  CHECK(rebooted.refusedCount() == 1);
+  CHECK(!rebooted.refused(0x03));
+  CHECK(!rebooted.refused(0x07));
+
+  // Second scan: two requests instead of three, and the third category carries
+  // a verdict that says why nothing was sent.
+  CHECK(diagnostics.requestScan(now + 100));
+  build(diagnostics, now + 100, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x43, 0x00}), now + 101);
+  build(diagnostics, now + 102, 0x7E0, 1, 0x07);
+  accept(diagnostics, frame(0x7E8, {0x01, 0x47, 0x00}), now + 103);
+  CHECK(diagnostics.state().operation == DtcOperation::Idle);
+  CHECK(!diagnostics.hasPendingRequest());
+  CHECK(diagnostics.state().storedStatus == DtcCategoryStatus::Complete);
+  CHECK(diagnostics.state().pendingStatus == DtcCategoryStatus::Complete);
+  CHECK(diagnostics.state().permanentStatus ==
+        DtcCategoryStatus::RefusedService);
+  CHECK(diagnostics.state().scanCount == 2);
+  // Nobody refused anything in this scan: the reset at its start left both of
+  // these at zero, and no request went out on 0x0A to produce a negative answer.
+  CHECK(diagnostics.state().lastNegativeService == 0);
+  CHECK(diagnostics.state().lastNegativeResponseCode == 0);
+
+  // Forgetting the memo returns the service to the scan.
+  CHECK(rebooted.clear());
+  CHECK(rebooted.refusedCount() == 0);
+  ServiceRefusalStore cleared;
+  CHECK(cleared.begin());
+  CHECK(!cleared.refused(0x0A));
+}
+
+void testOnlyServiceNotSupportedIsRemembered() {
+  Preferences::storage.clear();
+  ServiceRefusalStore store;
+  CHECK(store.begin());
+  // NRC 0x12 is a wrong-argument verdict, and Mode 04's refusal must be
+  // reported every time it is attempted: neither may be cached away.
+  CHECK(!store.note(0x04));
+  CHECK(!store.note(0x01));
+  CHECK(!store.note(0x02));
+  CHECK(store.refusedCount() == 0);
+  CHECK(!store.refused(0x04));
+  CHECK(!store.refused(0x01));
+
+  TelemetryData telemetry;
+  ObdDiagnostics diagnostics(telemetry);
+  diagnostics.setRefusalStore(&store);
+  identifyEngine(diagnostics);
+  const uint32_t now = 7000;
+  CHECK(diagnostics.requestScan(now));
+  build(diagnostics, now, 0x7E0, 1, 0x03);
+  accept(diagnostics, frame(0x7E8, {0x03, 0x7F, 0x03, 0x12}), now + 1);
+  CHECK(!store.refused(0x03));
+  CHECK(store.refusedCount() == 0);
+
+  // A corrupt or foreign blob is discarded rather than half-believed.
+  uint8_t record[ServiceRefusalStore::kRecordBytes];
+  CHECK(ServiceRefusalStore::encode(1UL << 2, record, sizeof(record)));
+  CHECK(record[6] == 0);
+  record[12] ^= 0xFF;  // break the CRC
+  uint32_t mask = 0;
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(ServiceRefusalStore::encode(1UL << 2, record, sizeof(record)));
+  CHECK(ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(mask == (1UL << 2));
+  // A bit for Mode 04 (service 0x04, bit 3) is not a record this build writes,
+  // and honouring it would let a single corrupted page take the clear away. Bit
+  // 1 (service 0x02) is outside the vocabulary for the same reason.
+  CHECK(ServiceRefusalStore::encode(1UL << 3, record, sizeof(record)));
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(ServiceRefusalStore::encode(1UL << 1, record, sizeof(record)));
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record), mask));
+  // Mode 01 (bit 0) and an unrelated high bit are both outside the record's
+  // vocabulary: a blob containing either is not one this build wrote.
+  CHECK(ServiceRefusalStore::encode(1UL << 0, record, sizeof(record)));
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(ServiceRefusalStore::encode((1UL << 2) | (1UL << 31), record,
+                                    sizeof(record)));
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(ServiceRefusalStore::encode((1UL << 2) | (1UL << 6) | (1UL << 9),
+                                    record, sizeof(record)));
+  CHECK(ServiceRefusalStore::decode(record, sizeof(record), mask));
+  CHECK(mask == ((1UL << 2) | (1UL << 6) | (1UL << 9)));
+  // A short blob is not a record either.
+  CHECK(!ServiceRefusalStore::decode(record, sizeof(record) - 1, mask));
+}
+
 int main() {
   testP2StarAndAbsoluteDeadline();
   testCodeFormatting();
@@ -1109,6 +1460,11 @@ int main() {
   testReadMonitorIsNotSatisfiedByAnotherPid();
   testEveryTalkerAnswersAndOnlyOursIsTaken();
   testTwoTestersAskingTheSameParameterIsOneAnswer();
-  std::printf("OBD diagnostics tests: %d groups passed\n", 24);
+  testReadinessBytesAreDecoded();
+  testReadinessIsStoredAndCounted();
+  testNewCodeGetsEpochAndCondition();
+  testRefusedServiceIsNotAskedAgain();
+  testOnlyServiceNotSupportedIsRemembered();
+  std::printf("OBD diagnostics tests: %d groups passed\n", 29);
   return 0;
 }

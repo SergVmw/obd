@@ -43,16 +43,19 @@ constexpr uint8_t normativeDataBytes(uint8_t pid) {
          // Fuel system status (03, A = system 1, B = system 2), engine speed
          // (0C), mass air flow (10), O2 sensor 1 (14), distance since codes
          // cleared (31), control module voltage (42), commanded equivalence
-         // ratio (44), engine fuel rate (5E).
+         // ratio (44), engine fuel rate (5E), O2 sensor 2 (15: A voltage,
+         // B trim).
          : (pid == 0x03 || pid == 0x0C || pid == 0x10 || pid == 0x14 ||
-            pid == 0x31 || pid == 0x42 || pid == 0x44 || pid == 0x5E)
+            pid == 0x15 || pid == 0x31 || pid == 0x42 || pid == 0x44 ||
+            pid == 0x5E)
              ? 2
              // Calculated load (04), coolant (05), short term trim (06), long
-             // term trim (07), manifold pressure (0B), speed (0D), intake air
-             // (0F), throttle (11), barometric pressure (33).
+             // term trim (07), manifold pressure (0B), speed (0D), timing
+             // advance (0E), intake air (0F), throttle (11), commanded purge
+             // (2E), barometric pressure (33).
              : (pid == 0x04 || pid == 0x05 || pid == 0x06 || pid == 0x07 ||
-                pid == 0x0B || pid == 0x0D || pid == 0x0F || pid == 0x11 ||
-                pid == 0x33)
+                pid == 0x0B || pid == 0x0D || pid == 0x0E || pid == 0x0F ||
+                pid == 0x11 || pid == 0x2E || pid == 0x33)
                  ? 1
                  : 0;
 }

@@ -24,9 +24,12 @@ bool isEngineDataPid(uint8_t pid) {
     case 0x08:  // intake manifold absolute pressure
     case 0x0B:  // intake manifold pressure
     case 0x0D:  // vehicle speed
+    case 0x0E:  // ignition timing advance
     case 0x0F:  // intake air temperature
     case 0x10:  // mass air flow
     case 0x11:  // absolute throttle position
+    case 0x15:  // O2 sensor 2, downstream of the catalyst
+    case 0x2E:  // commanded evaporative purge
     case 0x33:  // barometric pressure
     case 0x42:  // control module voltage
     case 0x44:  // commanded equivalence ratio

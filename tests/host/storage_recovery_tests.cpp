@@ -444,6 +444,192 @@ void testDtcFactoryResetAcceptsJournalWhenNvsCannotOpen() {
   assert(rebooted.nvsSequence() == 13);
 }
 
+// A schema-1 record, built by hand in the bytes the previous release wrote, so
+// the conversion is tested against the layout rather than against this build's
+// own encoder.
+std::vector<uint8_t> legacyDtcRecord(uint32_t sequence) {
+  constexpr size_t kHeader = 20;
+  constexpr size_t kEntry = 16;
+  constexpr size_t kEntries = DtcHistoryData::kMaxEntries * kEntry;
+  std::vector<uint8_t> bytes(kHeader + kEntries + 4, 0);
+  auto putU16 = [&](size_t at, uint16_t v) {
+    bytes[at] = static_cast<uint8_t>(v);
+    bytes[at + 1] = static_cast<uint8_t>(v >> 8);
+  };
+  auto putU32 = [&](size_t at, uint32_t v) {
+    bytes[at] = static_cast<uint8_t>(v);
+    bytes[at + 1] = static_cast<uint8_t>(v >> 8);
+    bytes[at + 2] = static_cast<uint8_t>(v >> 16);
+    bytes[at + 3] = static_cast<uint8_t>(v >> 24);
+  };
+  putU32(0, DtcHistorySnapshot::kMagic);
+  putU16(4, DtcHistorySnapshot::kLegacySchema);
+  putU16(6, static_cast<uint16_t>(bytes.size()));
+  putU32(8, sequence);
+  putU32(12, 5);   // changeSequence
+  bytes[16] = 1;   // entryCount
+  bytes[17] = 0;   // flags
+  putU16(kHeader + 0, 0x0171);
+  putU16(kHeader + 2, 0x7E8);
+  bytes[kHeader + 4] = DtcHistoryStored;
+  bytes[kHeader + 5] = DtcHistoryStored;
+  putU16(kHeader + 6, 4);   // occurrenceCount
+  putU32(kHeader + 8, 3);   // firstChangeSequence
+  putU32(kHeader + 12, 5);  // lastChangeSequence
+  putU32(bytes.size() - 4, storageCrc32(bytes.data(), bytes.size() - 4));
+  return bytes;
+}
+
+void testDtcHistoryCarriesOnsetContext() {
+  resetEnvironment();
+  DtcHistoryData history = dtcHistoryWith(0x0171, DtcHistoryStored, 3);
+  history.entries[0].firstSeenEpoch = 1750000000UL;
+  history.entries[0].lastSeenEpoch = 1750003600UL;
+  history.entries[0].condition.valid = DtcCondition::kAll;
+  history.entries[0].condition.speedKph10 = 523;
+  history.entries[0].condition.rpm = 2150;
+  history.entries[0].condition.mapKpa10 = -120;   // vacuum, and signed
+  history.entries[0].condition.coolantC10 = -400; // -40 degC, the floor
+  history.entries[0].condition.intakeC10 = 315;
+  history.entries[0].condition.loadPct10 = 284;
+  history.entries[0].condition.shortTrimPct100 = -325;
+  history.entries[0].condition.longTrimPct100 = 1000;
+  const auto encoded = dtcRecord(21, history);
+  DtcHistorySnapshot::Decoded decoded;
+  assert(DtcHistorySnapshot::decode(encoded.data(), encoded.size(), decoded));
+  const DtcHistoryEntry& entry = decoded.history.entries[0];
+  assert(entry.firstSeenEpoch == 1750000000UL);
+  assert(entry.lastSeenEpoch == 1750003600UL);
+  assert(entry.condition.valid == DtcCondition::kAll);
+  assert(entry.condition.speedKph10 == 523);
+  assert(entry.condition.rpm == 2150);
+  assert(entry.condition.mapKpa10 == -120);
+  assert(entry.condition.coolantC10 == -400);
+  assert(entry.condition.intakeC10 == 315);
+  assert(entry.condition.loadPct10 == 284);
+  assert(entry.condition.shortTrimPct100 == -325);
+  assert(entry.condition.longTrimPct100 == 1000);
+
+  // Two small editors, so each mutation below tests one rule instead of three
+  // coinciding: values are written little-endian and the CRC is repaired, which
+  // is what makes the record internally consistent and leaves only the rule
+  // itself to reject it.
+  const size_t entryAt = DtcHistorySnapshot::kEntriesOffset;
+  auto putLe16 = [](std::vector<uint8_t>& bytes, size_t at, uint16_t value) {
+    bytes[at] = static_cast<uint8_t>(value);
+    bytes[at + 1] = static_cast<uint8_t>(value >> 8);
+  };
+  auto putLe32 = [](std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
+    bytes[at] = static_cast<uint8_t>(value);
+    bytes[at + 1] = static_cast<uint8_t>(value >> 8);
+    bytes[at + 2] = static_cast<uint8_t>(value >> 16);
+    bytes[at + 3] = static_cast<uint8_t>(value >> 24);
+  };
+  auto reseal = [&putLe32](std::vector<uint8_t>& bytes) {
+    putLe32(bytes, bytes.size() - 4,
+            storageCrc32(bytes.data(), bytes.size() - 4));
+  };
+
+  // A value without its validity bit is a corruption, not a measurement: a zero
+  // decoded from a field nobody measured reads exactly like a measured zero, so
+  // the bit is what separates them and the record must not be believed.
+  auto orphan = encoded;
+  putLe16(orphan, entryAt + 24, DtcCondition::kAll & ~DtcCondition::kRpm);
+  reseal(orphan);
+  assert(!DtcHistorySnapshot::valid(orphan.data(), orphan.size()));
+  // The same record with the value cleared is consistent again: what was
+  // rejected was the combination, not the missing bit on its own.
+  auto consistent = orphan;
+  putLe16(consistent, entryAt + 28, 0);
+  reseal(consistent);
+  assert(DtcHistorySnapshot::valid(consistent.data(), consistent.size()));
+
+  // An epoch below the plausibility floor would print as a date in 1970 and be
+  // believed. Both ends are checked, and zero stays legal because it means "the
+  // clock was not synced".
+  auto ancient = encoded;
+  putLe32(ancient, entryAt + 16, 1000);
+  putLe32(ancient, entryAt + 20, 1000);
+  reseal(ancient);
+  assert(!DtcHistorySnapshot::valid(ancient.data(), ancient.size()));
+  auto unsynced = encoded;
+  putLe32(unsynced, entryAt + 16, 0);
+  putLe32(unsynced, entryAt + 20, 0);
+  reseal(unsynced);
+  assert(DtcHistorySnapshot::valid(unsynced.data(), unsynced.size()));
+
+  // Last seen before first seen is not a history anybody can have lived.
+  auto backwards = encoded;
+  putLe32(backwards, entryAt + 16, 1750009999UL);
+  putLe32(backwards, entryAt + 20, 1750000000UL);
+  reseal(backwards);
+  assert(!DtcHistorySnapshot::valid(backwards.data(), backwards.size()));
+
+  // A validity mask with bits this build does not define is a foreign record.
+  auto foreign = encoded;
+  putLe16(foreign, entryAt + 24, 0x8000);
+  reseal(foreign);
+  assert(!DtcHistorySnapshot::valid(foreign.data(), foreign.size()));
+
+  // Reserved bytes in an encoded entry must be zero; anything else means the
+  // record was written by a layout this build does not know.
+  auto reserved = encoded;
+  reserved[entryAt + 42] = 0x01;
+  reseal(reserved);
+  assert(!DtcHistorySnapshot::valid(reserved.data(), reserved.size()));
+}
+
+void testDtcHistoryUpgradesASchemaOneStore() {
+  resetEnvironment();
+  // Only the journal carries a record, and it is in the old layout.
+  LittleFS.files["/dtc-history.a"] = legacyDtcRecord(77);
+  LittleFsStorage storage = mountedStorage();
+  DtcHistoryData recovered{};
+  DtcHistoryPersistence persistence;
+  assert(persistence.begin(storage, recovered));
+  assert(persistence.latestSequence() == 77);
+  assert(persistence.recoverySource() == std::string("littlefs_journal"));
+  assert(recovered.entryCount == 1);
+  assert(recovered.entries[0].raw == 0x0171);
+  assert(recovered.entries[0].occurrenceCount == 4);
+  // The fields schema 1 never had are "not recorded", not "recorded as zero".
+  assert(!recovered.entries[0].condition.has(DtcCondition::kRpm));
+  assert(recovered.entries[0].firstSeenEpoch == 0);
+  // The record is written in the current layout on the first sync. It goes to
+  // the other segment, because the file that held the old layout is not a place
+  // this build can append to: the rotation removes the target, writes there, and
+  // leaves the converted-away file for the next rotation to reclaim.
+  assert(persistence.checkpoint(recovered));
+  assert(LittleFS.files["/dtc-history.b"].size() ==
+         DtcHistorySnapshot::kRecordBytes);
+  // The stale segment is still readable as what it is - an old-layout record -
+  // and is older than the new one, so it cannot win the recovery contest.
+  assert(LittleFS.files["/dtc-history.a"].size() ==
+         DtcHistorySnapshot::kLegacyRecordBytes);
+  DtcHistoryData afterReboot{};
+  DtcHistoryPersistence rebooted;
+  assert(rebooted.begin(storage, afterReboot));
+  assert(afterReboot.entryCount == 1);
+  assert(afterReboot.entries[0].raw == 0x0171);
+
+  // The NVS mirror can be the only copy, and it can be in the old layout too.
+  resetEnvironment();
+  Preferences::storage["h2dtchist/snapshot"] = legacyDtcRecord(31);
+  LittleFsStorage secondStorage = mountedStorage();
+  DtcHistoryData mirrorOnly{};
+  DtcHistoryPersistence mirrorPersistence;
+  assert(mirrorPersistence.begin(secondStorage, mirrorOnly));
+  assert(mirrorPersistence.recoverySource() == std::string("nvs_mirror"));
+  assert(mirrorOnly.entryCount == 1);
+  assert(mirrorOnly.entries[0].raw == 0x0171);
+  assert(mirrorPersistence.nvsSequence() == 31);
+  // The converted mirror is written back in the current layout at once, which
+  // is what makes this a one-time cost rather than a conversion on every boot.
+  const auto& rewritten = Preferences::storage["h2dtchist/snapshot"];
+  assert(rewritten.size() == DtcHistorySnapshot::kRecordBytes);
+  assert(DtcHistorySnapshot::sequence(rewritten.data(), rewritten.size()) == 31);
+}
+
 void testDtcHistorySnapshotAndDurableMirror() {
   resetEnvironment();
   DtcHistoryData history =
@@ -641,6 +827,8 @@ int main() {
   testFactoryResetAcceptsJournalWhenNvsCannotOpen();
   testDtcFactoryResetAcceptsJournalWhenNvsCannotOpen();
   testDtcHistorySnapshotAndDurableMirror();
+  testDtcHistoryCarriesOnsetContext();
+  testDtcHistoryUpgradesASchemaOneStore();
   testDtcHistoryTornJournalFallsBackToNvs();
   testAssetValidationAbAndFallback();
   std::cout << "storage recovery tests passed\n";

@@ -64,6 +64,13 @@ class DidExplorer {
   // What the outstanding request is, when one is outstanding.
   enum class Pending : uint8_t { None, Session, KeepAlive, Scan };
 
+  // What a sweep learned about one identifier. The distinction between a
+  // negative answer and no answer at all is the whole point of keeping this:
+  // "the block says this identifier does not exist" and "this block did not
+  // bother answering" call for opposite next steps, and a scan that only
+  // remembers the identifiers that answered cannot tell them apart afterwards.
+  enum class Outcome : uint8_t { Unscanned = 0, Data = 1, Negative = 2, Silent = 3 };
+
   struct Config {
     uint32_t requestId = 0x7E0;
     uint32_t responseId = 0x7E8;
@@ -92,6 +99,17 @@ class DidExplorer {
     uint8_t nrc = 0;
     bool refused = false;
     bool silent = false;
+    uint8_t payload[kMaxPayload] = {0};
+  };
+
+  // What one identifier did during a target run. A retry sweep walks a list of
+  // identifiers rather than a range, so a contiguous per-identifier map would
+  // be the wrong shape: the list is the record.
+  struct Visit {
+    uint16_t did = 0;
+    Outcome outcome = Outcome::Unscanned;
+    uint8_t nrc = 0;
+    uint8_t length = 0;
     uint8_t payload[kMaxPayload] = {0};
   };
 
@@ -154,6 +172,18 @@ class DidExplorer {
 
   // Called by the client when the request slot expires.
   void requestTimedOut(uint32_t nowMs);
+  // A negative response with 0x78 means "still working, ask again later". It is
+  // not an answer: the client must extend the deadline instead of letting the
+  // identifier be recorded as a timeout and the real answer arrive too late.
+  bool takeResponsePending();
+
+  // Outcome of the last range sweep, per identifier. Unscanned covers both
+  // identifiers outside the swept range and a sweep that never reached them.
+  Outcome outcomeState(uint16_t did) const;
+  uint8_t outcomeNrc(uint16_t did) const;
+  // Outcomes of a target run, in the order the identifiers were asked.
+  size_t visitCount() const { return visitCount_; }
+  const Visit& visit(size_t index) const { return visits_[index]; }
   // Called when the frame could not be transmitted at all.
   void transportFailed(uint32_t nowMs);
 
@@ -173,6 +203,9 @@ class DidExplorer {
   void completeScan(uint32_t nowMs);
   void recordResult(uint16_t did, uint8_t service, const uint8_t* data,
                     size_t length);
+  void recordOutcome(Outcome outcome, uint8_t nrc);
+  void recordVisit(uint16_t did, Outcome outcome, uint8_t nrc,
+                   const uint8_t* data, size_t length);
   // Whether a decoded UDS payload answers the outstanding request.
   bool payloadMatches(const uint8_t* uds, size_t length) const;
   void acceptPayload(const uint8_t* uds, size_t length, uint32_t nowMs);
@@ -201,6 +234,22 @@ class DidExplorer {
   Answer answers_[kAnswerRing]{};
   size_t answerHead_ = 0;
   size_t answerCount_ = 0;
+
+  // One entry per identifier of the swept range, sized for the largest range
+  // the configuration allows: 512 identifiers in 1 KiB, which buys an exact
+  // retry list and an exact negative-response code per identifier.
+  struct OutcomeEntry {
+    uint8_t state = static_cast<uint8_t>(Outcome::Unscanned);
+    uint8_t nrc = 0;
+  };
+  OutcomeEntry outcomes_[kMaxRange]{};
+  uint16_t outcomeBase_ = 0;
+  uint16_t outcomeSpan_ = 0;
+
+  Visit visits_[kMaxSnapshotTargets]{};
+  size_t visitCount_ = 0;
+
+  bool responsePending_ = false;
 
   // ISO-TP assembly for the answer in flight.
   uint8_t buffer_[64]{};

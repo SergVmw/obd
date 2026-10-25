@@ -12,16 +12,22 @@ const path = require('path');
 
 const LIVE = {
   ok: true,
-  formatVersion: 1,
+  formatVersion: 2,
   scan: {
     state: 'running', mode: 'range', running: true, sessionOpened: true,
     sessionRefused: false, done: 48, total: 128, currentDid: '0xF1B0',
   },
-  store: { status: 'saved', dirty: false, loadedFromFlash: true, found: 3 },
+  store: { status: 'saved', dirty: false, restoredFromFlash: true, found: 3 },
   engine: {
     requestId: '0x7E0', responseId: '0x7E8', service: '0x22', updatedAtMs: 1234,
     truncated: false, count: 2,
     counters: { scanned: 128, positive: 2, negative: 120, timeout: 6, dropped: 0, lastNrc: '0x31' },
+    scans: [
+      { first: '0xF180', last: '0xF1FF', service: '0x22', elapsedMs: 7400, scanned: 128, positive: 2, negative: 120, timeout: 6 },
+      { first: '0x0100', last: '0x011F', service: '0x22', elapsedMs: 1200, scanned: 32, positive: 0, negative: 32, timeout: 0 },
+    ],
+    silent: { truncated: true, count: 104, ranges: [ { first: '0xF181', last: '0xF186' }, { first: '0xF188', last: '0xF189' } ] },
+    negativeCodes: [ { code: '0x31', count: 104 }, { code: '0x22', count: 16 } ],
     results: [
       { did: '0xF190', data: '4C47574545344134', length: 8, truncated: false },
       { did: '0xF1A0', data: '0032', length: 2, truncated: false },
@@ -121,7 +127,9 @@ const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8
   //    survived: these are the two things the owner looks at from the driver's
   //    seat with the engine idling.
   const state = await page.textContent('#didState');
-  for (const needle of ['Идёт чтение', '48 из 128', '0xF1B0', 'расширенная сессия 0x10 03 открыта', 'Всего найдено: 3']) {
+  for (const needle of ['Идёт чтение', '48 из 128', '0xF1B0', 'расширенная сессия 0x10 03 открыта',
+    'Всего найдено: 3', 'из памяти прибора', 'молчат: 104', 'в 2 диапазонах', 'список обрезан',
+    'NRC: 0x31 ×104', 'проходов: 2']) {
     if (!state.includes(needle)) throw new Error(`state line missing ${needle}: ${state}`);
   }
 
@@ -173,6 +181,16 @@ const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8
     throw new Error('snapshot request wrong: ' + JSON.stringify(snapPost.body));
   }
 
+  // 4b. The retry button re-reads only the identifiers that stayed silent, so
+  //     the owner does not spend another sweep asking about what already
+  //     answered. It carries its own action header, like every other command.
+  await page.click('#didRetry');
+  await page.waitForTimeout(200);
+  const retryPost = posts.find(p => p.path === '/api/dids/retry');
+  if (!retryPost) throw new Error('retry did not post');
+  if (retryPost.action !== 'did-retry') throw new Error('retry without its action header: ' + retryPost.action);
+  if (retryPost.body.ecu !== 'gearbox') throw new Error('retry sent to the wrong module: ' + JSON.stringify(retryPost.body));
+
   await page.click('#didClear');
   await page.waitForTimeout(200);
   const clearPost = posts.find(p => p.path === '/api/dids/clear');
@@ -211,8 +229,9 @@ const html = fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8
 
   if (consoleErrors.length) throw new Error('console errors: ' + consoleErrors.join('; '));
 
-  console.log('PASS identifier panel: results with module and payload, live state, '
-    + 'three snapshot columns with refusal and silence, action headers, polling '
-    + 'only while visible, no overflow at 360 px');
+  console.log('PASS identifier panel: results with module and payload, live state '
+    + 'with silence ranges and negative codes, three snapshot columns with '
+    + 'refusal and silence, targeted retry, action headers, polling only while '
+    + 'visible, no overflow at 360 px');
   await browser.close();
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });

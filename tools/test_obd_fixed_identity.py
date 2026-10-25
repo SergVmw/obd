@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory(prefix="h2g-identity-tests-") as tmp:
         "-I", str(ROOT / "tests/host"), "-I", str(ROOT / "include"),
         str(ROOT / "tests/host/obd_fixed_identity_tests.cpp"),
         str(ROOT / "src/obd_diagnostics.cpp"),
+        str(ROOT / "src/service_refusal_store.cpp"),
+        str(ROOT / "src/storage_crc32.cpp"),
         "-o", str(executable),
     ]
     subprocess.run(command, check=True)

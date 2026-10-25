@@ -39,6 +39,7 @@ jobs:
           python tools/test_storage_recovery.py
           python tools/test_mode22.py
           python tools/test_pid_support.py
+          python tools/test_engine_run.py
           python tools/test_telemetry.py
           python tools/test_obd_trace.py
           python tools/test_screen_gate.py

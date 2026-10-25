@@ -94,6 +94,25 @@ struct TelemetryData {
   TimedFloat o2Sensor1Raw;       // PID 14 byte A, 0..255
   TimedFloat o2Sensor1TrimPct;   // PID 14 byte B, 0..100
 
+  // PID 0E, ignition timing advance: (A / 2) - 64 degrees before TDC. Read
+  // because this engine runs on gas, where the octane is higher and the knock
+  // margin is different from petrol: a block that keeps pulling timing back is
+  // saying something about the fuel, and without the number there is nothing to
+  // see. Kept as a TimedFloat in degrees, with the raw byte A available through
+  // the usual age/validity rules rather than a second copy of the same value.
+  TimedFloat timingAdvanceDeg;
+  // PID 15, bank 1 sensor 2: the oxygen sensor downstream of the catalyst.
+  // Sensor 1 (PID 14) answers what the engine is doing; sensor 2 answers what
+  // the catalyst did with it. A sensor-2 trace that mirrors sensor 1 is the
+  // measured meaning of P0420, and it is the only way to confirm that code
+  // rather than repeat it.
+  TimedFloat o2Sensor2Voltage;
+  // PID 2E, commanded evaporative purge, 0..100 %. Purge draws fuel vapour into
+  // the intake; at idle that is a real fraction of the charge, so a diurnal
+  // purge schedule can produce a lean code at idle and nothing at speed. When
+  // P0171 appears on a stationary engine, this is the first thing to look at.
+  TimedFloat evapPurgePercent;
+
   TimedFloat intakeAirC;
   TimedFloat mafGps;
   TimedFloat fuelRateLph;
@@ -219,6 +238,13 @@ struct TelemetryData {
   uint8_t dtcHistoricalOnlyCount = 0;
   uint16_t firstHistoricalDtcRaw = 0;
   bool dtcHistoryTruncated = false;
+  // Readiness as counts rather than as a bit map: the pages print "6 из 8
+  // готовы", and a count that answers the question is one number to keep in
+  // step instead of a second decoder on the display side. The full monitor list
+  // lives in the portal's own DTC report, decoded from the same three bytes.
+  bool dtcReadinessKnown = false;
+  uint8_t dtcReadinessSupported = 0;
+  uint8_t dtcReadinessComplete = 0;
 
   float effectiveBaroKpa = 100.0f;
   float boostBar = 0.0f;

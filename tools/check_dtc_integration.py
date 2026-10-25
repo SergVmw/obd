@@ -185,8 +185,129 @@ assert "CHECK ENGINE" in dashboard and "ПРОПУСКИ" in dashboard
 assert "milAlertLatched" in dashboard and "dtcMisfirePresent" in dashboard
 assert "стирание никогда не выполняется автоматически" in html.lower()
 
+# 0.4.39: the history entry grew from 16 to 44 bytes and the record from 536 to
+# 1432. The numbers are pinned because three separate things step through the
+# files by record size - the segment scanner, the NVS blob reader and the CRC
+# offset - and a change to one of them that is not made to the others produces a
+# journal that reads as empty rather than as broken.
+snapshot_h = (ROOT / "include/dtc_history_snapshot.h").read_text(encoding="utf-8")
+history_hdr = (ROOT / "include/dtc_history.h").read_text(encoding="utf-8")
+assert "kSchema = 2;" in snapshot_h, "the DTC history schema must be 2"
+assert "kLegacySchema = 1;" in snapshot_h, "schema 1 must still be readable"
+assert "kEntryBytes = 44;" in snapshot_h
+assert "kLegacyEntryBytes = 16;" in snapshot_h
+assert "kLegacyCrcOffset" in snapshot_h, \
+    "the legacy CRC offset must be computed, never borrowed from the current layout"
+assert "static_assert(kRecordBytes == 1432" in history_snapshot
+assert "static_assert(kLegacyRecordBytes == 536" in history_snapshot
+assert "decodeLegacy" in snapshot_h and "bool decodeLegacy" in history_snapshot
+assert "scanLegacySegment" in history and "loadNvsRecord" in history
+assert "journalConverted_" in history, \
+    "a converted journal segment must be rewritten, not appended to"
+assert "nvsConverted_" in history
+
+# Onset context: eight values, each with its own validity bit, and a value
+# without its bit is refused. Without that rule a zero nobody measured reads
+# exactly like a measured zero, which is the defect the snapshot exists to avoid.
+for field in ("kSpeed", "kRpm", "kMap", "kCoolant", "kIntake", "kLoad",
+              "kShortTrim", "kLongTrim"):
+    assert field in history_hdr, "missing condition field %s" % field
+assert "bool has(uint16_t bit) const" in history_hdr
+assert "!condition.has(DtcCondition::kSpeed) && condition.speedKph10 != 0" in history_snapshot, \
+    "a value without its validity bit must be treated as corruption"
+assert "kDtcHistoryMinEpochSec = 1700000000UL" in history_hdr
+assert "entry.firstSeenEpoch < kDtcHistoryMinEpochSec" in history_snapshot
+assert "entry.lastSeenEpoch < entry.firstSeenEpoch" in history_snapshot
+assert "firstSeenEpoch" in history_hdr and "lastSeenEpoch" in history_hdr
+assert "captureCondition" in diag_h
+assert "DtcCondition ObdDiagnostics::captureCondition" in diag
+assert "kFreshMs = 3000" in diag, "a stale signal must not be recorded as the onset condition"
+assert "condition = captureCondition(now)" in diag
+assert "epochNow" in diag_h and "epochProvider_" in diag_h
+# The provider is a function pointer so the diagnostic state machine does not
+# link against the clock or NVS. Ten host suites depend on that separation.
+assert "TripClock* clock_" not in diag_h, "the diagnostics must not own the clock"
+assert "tripClockEpochNow" in (ROOT / "include/trip_clock.h").read_text(encoding="utf-8")
+assert "attachDtcContext(&tripClock, &serviceRefusals)" in main
+assert "serviceRefusals.begin()" in main
+
+# Readiness: availability and completeness are different bits with opposite
+# sense, and bytes C/D are read against a different table depending on B3.
+for token in ("monitorDataB", "monitorDataC", "monitorDataD", "readinessKnown"):
+    assert token in diag_h, "missing readiness state %s" % token
+assert "decodeReadiness" in diag_h and "void ObdDiagnostics::decodeReadiness" in diag
+assert "((dataB >> spec.completeBit) & 1U) == 0" in diag, \
+    "completeness is inverted: a set bit means NOT complete"
+assert "sparkIgnition" in diag_h and "((dataB >> 3U) & 1U) == 0" in diag
+assert "kCompressionMonitors" in diag, "the compression table must be separate"
+assert "observeReadiness(payload + 2" in diag
+assert "telemetry_.dtcReadinessSupported" in diag
+assert 'dtc["readinessSupported"]' in portal
+assert 'readiness["monitors"]' in portal
+assert "readinessSupported" in (ROOT / "src/sta_readonly.cpp").read_text(encoding="utf-8")
+
+# Service memo: only 03/07/0A may be remembered, NRC 0x11 is the only code that
+# is, and the scan must skip a service whose answer is known.
+refusal_h = (ROOT / "include/service_refusal_store.h").read_text(encoding="utf-8")
+refusal = (ROOT / "src/service_refusal_store.cpp").read_text(encoding="utf-8")
+assert "memoBit" in refusal_h and "service == 0x03 ? 2" in refusal_h \
+    and "service == 0x07 ? 6" in refusal_h and "service == 0x0A ? 9" in refusal_h
+assert "service == 0x04" not in refusal_h, "Mode 04 must never be memoised"
+assert "service == 0x01" not in refusal_h, "Mode 01 must never be memoised"
+assert '"h2dtcref"' in refusal and '"memo"' in refusal
+assert "storageCrc32" in refusal
+assert "mask & ~allowed" in refusal, "a foreign bit must reject the whole record"
+assert "refusals_->note(negativeService)" in diag, \
+    "the memo must use the service captured before the buffer was reset"
+assert "resetAssembly();" in diag
+assert diag.index("const uint8_t negativeService = payload[1];") < \
+    diag.index("refusals_->note(negativeService)"), \
+    "the service byte must be captured before resetAssembly() clears the answer"
+assert "negativeResponseCode == 0x11 && refusals_ != nullptr" in diag, \
+    "only serviceNotSupported may be remembered; 0x12 stays visible"
+assert "refusals_->refused(service)" in diag
+assert "RefusedService" in diag_h and '"service_refused"' in diag
+assert "beginScanChain" in diag_h and "advanceToNextCategory" in diag
+assert '"/api/diagnostics/dtc/service-memo/clear"' in portal and "clearServiceMemo" in portal_h
+assert "serviceRefusals_.clear();" in portal, "factory reset must forget the memo"
+assert "serviceMemo" in portal and '"services"' in portal
+
+# The three supported-but-unread parameters, in the profile, in the length table
+# and in the engine-data set, so a mask that claims them is actually asked.
+for pid_line in ("{0x0E, 500}", "{0x15, 1000}", "{0x2E, 1000}"):
+    assert pid_line in client_h, "PID line %s missing from the poll profile" % pid_line
+assert client_h.count("{0x0E, 500}") == 2, "both profiles must carry PID 0E"
+assert client_h.count("{0x15, 1000}") == 2 and client_h.count("{0x2E, 1000}") == 2
+specs_h = (ROOT / "include/obd_pid_specs.h").read_text(encoding="utf-8")
+assert "pid == 0x0E" in specs_h and "pid == 0x2E" in specs_h and "pid == 0x15" in specs_h
+pid_support = (ROOT / "src/pid_support.cpp").read_text(encoding="utf-8")
+assert "case 0x0E:" in pid_support and "case 0x15:" in pid_support and "case 0x2E:" in pid_support
+assert "static_cast<float>(a) / 2.0f - 64.0f" in client, \
+    "PID 0E is (A / 2) - 64 degrees"
+assert "static_cast<float>(a) * 0.005f" in client, "PID 15 is 0.005 V per bit"
+assert "static_cast<float>(a) * 100.0f / 255.0f" in client, "PID 2E is A * 100 / 255 %"
+assert 'doc["timingAdvanceDeg"]' in portal and 'doc["downstreamO2V"]' in portal
+assert 'doc["evapPurgePct"]' in portal
+assert "timingAdvance" in (ROOT / "src/sta_readonly.cpp").read_text(encoding="utf-8")
+assert "downstreamO2" in (ROOT / "src/sta_readonly.cpp").read_text(encoding="utf-8")
+assert "evapPurge" in (ROOT / "src/sta_readonly.cpp").read_text(encoding="utf-8")
+
+# Both surfaces, because the value is worth seeing while driving and worth
+# reading in detail afterwards. The head unit is ES5 and the portal is not, so
+# the same three numbers are rendered twice on purpose.
+for element_id in ("dtcReadinessState", "dtcReadinessRows", "dtcForgetMemo",
+                   "diagAngle", "diagO2Down", "diagPurge", "dtcMemoState"):
+    assert f'id="{element_id}"' in html, "missing portal element %s" % element_id
+assert "ВПЕРВЫЕ ВИДЕН" in html and "УСЛОВИЯ ПРИ ПОЯВЛЕНИИ" in html
+headunit = (ROOT / "web/headunit.html").read_text(encoding="utf-8")
+for element_id in ("lvAngle", "lvO2Down", "lvPurge"):
+    assert f'id="{element_id}"' in headunit, "missing head-unit element %s" % element_id
+assert "readinessKnown" in headunit and "readinessComplete" in headunit
+assert "=>" not in headunit.split("<script")[1], "the head unit must stay ES5"
+
 compressed = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), \
     "embedded UI is stale"
 print("DTC integration: PID 0C engine lock, physical 03/07/0A, NRC 0x78, "
-      "truncated-history/API invariants, post-clear schedule and gated Mode 04 OK")
+      "truncated-history/API invariants, post-clear schedule and gated Mode 04 OK; "
+      "0.4.39 onset context, schema 2, readiness and the service memo OK")

@@ -774,6 +774,101 @@ void testO2KeepsBothBytesRaw() {
   CHECK(static_cast<int>(rig.telemetry.o2Sensor1TrimPct.value) == 0x64);
 }
 
+// The three parameters this build started asking for. Each is a J1979 scaling
+// applied once, at the point of decoding, and each is checked against the
+// arithmetic the standard defines rather than against a number produced by the
+// same expression under test.
+void testTimingAdvanceIsDecodedAsSignedDegrees() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.pumpUntilPidPending(0x01, 0x0E);
+  CHECK(rig.awaitingPid(0x01, 0x0E));
+  // A = 0x80 -> 64.0 - 64 = 0 deg. A = 0x00 -> -64 deg (after TDC).
+  const uint8_t zero[] = {0x03, 0x41, 0x0E, 0x80};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, zero, sizeof(zero)));
+  rig.deliver();
+  CHECK(rig.telemetry.timingAdvanceDeg.valid(hostMillis));
+  CHECK(std::fabs(rig.telemetry.timingAdvanceDeg.value) < 1e-5f);
+
+  rig.pumpUntilPidPending(0x01, 0x0E);
+  const uint8_t retarded[] = {0x03, 0x41, 0x0E, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, retarded, sizeof(retarded)));
+  rig.deliver();
+  CHECK(std::fabs(rig.telemetry.timingAdvanceDeg.value + 64.0f) < 1e-5f);
+
+  rig.pumpUntilPidPending(0x01, 0x0E);
+  // A = 0xAA = 170 -> 85 - 64 = 21 deg before TDC, the sort of number an idling
+  // engine actually shows.
+  const uint8_t advanced[] = {0x03, 0x41, 0x0E, 0xAA};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, advanced, sizeof(advanced)));
+  rig.deliver();
+  CHECK(std::fabs(rig.telemetry.timingAdvanceDeg.value - 21.0f) < 1e-5f);
+}
+
+void testDownstreamO2AndPurgeAreDecoded() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x15);
+  CHECK(rig.awaitingPid(0x01, 0x15));
+  // 0x5A = 90 * 0.005 = 0.45 V: a catalyst-behind sensor parked mid-scale.
+  const uint8_t o2[] = {0x04, 0x41, 0x15, 0x5A, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, o2, sizeof(o2)));
+  rig.deliver();
+  CHECK(rig.telemetry.o2Sensor2Voltage.valid(hostMillis));
+  CHECK(std::fabs(rig.telemetry.o2Sensor2Voltage.value - 0.45f) < 1e-4f);
+
+  rig.pumpUntilPidPending(0x01, 0x2E);
+  CHECK(rig.awaitingPid(0x01, 0x2E));
+  const uint8_t purge[] = {0x03, 0x41, 0x2E, 0xFF};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, purge, sizeof(purge)));
+  rig.deliver();
+  CHECK(rig.telemetry.evapPurgePercent.valid(hostMillis));
+  CHECK(std::fabs(rig.telemetry.evapPurgePercent.value - 100.0f) < 1e-4f);
+
+  // A one-byte answer to a one-byte parameter is complete, not short; a frame
+  // that declares the PID but carries no data byte changes nothing.
+  rig.pumpUntilPidPending(0x01, 0x2E);
+  const uint8_t truncated[] = {0x02, 0x41, 0x2E};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, truncated, sizeof(truncated)));
+  const float before = rig.telemetry.evapPurgePercent.value;
+  rig.deliver();
+  CHECK(rig.telemetry.evapPurgePercent.value == before);
+}
+
+// The support mask decides whether these three are ever asked. This vehicle's
+// own mask claims all three, so a build that dropped them from the profile would
+// leave supported parameters unread, which is the defect being fixed.
+void testTheThreeNewPidsAreInThePollProfile() {
+  ConfigData config{};
+  const PidSupportTable support = permissiveSupportTable();
+  CHECK(ObdClient::polledPidMask(0, config, support) != 0);
+  const auto polls = [&](uint8_t group, uint8_t base, uint8_t pid) {
+    return pollsPid(ObdClient::polledPidMask(group, config, support), base, pid);
+  };
+  CHECK(polls(0, 0x01, 0x0E));
+  CHECK(polls(0, 0x01, 0x15));
+  CHECK(polls(1, 0x21, 0x2E));
+
+  // A block that claims nothing is asked for nothing: the mask is consulted
+  // first, so adding an entry to the profile cannot put a request on the bus
+  // that the vehicle has said it cannot answer. The mask has to be *recorded*
+  // as empty - a block whose mask has not been learned yet is treated as
+  // optimistic everywhere else, and that is deliberate.
+  PidSupportTable empty;
+  const uint8_t zeroes[4] = {0x00, 0x00, 0x00, 0x00};
+  empty.recordMask(0x7E8, 0x00, zeroes);
+  empty.recordMask(0x7E8, 0x20, zeroes);
+  empty.recordMask(0x7E8, 0x40, zeroes);
+  CHECK(ObdClient::polledPidMask(0, config, empty) == 0);
+  // And this vehicle's own mask claims all three, which is the fact the fix
+  // rests on: the parameters were supported and simply never requested.
+  const PidSupportTable vehicle = vehicleSupportTable();
+  CHECK(pollsPid(ObdClient::polledPidMask(0, config, vehicle), 0x01, 0x0E));
+  CHECK(pollsPid(ObdClient::polledPidMask(0, config, vehicle), 0x01, 0x15));
+  CHECK(pollsPid(ObdClient::polledPidMask(1, config, vehicle), 0x21, 0x2E));
+}
+
 // An answer one byte short of what the PID declares must change nothing. Without
 // the length guard the missing byte would be read as zero and published as a
 // real 0 V, which on the page is indistinguishable from a failed sensor.
@@ -1472,6 +1567,81 @@ void testTheScanKeepsToItsOwnResponder() {
   CHECK(rig.client.didExplorer().waiting());
 }
 
+
+// UDS says a module may answer "response pending" and take longer than P2 to
+// produce the real answer. Recording that as a negative answer would file an
+// identifier that exists as one that does not, and letting the ordinary window
+// run out under it would do the same thing more slowly.
+void testResponsePendingRestartsTheIdentifierWait() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 80 && !rig.client.didExplorer().waiting(); ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().waiting());
+  const uint16_t before = rig.client.didExplorer().currentDid();
+
+  // Keep saying "still working" for far longer than the 150 ms request window,
+  // and hand over the answer at the end.
+  uint32_t elapsed = 0;
+  while (elapsed < 1200) {
+    const uint8_t pending[] = {0x03, 0x7F, 0x22, 0x78};
+    h2g_twai_stub::queueRx(fromEcu(0x7E8, pending, sizeof(pending)));
+    rig.pump(4, 25);
+    elapsed += 100;
+    CHECK(rig.client.didExplorer().waiting());
+    CHECK(rig.client.didExplorer().counters().negative == 0);
+    CHECK(rig.client.didExplorer().counters().timeout == 0);
+  }
+  const uint8_t answer[] = {0x04, 0x62, static_cast<uint8_t>(before >> 8),
+                            static_cast<uint8_t>(before & 0xFF), 0x41};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  // The scan carries straight on to the next identifier, so "waiting" is true
+  // again by the time the answer is filed: the answer is what must appear.
+  for (int i = 0; i < 20 && rig.client.didExplorer().resultCount() == 0; ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().counters().positive == 1);
+  CHECK(rig.client.didExplorer().resultCount() == 1);
+  CHECK(rig.client.didExplorer().results()[0].did == before);
+  CHECK(rig.client.didExplorer().results()[0].payload[0] == 0x41);
+}
+
+// The other half of the same rule: a module that never stops saying "pending"
+// must not hold the single request slot. Without an absolute deadline the scan
+// would stall on one identifier for as long as the module felt like it, and the
+// gauge's own polling would be locked out with it.
+void testResponsePendingCannotHoldTheRequestSlotForever() {
+  Rig rig;
+  rig.identifyEngine();
+  rig.client.pause(true);
+  CHECK(rig.client.didExplorer().start(scanConfig(), hostMillis));
+  for (int i = 0; i < 80 && !rig.client.didExplorer().waiting(); ++i) {
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().waiting());
+  const uint16_t before = rig.client.didExplorer().currentDid();
+
+  // Keep saying "still working" well past the 5000 ms absolute deadline for one
+  // identifier. Every pending restarts the short window, so only the absolute
+  // deadline can end this.
+  for (int i = 0; i < 400 && rig.client.didExplorer().counters().timeout == 0;
+       ++i) {
+    if (rig.client.didExplorer().waiting()) {
+      const uint8_t pending[] = {0x03, 0x7F, 0x22, 0x78};
+      h2g_twai_stub::queueRx(fromEcu(0x7E8, pending, sizeof(pending)));
+    }
+    rig.pump(1, 25);
+  }
+  CHECK(rig.client.didExplorer().counters().timeout == 1);
+  CHECK(rig.client.didExplorer().counters().negative == 0);
+  CHECK(rig.client.didExplorer().resultCount() == 0);
+  // The scan stepped over the identifier it could not get an answer for.
+  CHECK(rig.client.didExplorer().currentDid() > before);
+}
+
 int main() {
   test("the identifier scan is dropped outside service mode",
        testIdentifierScanIsDroppedOutsideServiceMode);
@@ -1483,6 +1653,10 @@ int main() {
        testModeOneAnswersStillReachTheGaugeDuringAScan);
   test("an unanswered identifier times out and the scan advances",
        testAnUnansweredIdentifierTimesOutAndTheScanAdvances);
+  test("response pending restarts the identifier wait",
+       testResponsePendingRestartsTheIdentifierWait);
+  test("response pending cannot hold the request slot forever",
+       testResponsePendingCannotHoldTheRequestSlotForever);
   test("the scan keeps to its own responder", testTheScanKeepsToItsOwnResponder);
   test("a manifold picks the engine and speed alone cannot",
        testManifoldDecidesTheEngineAndSpeedAloneCannot);
@@ -1531,6 +1705,11 @@ int main() {
   test("PID 14 keeps both bytes raw", testO2KeepsBothBytesRaw);
   test("a short PID 14 answer changes nothing",
        testShortO2AnswerChangesNothing);
+  test("timing advance is signed degrees", testTimingAdvanceIsDecodedAsSignedDegrees);
+  test("downstream O2 and purge are decoded",
+       testDownstreamO2AndPurgeAreDecoded);
+  test("the three new PIDs are in the poll profile",
+       testTheThreeNewPidsAreInThePollProfile);
   test("the odometer segment moves only on a downward step",
        testOdometerSegmentAdvancesOnlyOnADownwardStep);
   test("driver error counters reach telemetry",

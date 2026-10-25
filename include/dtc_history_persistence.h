@@ -51,11 +51,15 @@ class DtcHistoryPersistence {
     size_t fileBytes = 0;
     size_t validBytes = 0;
     uint32_t sequence = 0;
+    // True when the record was read in the schema-1 layout and rewritten into
+    // the current one. Drives a rotation so the file stops mixing layouts.
+    bool legacy = false;
     uint8_t record[DtcHistorySnapshot::kRecordBytes]{};
   };
 
   static const char* segmentPath(char segment);
   SegmentScan scanSegment(char segment) const;
+  bool scanLegacySegment(char segment, SegmentScan& result) const;
   bool verifyRecordAt(const char* path, size_t offset,
                       const uint8_t* expected) const;
   bool writeJournalRecord(const uint8_t* record);
@@ -72,6 +76,8 @@ class DtcHistoryPersistence {
   bool journalHealthy_ = false;
   bool nvsHealthy_ = false;
   bool latestValid_ = false;
+  bool nvsConverted_ = false;
+  bool journalConverted_ = false;
   bool activeTailClean_ = false;
   bool needsRotation_ = true;
   char activeSegment_ = '-';

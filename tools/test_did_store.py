@@ -57,10 +57,21 @@ def main() -> int:
 
     document = json.loads(body, parse_constant=reject_constant)
     assert document["ok"] is True
-    assert document["formatVersion"] == 1
+    assert document["formatVersion"] == 2
     assert document["engine"]["requestId"] == "0x7E0"
     assert document["engine"]["results"][0]["did"] == "0xF190"
     assert document["engine"]["results"][0]["data"] == "4C47"
+    # The sweep is described as a sweep, not only by the identifiers that
+    # answered: the ranges and the silence are the part a second visit reuses.
+    scan = document["engine"]["scans"][0]
+    assert scan["first"] == "0xF190" and scan["last"] == "0xF191"
+    assert scan["scanned"] == 2 and scan["positive"] == 1
+    assert scan["negative"] == 1 and scan["timeout"] == 0
+    assert document["engine"]["silent"]["count"] == 0
+    assert document["engine"]["silent"]["ranges"] == []
+    assert document["engine"]["negativeCodes"] == [{"code": "0x31", "count": 1}]
+    # The flag now says what it means: this record never came off the flash.
+    assert document["store"]["restoredFromFlash"] is False
     assert document["gearbox"] is None
     assert len(document["snapshots"]) == 3
     idle = document["snapshots"][1]

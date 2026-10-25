@@ -87,7 +87,17 @@ def main() -> int:
             "pending": 0,
             "permanent": 0,
             "firstCode": "P0171",
+            "readinessKnown": False,
+            "readinessSupported": 0,
+            "readinessComplete": 0,
         }
+        # The three parameters that were supported and never read. All three are
+        # null here because this fixture sets no telemetry for them: the key must
+        # exist and must be null rather than zero, which is the difference
+        # between "not measured" and "measured as zero".
+        assert live["timingAdvance"] is None
+        assert live["downstreamO2"] is None
+        assert live["evapPurge"] is None
         assert math.isclose(live["cur"]["distanceKm"], 11.0, abs_tol=1e-3)
         assert math.isclose(live["cur"]["petrolLiters"] + live["cur"]["lpgLiters"],
                             live["cur"]["totalLiters"], abs_tol=1e-3)

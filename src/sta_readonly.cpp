@@ -191,6 +191,12 @@ void writeLiveJson(const StaLiveSnapshot& s, const TripHistory& tripHistory,
   j.boolVal(s.trimWarn);
   j.key("o2V");
   j.optFloat(s.hasO2, s.o2Volts);
+  j.key("timingAdvance");
+  j.optFloat(s.hasTimingAdvance, s.timingAdvanceDeg);
+  j.key("downstreamO2");
+  j.optFloat(s.hasDownstreamO2, s.downstreamO2Volts);
+  j.key("evapPurge");
+  j.optFloat(s.hasEvapPurge, s.evapPurgePct);
   j.key("airflowGps");
   j.optFloat(s.hasAirflow, s.airflowGps);
 
@@ -247,6 +253,12 @@ void writeLiveJson(const StaLiveSnapshot& s, const TripHistory& tripHistory,
   StaReadOnly::formatSaeDtc(s.firstDtcRaw, dtcCode);
   j.key("firstCode");
   j.strVal(dtcCode);
+  j.key("readinessKnown");
+  j.boolVal(s.readinessKnown);
+  j.key("readinessSupported");
+  j.u32Val(s.readinessSupported);
+  j.key("readinessComplete");
+  j.u32Val(s.readinessComplete);
   j.ch('}');
 
   bool histReady = false;
@@ -792,6 +804,12 @@ StaLiveSnapshot buildLiveSnapshot(uint32_t nowMs, uint32_t rtcNowSec,
   }
   s.trimWarn = telemetry.fuelTrimWarning;
 
+  s.hasTimingAdvance = telemetry.timingAdvanceDeg.valid(nowMs, 5000);
+  if (s.hasTimingAdvance) s.timingAdvanceDeg = telemetry.timingAdvanceDeg.value;
+  s.hasDownstreamO2 = telemetry.o2Sensor2Voltage.valid(nowMs, 5000);
+  if (s.hasDownstreamO2) s.downstreamO2Volts = telemetry.o2Sensor2Voltage.value;
+  s.hasEvapPurge = telemetry.evapPurgePercent.valid(nowMs, 5000);
+  if (s.hasEvapPurge) s.evapPurgePct = telemetry.evapPurgePercent.value;
   s.hasO2 = telemetry.o2Sensor1Raw.valid(nowMs, 5000);
   if (s.hasO2) {
     // J1979 defines 0.00495 V per bit (0..1.263 V).
@@ -821,6 +839,9 @@ StaLiveSnapshot buildLiveSnapshot(uint32_t nowMs, uint32_t rtcNowSec,
   s.utcOffsetMin = config.utcOffsetMin;
 
   s.milOn = telemetry.milStatusKnown && telemetry.milCommandedOn;
+  s.readinessKnown = telemetry.dtcReadinessKnown;
+  s.readinessSupported = telemetry.dtcReadinessSupported;
+  s.readinessComplete = telemetry.dtcReadinessComplete;
   s.dtcStored = telemetry.dtcStoredCount;
   s.dtcPending = telemetry.dtcPendingCount;
   s.dtcPermanent = telemetry.dtcPermanentCount;

@@ -156,6 +156,7 @@ const char* ObdDiagnostics::categoryStatusName(DtcCategoryStatus status) {
     case DtcCategoryStatus::Malformed: return "malformed";
     case DtcCategoryStatus::TransportError: return "transport_error";
     case DtcCategoryStatus::NegativeResponse: return "negative_response";
+    case DtcCategoryStatus::RefusedService: return "service_refused";
     default: return "unknown";
   }
 }
@@ -507,8 +508,7 @@ void ObdDiagnostics::startScan(uint32_t now, bool manual) {
 
   if (state_.engineEcuLocked &&
       validEngineResponseId(state_.engineResponseId)) {
-    state_.storedStatus = DtcCategoryStatus::Reading;
-    beginRequest(Request::ReadStored);
+    beginScanChain(now, DtcKind::Stored);
   } else {
     beginRequest(Request::DiscoverEngineRpm);
   }
@@ -818,8 +818,9 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
 
   if (payload[0] == 0x7F) {
     if (length < 3 || payload[1] != requestedService) return;
+    const uint8_t negativeService = payload[1];
     const uint8_t negativeResponseCode = payload[2];
-    state_.lastNegativeService = payload[1];
+    state_.lastNegativeService = negativeService;
     state_.lastNegativeResponseCode = negativeResponseCode;
     if (negativeResponseCode == 0x78) {
       handleResponsePending(now);
@@ -829,6 +830,19 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
     waiting_ = false;
     state_.responsePending = false;
     resetAssembly();
+    // NRC 0x11 - serviceNotSupported - is a statement about the block, not
+    // about this exchange, so it is written down. 0x12 (subFunctionNotSupported)
+    // is not: it says the argument was wrong, which for these services would be
+    // a defect in this code and must stay visible on every scan rather than be
+    // remembered away. The store itself refuses anything but Modes 03, 07 and 0A.
+    // The service is taken from the copy above, not from payload: resetAssembly()
+    // has already run, and payload points into the buffer it just cleared. The
+    // note was being recorded against service 0x00 - refused by the store, and so
+    // silently dropped - which is why this has to be a named local rather than a
+    // fresh read of a buffer that is no longer the answer.
+    if (negativeResponseCode == 0x11 && refusals_ != nullptr) {
+      refusals_->note(negativeService);
+    }
     const bool unsupported = negativeResponseCode == 0x11 ||
                              negativeResponseCode == 0x12;
     const DtcCategoryStatus categoryResult =
@@ -926,7 +940,7 @@ void ObdDiagnostics::processPayload(const uint8_t* payload, size_t length,
   if (assemblyTruncated) state_.truncated = true;
   const DtcKind kind = kindForRequest(request_);
   if (!replaceCategory(kind, codes, dtcBytes, responseId_,
-                       !assemblyTruncated)) {
+                       !assemblyTruncated, now)) {
     advanceScan(now, DtcCategoryStatus::Malformed);
     return;
   }
@@ -953,8 +967,12 @@ bool ObdDiagnostics::processVerificationPayload(const uint8_t* payload,
     if (length < 6 || !observeMonitorStatus(payload[2], now, responseId_)) {
       return false;
     }
-    state_.storedStatus = DtcCategoryStatus::Reading;
-    beginRequest(Request::ReadStored);
+    // The same four bytes again, this time for the bits nobody was reading.
+    // Failure there is not a failure of the answer: the lamp and the count above
+    // are already accepted, and a block that answers four bytes but relabels
+    // them is a case for the readiness page, not for a malformed verdict.
+    observeReadiness(payload + 2, length - 2, now, responseId_);
+    beginScanChain(now, DtcKind::Stored);
     return true;
   }
 
@@ -1002,6 +1020,213 @@ bool ObdDiagnostics::processVerificationPayload(const uint8_t* payload,
   return false;
 }
 
+namespace {
+// Names are here rather than in the pages for the same reason the DTC
+// descriptions are: a monitor list that exists only in JavaScript cannot be
+// printed by the head unit, which runs an older browser and a much smaller
+// payload budget.
+struct MonitorSpec {
+  const char* id;
+  const char* nameRu;
+  uint8_t supportBit;   // bit in byte C (or byte B for the continuous three)
+  uint8_t completeBit;  // bit in byte D (or byte B for the continuous three)
+};
+
+// Byte B, continuous monitors. Support is bit 0..2, completeness bit 4..6, and
+// the two sets are read differently: a set support bit means "this block has
+// the monitor", a set completeness bit means "not finished yet".
+constexpr MonitorSpec kContinuousMonitors[3] = {
+    {"misfire", "Пропуски воспламенения", 0, 4},
+    {"fuelSystem", "Топливная система", 1, 5},
+    {"components", "Компоненты (CCM)", 2, 6},
+};
+
+// Bytes C and D, spark ignition (B3 == 0).
+constexpr MonitorSpec kSparkMonitors[8] = {
+    {"catalyst", "Катализатор", 0, 0},
+    {"heatedCatalyst", "Катализатор с подогревом", 1, 1},
+    {"evap", "Адсорбер (EVAP)", 2, 2},
+    {"secondaryAir", "Вторичный воздух", 3, 3},
+    {"acRefrigerant", "Хладагент кондиционера", 4, 4},
+    {"o2Sensor", "Датчик кислорода", 5, 5},
+    {"o2Heater", "Подогрев датчика кислорода", 6, 6},
+    {"egr", "EGR / фазовращатель", 7, 7},
+};
+
+// Bytes C and D, compression ignition (B3 == 1). Only the five positions whose
+// meaning is the same in every revision of the table this project could check:
+// C0 NMHC catalyst, C1 heated catalyst, C5 exhaust gas sensor, C6 particulate
+// filter, C7 EGR/VVT. C2, C3 and C4 have been given different meanings by
+// different revisions, and guessing one would print a monitor name next to a
+// bit that means something else.
+constexpr MonitorSpec kCompressionMonitors[5] = {
+    {"nmhcCatalyst", "Катализатор NMHC", 0, 0},
+    {"heatedCatalyst", "Катализатор с подогревом", 1, 1},
+    {"exhaustGasSensor", "Датчик выхлопа", 5, 5},
+    {"particulateFilter", "Сажевый фильтр", 6, 6},
+    {"egr", "EGR / фазовращатель", 7, 7},
+};
+}  // namespace
+
+bool ObdDiagnostics::sparkIgnition(uint8_t dataB) {
+  // B3: 0 = spark ignition, 1 = compression ignition. It is the only bit that
+  // says which table bytes C and D are written against.
+  return ((dataB >> 3U) & 1U) == 0;
+}
+
+void ObdDiagnostics::decodeReadiness(uint8_t dataB, uint8_t dataC,
+                                     uint8_t dataD, DtcMonitorStatus* out,
+                                     size_t capacity, size_t& count) {
+  count = 0;
+  if (out == nullptr) return;
+  const auto emit = [&](const MonitorSpec& spec, bool supported, bool complete) {
+    if (count >= capacity) return;
+    DtcMonitorStatus& monitor = out[count++];
+    monitor.id = spec.id;
+    monitor.nameRu = spec.nameRu;
+    monitor.supported = supported;
+    monitor.complete = supported && complete;
+  };
+
+  for (const MonitorSpec& spec : kContinuousMonitors) {
+    const bool supported = ((dataB >> spec.supportBit) & 1U) != 0;
+    const bool complete = ((dataB >> spec.completeBit) & 1U) == 0;
+    emit(spec, supported, complete);
+  }
+  const bool spark = sparkIgnition(dataB);
+  if (spark) {
+    for (const MonitorSpec& spec : kSparkMonitors) {
+      const bool supported = ((dataC >> spec.supportBit) & 1U) != 0;
+      const bool complete = ((dataD >> spec.completeBit) & 1U) == 0;
+      emit(spec, supported, complete);
+    }
+  } else {
+    for (const MonitorSpec& spec : kCompressionMonitors) {
+      const bool supported = ((dataC >> spec.supportBit) & 1U) != 0;
+      const bool complete = ((dataD >> spec.completeBit) & 1U) == 0;
+      emit(spec, supported, complete);
+    }
+  }
+}
+
+bool ObdDiagnostics::observeReadiness(const uint8_t* data, size_t length,
+                                      uint32_t now, uint32_t responseId) {
+  if (!acceptsEngineResponse(responseId)) return false;
+  // Four bytes: A (lamp and count, already taken), B, C and D. A block that
+  // answers fewer is not wrong - the standard allows a shorter answer - but
+  // there is nothing to decode, and the previous reading must not be presented
+  // as this scan's.
+  if (data == nullptr || length < 4) return false;
+  state_.monitorDataB = data[1];
+  state_.monitorDataC = data[2];
+  state_.monitorDataD = data[3];
+  state_.readinessKnown = true;
+  state_.readinessUpdatedAt = now;
+  publishSummary();
+  return true;
+}
+
+uint32_t ObdDiagnostics::epochNow() const {
+  if (epochProvider_ == nullptr) return 0;
+  const uint32_t epoch = epochProvider_(epochContext_);
+  return epoch >= kDtcHistoryMinEpochSec ? epoch : 0;
+}
+
+DtcCondition ObdDiagnostics::captureCondition(uint32_t now) const {
+  // Three seconds. The values are read a few hundred milliseconds after the
+  // code was first seen, which is as close to the moment as a scan can get; a
+  // signal older than this was not describing that moment at all and is left
+  // unset rather than recorded as if it were.
+  constexpr uint32_t kFreshMs = 3000;
+  DtcCondition condition{};
+  const auto whole = [](float value) {
+    return static_cast<int16_t>(lroundf(value));
+  };
+  if (telemetry_.rawSpeedKph.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kSpeed;
+    condition.speedKph10 = whole(telemetry_.rawSpeedKph.value * 10.0f);
+  }
+  if (telemetry_.rpm.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kRpm;
+    condition.rpm = whole(telemetry_.rpm.value);
+  }
+  if (telemetry_.mapKpa.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kMap;
+    condition.mapKpa10 = whole(telemetry_.mapKpa.value * 10.0f);
+  }
+  if (telemetry_.coolantC.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kCoolant;
+    condition.coolantC10 = whole(telemetry_.coolantC.value * 10.0f);
+  }
+  if (telemetry_.intakeAirC.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kIntake;
+    condition.intakeC10 = whole(telemetry_.intakeAirC.value * 10.0f);
+  }
+  if (telemetry_.engineLoadPct.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kLoad;
+    condition.loadPct10 = whole(telemetry_.engineLoadPct.value * 10.0f);
+  }
+  if (telemetry_.shortFuelTrimPercent.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kShortTrim;
+    condition.shortTrimPct100 =
+        whole(telemetry_.shortFuelTrimPercent.value * 100.0f);
+  }
+  if (telemetry_.longFuelTrimPercent.valid(now, kFreshMs)) {
+    condition.valid |= DtcCondition::kLongTrim;
+    condition.longTrimPct100 =
+        whole(telemetry_.longFuelTrimPercent.value * 100.0f);
+  }
+  return condition;
+}
+
+ObdDiagnostics::Request ObdDiagnostics::requestForKind(DtcKind kind) {
+  if (kind == DtcKind::Pending) return Request::ReadPending;
+  if (kind == DtcKind::Permanent) return Request::ReadPermanent;
+  return Request::ReadStored;
+}
+
+bool ObdDiagnostics::beginCategoryRead(DtcKind kind) {
+  const Request request = requestForKind(kind);
+  const uint8_t service = serviceForRequest(request);
+  if (refusals_ != nullptr && refusals_->refused(service)) {
+    // Asked in an earlier session, answered with NRC 0x11, remembered. Not sent:
+    // a request whose answer is already known costs a window on a bus that times
+    // out on about a sixth of its traffic.
+    categoryStatus(kind) = DtcCategoryStatus::RefusedService;
+    return false;
+  }
+  categoryStatus(kind) = DtcCategoryStatus::Reading;
+  beginRequest(request);
+  return true;
+}
+
+void ObdDiagnostics::beginScanChain(uint32_t now, DtcKind from) {
+  DtcKind kind = from;
+  for (;;) {
+    if (beginCategoryRead(kind)) {
+      publishSummary();
+      return;
+    }
+    if (kind == DtcKind::Permanent) {
+      completeScan(now);
+      return;
+    }
+    kind = kind == DtcKind::Stored ? DtcKind::Pending : DtcKind::Permanent;
+  }
+}
+
+void ObdDiagnostics::advanceToNextCategory(uint32_t now, DtcKind finished) {
+  if (finished == DtcKind::Stored) {
+    beginScanChain(now, DtcKind::Pending);
+    return;
+  }
+  if (finished == DtcKind::Pending) {
+    beginScanChain(now, DtcKind::Permanent);
+    return;
+  }
+  completeScan(now);
+}
+
 DtcCategoryStatus& ObdDiagnostics::categoryStatus(DtcKind kind) {
   if (kind == DtcKind::Pending) return state_.pendingStatus;
   if (kind == DtcKind::Permanent) return state_.permanentStatus;
@@ -1031,15 +1256,7 @@ void ObdDiagnostics::advanceScan(uint32_t now, DtcCategoryStatus status) {
     setError("one or more DTC services returned a negative response");
   }
 
-  if (request_ == Request::ReadStored) {
-    state_.pendingStatus = DtcCategoryStatus::Reading;
-    beginRequest(Request::ReadPending);
-  } else if (request_ == Request::ReadPending) {
-    state_.permanentStatus = DtcCategoryStatus::Reading;
-    beginRequest(Request::ReadPermanent);
-  } else {
-    completeScan(now);
-  }
+  advanceToNextCategory(now, kindForRequest(request_));
   publishSummary();
 }
 
@@ -1218,9 +1435,9 @@ void ObdDiagnostics::appendCode(DtcKind kind, uint16_t raw,
 
 bool ObdDiagnostics::replaceCategory(DtcKind kind, const uint8_t* bytes,
                                      size_t length, uint16_t responseId,
-                                     bool authoritative) {
+                                     bool authoritative, uint32_t now) {
   if ((length & 1U) != 0U || (length != 0 && bytes == nullptr)) return false;
-  updateHistoryCategory(kind, bytes, length, responseId, authoritative);
+  updateHistoryCategory(kind, bytes, length, responseId, authoritative, now);
   removeCategory(kind);
   for (size_t i = 0; i + 1 < length; i += 2) {
     const uint16_t raw = (static_cast<uint16_t>(bytes[i]) << 8) |
@@ -1282,7 +1499,7 @@ uint32_t ObdDiagnostics::nextHistoryChange() {
 void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
                                            size_t length,
                                            uint16_t responseId,
-                                           bool authoritative) {
+                                           bool authoritative, uint32_t now) {
   const uint8_t mask = kindMask(kind);
   // Only a complete payload can prove that a previously observed code is now
   // absent. A bounded/truncated prefix may still add positive observations,
@@ -1310,6 +1527,10 @@ void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
     }
   }
 
+  // Read once for the whole answer, not once per code: every code in this
+  // payload was observed at the same moment, and two of them must not be dated a
+  // second apart because the clock was read twice.
+  const uint32_t epoch = epochNow();
   for (size_t offset = 0; offset + 1 < length; offset += 2) {
     const uint16_t raw =
         (static_cast<uint16_t>(bytes[offset]) << 8) | bytes[offset + 1];
@@ -1318,6 +1539,17 @@ void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
     if (!entry) entry = &allocateHistory(raw, responseId);
     const bool newlyPresent = (entry->lastPresentKinds & mask) == 0;
     const bool newlyClassified = (entry->seenKinds & mask) == 0;
+
+    // "Last seen" moves on every observation, including the ones that change
+    // nothing else. It answers "is it still there, and when was it last there",
+    // which stays a question after the third identical scan.
+    //
+    // "First seen" is set only at the moment the code is first classified, and
+    // never later. An entry carried over from a store written before the clock
+    // existed has no first sighting and keeps zero - writing today's date into
+    // it would claim the fault appeared today.
+    if (epoch != 0) entry->lastSeenEpoch = epoch;
+
     if (!newlyPresent && !newlyClassified) continue;
 
     const uint32_t change = nextHistoryChange();
@@ -1330,6 +1562,14 @@ void ObdDiagnostics::updateHistoryCategory(DtcKind kind, const uint8_t* bytes,
       entry->firstChangeSequence = change;
     }
     entry->lastChangeSequence = change;
+
+    // The condition belongs to the first sighting for the life of the entry.
+    // Overwriting it with the conditions of the tenth recurrence would answer a
+    // different question than the one a freeze-frame substitute is for.
+    if (newlyClassified && entry->condition.valid == 0) {
+      entry->condition = captureCondition(now);
+      if (epoch != 0) entry->firstSeenEpoch = epoch;
+    }
   }
 }
 
@@ -1365,6 +1605,21 @@ void ObdDiagnostics::publishSummary() {
   telemetry_.dtcHistoricalOnlyCount = 0;
   telemetry_.firstHistoricalDtcRaw = 0;
   telemetry_.dtcHistoryTruncated = history_.truncated;
+  telemetry_.dtcReadinessKnown = state_.readinessKnown;
+  telemetry_.dtcReadinessSupported = 0;
+  telemetry_.dtcReadinessComplete = 0;
+  if (state_.readinessKnown) {
+    DtcMonitorStatus monitors[16];
+    size_t count = 0;
+    decodeReadiness(state_.monitorDataB, state_.monitorDataC,
+                    state_.monitorDataD, monitors,
+                    sizeof(monitors) / sizeof(monitors[0]), count);
+    for (size_t i = 0; i < count; ++i) {
+      if (!monitors[i].supported) continue;
+      ++telemetry_.dtcReadinessSupported;
+      if (monitors[i].complete) ++telemetry_.dtcReadinessComplete;
+    }
+  }
   for (size_t i = 0; i < history_.entryCount; ++i) {
     const DtcHistoryEntry& historyEntry = history_.entries[i];
     bool currentlyListed = false;

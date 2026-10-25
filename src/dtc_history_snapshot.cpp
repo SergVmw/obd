@@ -35,6 +35,14 @@ uint16_t getU16(const uint8_t* source) {
          static_cast<uint16_t>(source[1]) << 8U;
 }
 
+void putI16(uint8_t* destination, int16_t value) {
+  putU16(destination, static_cast<uint16_t>(value));
+}
+
+int16_t getI16(const uint8_t* source) {
+  return static_cast<int16_t>(getU16(source));
+}
+
 uint32_t getU32(const uint8_t* source) {
   return static_cast<uint32_t>(source[0]) |
          static_cast<uint32_t>(source[1]) << 8U |
@@ -55,6 +63,52 @@ bool validHistory(const DtcHistoryData& history) {
         entry.lastChangeSequence == 0) {
       return false;
     }
+    // An epoch is either a real timestamp or zero for "the clock was not
+    // synced". A value below the plausibility floor would print as a date in
+    // 1970 and be believed, so it is treated as corruption instead.
+    if (entry.firstSeenEpoch != 0 &&
+        entry.firstSeenEpoch < kDtcHistoryMinEpochSec) {
+      return false;
+    }
+    if (entry.lastSeenEpoch != 0 &&
+        entry.lastSeenEpoch < kDtcHistoryMinEpochSec) {
+      return false;
+    }
+    if (entry.firstSeenEpoch != 0 && entry.lastSeenEpoch != 0 &&
+        entry.lastSeenEpoch < entry.firstSeenEpoch) {
+      return false;
+    }
+    const DtcCondition& condition = entry.condition;
+    if ((condition.valid & ~DtcCondition::kAll) != 0) return false;
+    // A value without its validity bit is not a measurement of anything, and a
+    // zero written by a decoder that read a field it should have skipped is
+    // exactly the kind of plausible-looking fiction this format exists to
+    // avoid. The converse is allowed: a valid bit may carry a genuine zero,
+    // because an engine at rest really does read zero rpm.
+    if (!condition.has(DtcCondition::kSpeed) && condition.speedKph10 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kRpm) && condition.rpm != 0) return false;
+    if (!condition.has(DtcCondition::kMap) && condition.mapKpa10 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kCoolant) && condition.coolantC10 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kIntake) && condition.intakeC10 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kLoad) && condition.loadPct10 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kShortTrim) &&
+        condition.shortTrimPct100 != 0) {
+      return false;
+    }
+    if (!condition.has(DtcCondition::kLongTrim) &&
+        condition.longTrimPct100 != 0) {
+      return false;
+    }
     for (size_t previous = 0; previous < i; ++previous) {
       if (history.entries[previous].raw == entry.raw &&
           history.entries[previous].ecuResponseId == entry.ecuResponseId) {
@@ -66,7 +120,8 @@ bool validHistory(const DtcHistoryData& history) {
 }
 }  // namespace
 
-static_assert(kRecordBytes == 536, "Unexpected DTC history record size");
+static_assert(kRecordBytes == 1432, "Unexpected DTC history record size");
+static_assert(kLegacyRecordBytes == 536, "Unexpected legacy record size");
 
 bool encode(uint32_t sequenceValue, const DtcHistoryData& history,
             uint8_t* destination, size_t destinationBytes) {
@@ -96,6 +151,18 @@ bool encode(uint32_t sequenceValue, const DtcHistoryData& history,
     putU16(encoded + 6, entry.occurrenceCount);
     putU32(encoded + 8, entry.firstChangeSequence);
     putU32(encoded + 12, entry.lastChangeSequence);
+    putU32(encoded + 16, entry.firstSeenEpoch);
+    putU32(encoded + 20, entry.lastSeenEpoch);
+    putU16(encoded + 24, entry.condition.valid);
+    putI16(encoded + 26, entry.condition.speedKph10);
+    putI16(encoded + 28, entry.condition.rpm);
+    putI16(encoded + 30, entry.condition.mapKpa10);
+    putI16(encoded + 32, entry.condition.coolantC10);
+    putI16(encoded + 34, entry.condition.intakeC10);
+    putI16(encoded + 36, entry.condition.loadPct10);
+    putI16(encoded + 38, entry.condition.shortTrimPct100);
+    putI16(encoded + 40, entry.condition.longTrimPct100);
+    // 42..43 reserved, left zero by the memset above.
   }
   putU32(destination + kCrcOffset, storageCrc32(destination, kCrcOffset));
   return true;
@@ -139,6 +206,65 @@ bool decode(const uint8_t* record, size_t recordBytes, Decoded& output) {
     entry.occurrenceCount = getU16(encoded + 6);
     entry.firstChangeSequence = getU32(encoded + 8);
     entry.lastChangeSequence = getU32(encoded + 12);
+    entry.firstSeenEpoch = getU32(encoded + 16);
+    entry.lastSeenEpoch = getU32(encoded + 20);
+    entry.condition.valid = getU16(encoded + 24);
+    entry.condition.speedKph10 = getI16(encoded + 26);
+    entry.condition.rpm = getI16(encoded + 28);
+    entry.condition.mapKpa10 = getI16(encoded + 30);
+    entry.condition.coolantC10 = getI16(encoded + 32);
+    entry.condition.intakeC10 = getI16(encoded + 34);
+    entry.condition.loadPct10 = getI16(encoded + 36);
+    entry.condition.shortTrimPct100 = getI16(encoded + 38);
+    entry.condition.longTrimPct100 = getI16(encoded + 40);
+    if (encoded[42] != 0 || encoded[43] != 0) return false;
+  }
+  if (!validHistory(candidate.history)) return false;
+  output = candidate;
+  return true;
+}
+
+bool decodeLegacy(const uint8_t* record, size_t recordBytes, Decoded& output) {
+  if (!record || recordBytes != kLegacyRecordBytes ||
+      getU32(record + kMagicOffset) != kMagic ||
+      getU16(record + kSchemaOffset) != kLegacySchema ||
+      getU16(record + kRecordBytesOffset) != kLegacyRecordBytes ||
+      getU16(record + kReservedOffset) != 0 ||
+      (record[kFlagsOffset] & ~kTruncatedFlag) != 0 ||
+      getU32(record + kLegacyCrcOffset) !=
+          storageCrc32(record, kLegacyCrcOffset)) {
+    return false;
+  }
+
+  Decoded candidate{};
+  candidate.sequence = getU32(record + kSequenceOffset);
+  candidate.history.changeSequence = getU32(record + kChangeSequenceOffset);
+  candidate.history.entryCount = record[kEntryCountOffset];
+  candidate.history.truncated =
+      (record[kFlagsOffset] & kTruncatedFlag) != 0;
+  if (candidate.sequence == 0 ||
+      candidate.history.entryCount > DtcHistoryData::kMaxEntries) {
+    return false;
+  }
+
+  for (size_t i = 0; i < DtcHistoryData::kMaxEntries; ++i) {
+    const uint8_t* encoded = record + kEntriesOffset + i * kLegacyEntryBytes;
+    if (i >= candidate.history.entryCount) {
+      for (size_t byte = 0; byte < kLegacyEntryBytes; ++byte) {
+        if (encoded[byte] != 0) return false;
+      }
+      continue;
+    }
+    DtcHistoryEntry& entry = candidate.history.entries[i];
+    entry.raw = getU16(encoded + 0);
+    entry.ecuResponseId = getU16(encoded + 2);
+    entry.seenKinds = encoded[4];
+    entry.lastPresentKinds = encoded[5];
+    entry.occurrenceCount = getU16(encoded + 6);
+    entry.firstChangeSequence = getU32(encoded + 8);
+    entry.lastChangeSequence = getU32(encoded + 12);
+    // firstSeenEpoch, lastSeenEpoch and the condition did not exist in schema 1
+    // and stay zero: "not recorded", which is the truth about them.
   }
   if (!validHistory(candidate.history)) return false;
   output = candidate;

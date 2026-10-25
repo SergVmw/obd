@@ -185,12 +185,35 @@ const path = require('node:path');
       return json({
         ready: true,
         healthy: true,
-        limit: 60,
-        totalDays: 2,
+        limit: 400,
+        totalDays: 4,
         totalTrips: allTrips.length,
         hasMore: false,
         corruptTail: false,
         days: [
+          {
+            date: '2026-10-23', dateUnknown: false, tripCount: 2, mergedCount: 0,
+            wallDurationSec: 5400, engineSeconds: 3600, movingSeconds: 3000,
+            idleSeconds: 600, preMoveSeconds: 300, inTripIdleSeconds: 420,
+            distanceKm: 72.6, totalLiters: 17.5, petrolLiters: 1.5, lpgLiters: 16.0,
+            preMoveLiters: 0.6, inTripIdleLiters: 0.4, idleLiters: 0.9, movingLiters: 16.6,
+            averageL100: 24.1, movingAverageL100: 22.9, idleSharePercent: 20.0,
+            idleLitersPerHour: 2.5, lpgSharePercent: 91.4, avgMovingSpeedKph: 32.3,
+            maxSpeedKnown: true, maxSpeedKph: 88.0,
+          },
+          {
+            date: '2026-10-22', dateUnknown: false, tripCount: 4, mergedCount: 0,
+            wallDurationSec: 3600, engineSeconds: 2700, movingSeconds: 1900,
+            idleSeconds: 800, preMoveSeconds: 420, inTripIdleSeconds: 380,
+            // No totalLiters on purpose: the chart must fall back to
+            // petrol + gas rather than count this day as zero fuel.
+            distanceKm: 18.0, petrolLiters: 0.15, lpgLiters: 3.57,
+            preMoveLiters: 0.2, inTripIdleLiters: 0.3, idleLiters: 0.7, movingLiters: 3.0,
+            averageL100: 20.7, movingAverageL100: 16.7, idleSharePercent: 28.0,
+            idleLitersPerHour: 2.2, lpgSharePercent: 96.0, avgMovingSpeedKph: 24.1,
+            // No peak for this day: the chart must leave it empty, not zero.
+            maxSpeedKnown: false, maxSpeedKph: null,
+          },
           {
             date: '2026-10-21', dateUnknown: false, tripCount: 29, mergedCount: 1,
             wallDurationSec: 60900, engineSeconds: 52200, movingSeconds: 40020,
@@ -273,11 +296,50 @@ const path = require('node:path');
   // 5. Switch to Day summaries -> renders both dated day and "Дата неизвестна" bucket
   await page.click('#tripsModeDays');
   await page.waitForSelector('#tripsDaysView', { state: 'visible' });
-  await page.waitForFunction(() => document.querySelectorAll('#tripDaysRows tr').length === 2);
+  await page.waitForFunction(() => document.querySelectorAll('#tripDaysRows tr').length === 4);
   const dayText = await page.textContent('#tripDaysRows');
   assert.match(dayText, /2026-10-21/);
   assert.match(dayText, /5\.22 л/);
   assert.match(dayText, /Дата неизвестна/);
+
+  // 5b. The charts read the same daily summary as the table, so a month can
+  //     never be a different number in two places. What is checked here is the
+  //     arithmetic the picture depends on and the two things that make a chart
+  //     lie: averaging averages, and drawing a missing peak as a zero.
+  await page.waitForFunction(() => document.querySelectorAll('#chartFuel rect').length > 0);
+  const summary = await page.textContent('#chartSummary');
+  // The dated days only: 18.0 + 72.6 + 710.5 = 801.1 km and
+  // 3.72 + 17.5 + 71.05 = 92.27 L. The undated bucket has no place on a date
+  // axis, and folding it in silently would make the month a different number
+  // from the sum of the days shown.
+  assert.match(summary, /801\.1 км/, `summary must sum the dated days, got: ${summary}`);
+  // 0.15 + 1.5 + 10.15 = 11.8 L petrol, 3.57 + 16.0 + 60.9 = 80.5 L gas.
+  assert.match(summary, /11\.8 л бензина/, `petrol must be summed, got: ${summary}`);
+  assert.match(summary, /80\.5 л газа/, `gas must be summed, got: ${summary}`);
+  assert.match(summary, /11\.5 л\/100 км/, `weighted month figure wrong: ${summary}`);
+  assert.match(summary, /дней без даты не показано: 1/, `undated days must be counted, got: ${summary}`);
+
+  const bars = await page.$$eval('#chartFuel rect', rs => rs.length);
+  assert.equal(bars, 3, 'three dated days have fuel, the undated one has no place on a date axis');
+  const points = await page.$$eval('#chartSpeed circle', rs => rs.length);
+  assert.equal(points, 2, 'the day without a peak must stay empty, not become a zero');
+  const speedPath = await page.$eval('#chartSpeed path', el => el.getAttribute('d'));
+  // Two separate sub-paths ("M x y" twice, no "L" joining them) because the
+  // middle day has no peak. A line drawn straight across it would invent a
+  // speed for a day the module never reported.
+  assert.equal((speedPath.match(/M/g) || []).length, 2,
+    `a gap in the series must break the line, got: ${speedPath}`);
+  assert.ok(!speedPath.includes('L'),
+    `the two isolated points must not be joined, got: ${speedPath}`);
+
+  // 5c. The window buttons re-read the same data instead of refetching it.
+  await page.click('.chartbtn[data-chart="7"]');
+  await page.waitForTimeout(120);
+  assert.match(await page.textContent('#chartSummary'), /дней/);
+  await page.click('.chartbtn[data-chart="90"]');
+  await page.waitForTimeout(120);
+  const ninety = await page.textContent('#chartSummary');
+  assert.match(ninety, /недель/, `a ninety-day window folds into weeks, got: ${ninety}`);
 
   // 6. Explicit UTC sync button sends ONLY {epochSec} and NEVER alters device utcOffsetMin (180)!
   await page.click('#syncClockBtn');

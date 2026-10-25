@@ -13,6 +13,7 @@
 #include "can_monitor.h"
 #include "did_store.h"
 #include "dtc_history_persistence.h"
+#include "service_refusal_store.h"
 #include "firmware_slots.h"
 #include "obd_client.h"
 #ifdef H2G_DIAGNOSTIC_BUILD
@@ -33,7 +34,8 @@ class ServicePortal {
                 PetrolCalibrationStore& petrolCalibrationStore,
                 RuntimePersistence& persistence,
                 DtcHistoryPersistence& dtcHistoryPersistence,
-                AssetStore& assets, LittleFsStorage& littleFs,
+                ServiceRefusalStore& serviceRefusals, AssetStore& assets,
+                LittleFsStorage& littleFs,
                 CanMonitor& canMonitor, ObdClient& obdClient,
                 BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics,
                 TripClock& tripClock, TripContextStore& tripContext,
@@ -46,7 +48,8 @@ class ServicePortal {
         tripStore_(tripStore),
         petrolCalibrationStore_(petrolCalibrationStore),
         persistence_(persistence), dtcHistoryPersistence_(dtcHistoryPersistence),
-        assets_(assets), littleFs_(littleFs), canMonitor_(canMonitor),
+        serviceRefusals_(serviceRefusals), assets_(assets),
+        littleFs_(littleFs), canMonitor_(canMonitor),
         obdClient_(obdClient),
         brightness_(brightness), otaDiagnostics_(otaDiagnostics),
         tripClock_(tripClock), tripContext_(tripContext),
@@ -99,6 +102,7 @@ class ServicePortal {
   void clearCanSnapshot();
   void sendDtcStatus();
   void startDtcScan();
+  void clearServiceMemo();
   void clearDtcs();
   // Read-only identifier scan. Four of these are mutations of the scanner's own
   // state, not of the vehicle or the settings, and all of them are confirmed
@@ -109,6 +113,7 @@ class ServicePortal {
   void startDidScan();
   void stopDidScan();
   void startDidSnapshot();
+  void startDidRetry();
   void clearDidStore();
   void pumpDidActivity(uint32_t now);
   void sendAssetStatus();
@@ -171,6 +176,7 @@ class ServicePortal {
   PetrolCalibrationStore& petrolCalibrationStore_;
   RuntimePersistence& persistence_;
   DtcHistoryPersistence& dtcHistoryPersistence_;
+  ServiceRefusalStore& serviceRefusals_;
   AssetStore& assets_;
   LittleFsStorage& littleFs_;
   CanMonitor& canMonitor_;
@@ -195,6 +201,7 @@ class ServicePortal {
   uint32_t lastTripsClearAt_ = 0;
   uint32_t lastCanSnapshotAt_ = 0;
   uint32_t lastDtcScanAt_ = 0;
+  uint32_t lastServiceMemoClearAt_ = 0;
   uint32_t lastDtcClearAt_ = 0;
   uint32_t lastDidActionAt_ = 0;
   DidStore didStore_;
@@ -204,6 +211,9 @@ class ServicePortal {
   static constexpr size_t kNoSnapshotSlot = 99;
   size_t activeSnapshotSlot_ = kNoSnapshotSlot;
   bool didRunActive_ = false;
+  // A target run started by the retry button files its answers as a retry of
+  // the identifiers that were silent, not as a snapshot and not as a sweep.
+  bool didRetryActive_ = false;
   uint32_t lastFactoryResetAt_ = 0;
   uint32_t lastLightResetAt_ = 0;
   uint32_t lastOtaAttemptAt_ = 0;

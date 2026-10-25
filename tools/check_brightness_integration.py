@@ -105,6 +105,23 @@ assert '/api/brightness/temporary' not in portal
 # Day and Night remain the only two brightness settings.
 assert 'brightnessDayValue' in ids and 'brightnessNightValue' in ids
 assert 'refreshLiveTelemetry(now' in main, "service status must refresh fuel mode/boost without counting a trip"
+# The boost peak belongs to one run of the engine. Two surfaces hold a peak - the
+# dial marker drawn by DashboardUI and the head unit's peakBoostBar - and both
+# must be cleared on the same edge, or the screen and the head unit can show
+# different peaks for the same drive. The long press on page 0 remains the manual
+# reset, which is why resetPeak() must appear exactly twice in main.cpp.
+assert ('engineRun.update(telemetry.rpm.valid(now), telemetry.rpm.value)'
+        in main), 'the RPM stream must feed the engine run detector'
+assert 'if (engineEdge == EngineRunDetector::Edge::Started) {' in main, \
+    'the peak reset must hang off the engine start edge'
+assert 'dashboard.resetPeak();' in main, 'the dial peak must be cleared on engine start'
+assert main.count('dashboard.resetPeak();') == 2, \
+    'resetPeak() must be called by the engine start and by the page-0 long press, and nowhere else'
+assert 'float staPeakBoostBar = 0.0f;' in main, 'the head unit peak must be a single holder'
+assert main.count('staPeakBoostBar = 0.0f;') == 2, \
+    'the head unit peak must be cleared once, on the engine start edge'
+assert 'engineWasRunning' not in main, \
+    'the single-sample engine latch was replaced by EngineRunDetector'
 compressed = bytes(int(h, 16) for h in re.findall(r'0x([0-9a-fA-F]{2})', embedded))
 assert gzip.decompress(compressed) == (ROOT / "web/index.html").read_bytes(), "embedded UI is stale"
 print(f"Brightness/config integration: UI/API validation, GPIO6/7, PWM startup, service updates, protected reset and {len(compressed)}-byte embedded gzip OK")

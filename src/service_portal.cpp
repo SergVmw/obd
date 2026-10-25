@@ -522,6 +522,12 @@ void ServicePortal::setupRoutes() {
              [this]() { startDtcScan(); });
   server_.on("/api/diagnostics/dtc/clear", HTTP_POST,
              [this]() { clearDtcs(); });
+  // Forgetting the memo is the only way back if a block ever starts supporting
+  // a service it once refused. It is a POST because it changes stored state,
+  // and it starts a fresh scan so that the answer is re-derived rather than
+  // assumed: the memo is only ever a cache of what the vehicle said.
+  server_.on("/api/diagnostics/dtc/service-memo/clear", HTTP_POST,
+             [this]() { clearServiceMemo(); });
 
   // Read-only manufacturer identifier scan. Same server, same port, same AP:
   // the recovery invariant of this portal is that service mode brings up
@@ -533,6 +539,7 @@ void ServicePortal::setupRoutes() {
   server_.on("/api/dids/stop", HTTP_POST, [this]() { stopDidScan(); });
   server_.on("/api/dids/snapshot", HTTP_POST,
              [this]() { startDidSnapshot(); });
+  server_.on("/api/dids/retry", HTTP_POST, [this]() { startDidRetry(); });
   server_.on("/api/dids/clear", HTTP_POST, [this]() { clearDidStore(); });
 
   server_.on("/api/baro/capture", HTTP_POST, [this]() {
@@ -593,6 +600,10 @@ void ServicePortal::setupRoutes() {
     const bool dtcHistoryOk =
         dtcHistoryPersistence_.factoryReset(resetDtcHistory);
     obdClient_.restoreDtcHistory(resetDtcHistory);
+    // Factory reset means the vehicle is asked again from scratch. Leaving the
+    // memo in place would carry a judgement about the old install into a build
+    // that may be scanned against a different car.
+    serviceRefusals_.clear();
     tripBoundary_.reset();
     const bool clockOk = tripClock_.factoryReset();
     const bool tripCtxOk =
@@ -1745,6 +1756,24 @@ void ServicePortal::sendStatus() {
     trims["warning"] = telemetry_.fuelTrimWarning;
   }
   doc["voltage"] = telemetry_.ecuVoltage.valid(now) ? telemetry_.ecuVoltage.value : 0.0f;
+  // Null, not zero, when the parameter has not been read or has gone stale.
+  // Zero degrees of advance is a real value on this engine and printing it for
+  // "no answer yet" would be indistinguishable from a measurement.
+  if (telemetry_.timingAdvanceDeg.valid(now, 5000)) {
+    doc["timingAdvanceDeg"] = telemetry_.timingAdvanceDeg.value;
+  } else {
+    doc["timingAdvanceDeg"] = nullptr;
+  }
+  if (telemetry_.o2Sensor2Voltage.valid(now, 5000)) {
+    doc["downstreamO2V"] = telemetry_.o2Sensor2Voltage.value;
+  } else {
+    doc["downstreamO2V"] = nullptr;
+  }
+  if (telemetry_.evapPurgePercent.valid(now, 5000)) {
+    doc["evapPurgePct"] = telemetry_.evapPurgePercent.value;
+  } else {
+    doc["evapPurgePct"] = nullptr;
+  }
   doc["responses"] = telemetry_.obdResponseCount;
   // Empty rather than a placeholder string while the one-shot request has not
   // answered, so the portal can show a dash and the client can tell "not read
@@ -1800,6 +1829,18 @@ void ServicePortal::sendStatus() {
   }
   dtc["firstCode"] = firstCode;
   dtc["scanInProgress"] = telemetry_.dtcScanInProgress;
+  dtc["readinessKnown"] = telemetry_.dtcReadinessKnown;
+  dtc["readinessSupported"] = telemetry_.dtcReadinessSupported;
+  dtc["readinessComplete"] = telemetry_.dtcReadinessComplete;
+  {
+    JsonArray refused = dtc["refusedServices"].to<JsonArray>();
+    for (uint16_t service = 0; service <= 0xFF; ++service) {
+      if (!serviceRefusals_.refused(static_cast<uint8_t>(service))) continue;
+      char text[8];
+      snprintf(text, sizeof(text), "0x%02X", service);
+      refused.add(text);
+    }
+  }
 
   JsonObject persistence = doc["persistence"].to<JsonObject>();
   persistence["littlefsMounted"] = littleFs_.mounted();
@@ -2571,6 +2612,59 @@ void ServicePortal::sendDtcStatus() {
   scan["responsePending"] = state.responsePending;
   scan["responsePendingCount"] = state.responsePendingCount;
 
+  // Readiness, decoded from the three bytes that used to be discarded. The
+  // list is emitted with its own names so the portal does not keep a second
+  // copy of the J1979 bit map - two copies of a bit map is two chances to be
+  // wrong about which bit means what.
+  JsonObject readiness = doc["readiness"].to<JsonObject>();
+  readiness["known"] = state.readinessKnown;
+  readiness["sparkIgnition"] = ObdDiagnostics::sparkIgnition(state.monitorDataB);
+  readiness["updatedAgeMs"] = state.readinessUpdatedAt != 0
+                                  ? static_cast<int64_t>(now - state.readinessUpdatedAt)
+                                  : -1;
+  if (state.readinessKnown) {
+    char rawText[16];
+    snprintf(rawText, sizeof(rawText), "%02X %02X %02X", state.monitorDataB,
+             state.monitorDataC, state.monitorDataD);
+    readiness["raw"] = rawText;
+  } else {
+    readiness["raw"] = nullptr;
+  }
+  JsonArray monitors = readiness["monitors"].to<JsonArray>();
+  {
+    DtcMonitorStatus decoded[16];
+    size_t decodedCount = 0;
+    ObdDiagnostics::decodeReadiness(state.monitorDataB, state.monitorDataC,
+                                    state.monitorDataD, decoded,
+                                    sizeof(decoded) / sizeof(decoded[0]),
+                                    decodedCount);
+    for (size_t i = 0; i < decodedCount; ++i) {
+      JsonObject monitor = monitors.add<JsonObject>();
+      monitor["id"] = decoded[i].id;
+      monitor["name"] = decoded[i].nameRu;
+      monitor["supported"] = decoded[i].supported;
+      monitor["complete"] = decoded[i].complete;
+    }
+  }
+
+  JsonObject memo = doc["serviceMemo"].to<JsonObject>();
+  memo["storageHealthy"] = serviceRefusals_.storageHealthy();
+  memo["source"] = serviceRefusals_.source();
+  memo["restoredFromFlash"] = serviceRefusals_.restoredFromFlash();
+  memo["count"] = serviceRefusals_.refusedCount();
+  memo["writes"] = serviceRefusals_.writes();
+  memo["failures"] = serviceRefusals_.failures();
+  memo["mask"] = serviceRefusals_.refusedMask();
+  {
+    JsonArray services = memo["services"].to<JsonArray>();
+    for (uint16_t service = 0; service <= 0xFF; ++service) {
+      if (!serviceRefusals_.refused(static_cast<uint8_t>(service))) continue;
+      char text[8];
+      snprintf(text, sizeof(text), "0x%02X", service);
+      services.add(text);
+    }
+  }
+
   JsonObject raw = scan["rawResponses"].to<JsonObject>();
   appendRawResponseJson(raw, "stored", state.rawResponse[0],
                         state.rawResponseLength[0]);
@@ -2632,6 +2726,52 @@ void ServicePortal::sendDtcStatus() {
     item["occurrenceCount"] = entry.occurrenceCount;
     item["firstChangeSequence"] = entry.firstChangeSequence;
     item["lastChangeSequence"] = entry.lastChangeSequence;
+    if (entry.firstSeenEpoch != 0) item["firstSeenEpoch"] = entry.firstSeenEpoch;
+    else item["firstSeenEpoch"] = nullptr;
+    if (entry.lastSeenEpoch != 0) item["lastSeenEpoch"] = entry.lastSeenEpoch;
+    else item["lastSeenEpoch"] = nullptr;
+    JsonObject condition = item["condition"].to<JsonObject>();
+    condition["valid"] = entry.condition.valid;
+    if (entry.condition.has(DtcCondition::kSpeed)) {
+      condition["speedKph"] = entry.condition.speedKph10 / 10.0f;
+    } else {
+      condition["speedKph"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kRpm)) {
+      condition["rpm"] = static_cast<int>(entry.condition.rpm);
+    } else {
+      condition["rpm"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kMap)) {
+      condition["mapKpa"] = entry.condition.mapKpa10 / 10.0f;
+    } else {
+      condition["mapKpa"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kCoolant)) {
+      condition["coolantC"] = entry.condition.coolantC10 / 10.0f;
+    } else {
+      condition["coolantC"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kIntake)) {
+      condition["intakeC"] = entry.condition.intakeC10 / 10.0f;
+    } else {
+      condition["intakeC"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kLoad)) {
+      condition["loadPct"] = entry.condition.loadPct10 / 10.0f;
+    } else {
+      condition["loadPct"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kShortTrim)) {
+      condition["shortTrimPct"] = entry.condition.shortTrimPct100 / 100.0f;
+    } else {
+      condition["shortTrimPct"] = nullptr;
+    }
+    if (entry.condition.has(DtcCondition::kLongTrim)) {
+      condition["longTrimPct"] = entry.condition.longTrimPct100 / 100.0f;
+    } else {
+      condition["longTrimPct"] = nullptr;
+    }
     JsonArray seenKinds = item["seenKinds"].to<JsonArray>();
     JsonArray lastKnownKinds = item["lastKnownPresentKinds"].to<JsonArray>();
     if ((entry.seenKinds & DtcHistoryStored) != 0) seenKinds.add("stored");
@@ -2705,6 +2845,28 @@ void ServicePortal::startDtcScan() {
   }
   server_.send(202, "application/json",
                "{\"ok\":true,\"accepted\":true,\"operation\":\"scanning\"}");
+}
+
+void ServicePortal::clearServiceMemo() {
+  touch();
+  if (obdClient_.diagnosticsState().operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  if (!requireAction("dtc-service-memo", lastServiceMemoClearAt_, 2000)) return;
+  const size_t before = serviceRefusals_.refusedCount();
+  serviceRefusals_.clear();
+  const bool scanStarted = obdClient_.requestDtcScan(millis());
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["forgotten"] = static_cast<uint32_t>(before);
+  doc["storageHealthy"] = serviceRefusals_.storageHealthy();
+  doc["scanStarted"] = scanStarted;
+  char body[160];
+  const size_t written = serializeJson(doc, body, sizeof(body));
+  server_.send(scanStarted ? 202 : 409, "application/json",
+               String(body, written));
 }
 
 void ServicePortal::clearDtcs() {
@@ -2843,6 +3005,13 @@ void ServicePortal::pumpDidActivity(uint32_t now) {
           state == DidExplorer::State::Stopped) {
         stored = didStore_.recordScan(explorer, now);
       }
+    } else if (didRetryActive_) {
+      // A retry is a sweep too, just a short one over the identifiers that were
+      // silent. What it answered joins the record and leaves the retry list.
+      if (state == DidExplorer::State::Finished ||
+          state == DidExplorer::State::Stopped) {
+        stored = didStore_.recordRetry(explorer, now);
+      }
     } else if (activeSnapshotSlot_ < DidStore::kSlots) {
       const uint32_t rtcSec = currentRtcSec();
       didStore_.finishSnapshot(activeSnapshotSlot_, now,
@@ -2850,6 +3019,7 @@ void ServicePortal::pumpDidActivity(uint32_t now) {
       stored = true;
     }
     activeSnapshotSlot_ = kNoSnapshotSlot;
+    didRetryActive_ = false;
     if (stored && !didStore_.save()) {
       ESP_LOGE(kTag, "Identifier store write failed: %s", didStore_.statusName());
     }
@@ -2891,9 +3061,19 @@ void ServicePortal::sendDidExport() {
 
   h2gjson::JsonBuf buffer(4096);
   didStore_.writeJson(buffer, true, &live);
+  // The name has to be the moment the file was taken, not the position of the
+  // RTC counter: an eight-digit number that means nothing to the owner makes
+  // the export impossible to sort or to match against a log. The synced clock is
+  // the only source that says what time it is; when it has not been synced yet
+  // the honest name says so instead of inventing a number.
   char filename[48];
-  snprintf(filename, sizeof(filename), "h2g-dids-%lu.json",
-           static_cast<unsigned long>(currentRtcSec()));
+  const uint32_t epochSec = tripClock_.nowEpochSec(currentRtcSec());
+  if (epochSec != 0) {
+    snprintf(filename, sizeof(filename), "h2g-dids-%lu.json",
+             static_cast<unsigned long>(epochSec));
+  } else {
+    snprintf(filename, sizeof(filename), "h2g-dids-unsynced-clock.json");
+  }
   server_.sendHeader("Cache-Control", "no-store");
   server_.sendHeader("Content-Disposition",
                      String("attachment; filename=\"") + filename + "\"");
@@ -3065,6 +3245,73 @@ void ServicePortal::startDidSnapshot() {
   snprintf(reply, sizeof(reply),
            "{\"ok\":true,\"accepted\":true,\"slot\":\"%s\",\"targets\":%lu}",
            DidStore::slotName(slot), static_cast<unsigned long>(count));
+  server_.send(202, "application/json", reply);
+}
+
+void ServicePortal::startDidRetry() {
+  touch();
+  if (!requireAction("did-retry", lastDidActionAt_, kDidActionCooldownMs)) {
+    return;
+  }
+  DidExplorer& explorer = obdClient_.didExplorer();
+  if (explorer.running()) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"identifier scan already running\"}");
+    return;
+  }
+  if (obdClient_.diagnosticsState().operation != DtcOperation::Idle) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"diagnostic operation already in progress\"}");
+    return;
+  }
+  JsonDocument request;
+  if (deserializeJson(request, server_.arg("plain"))) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"JSON body required\"}");
+    return;
+  }
+  uint32_t requestId = 0;
+  if (!readResponder(request["ecu"], requestId)) {
+    server_.send(422, "application/json",
+                 "{\"error\":\"ecu must be engine or gearbox\"}");
+    return;
+  }
+  // The silent identifiers of the last sweep, in the order the sweep visited
+  // them: a retry asks the module about exactly the ones that gave it nothing,
+  // because everything else is already in the record.
+  uint16_t targets[DidStore::kMaxSnapshotEntries] = {0};
+  const size_t count =
+      didStore_.collectSilentTargets(static_cast<uint16_t>(requestId), targets,
+                                     DidStore::kMaxSnapshotEntries);
+  if (count == 0) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"nothing to retry: no identifier was silent\"}");
+    return;
+  }
+  const DidStore::Ecu* ecu = requestId == 0x7E0 ? didStore_.engine()
+                                                : didStore_.gearbox();
+  DidExplorer::Config config;
+  config.requestId = requestId;
+  config.responseId = requestId + 8;
+  config.service = ecu != nullptr ? ecu->service : 0x22;
+  config.extendedSession = false;
+  if (request["session"].is<const char*>()) {
+    const char* session = request["session"].as<const char*>();
+    if (session != nullptr && strcmp(session, "extended") == 0) {
+      config.extendedSession = true;
+    }
+  }
+  if (!explorer.startTargets(config, targets, count, millis())) {
+    server_.send(409, "application/json",
+                 "{\"error\":\"retry could not be started\"}");
+    return;
+  }
+  didRetryActive_ = true;
+  didRunActive_ = true;
+  char reply[96];
+  snprintf(reply, sizeof(reply),
+           "{\"ok\":true,\"accepted\":true,\"targets\":%lu}",
+           static_cast<unsigned long>(count));
   server_.send(202, "application/json", reply);
 }
 

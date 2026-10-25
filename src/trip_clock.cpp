@@ -1,4 +1,5 @@
 #include "trip_clock.h"
+#include "dtc_history.h"
 
 #include <cstdio>
 #include <cstring>
@@ -36,6 +37,15 @@ uint32_t getLe32(const uint8_t* src) {
          (static_cast<uint32_t>(src[3]) << 24);
 }
 }  // namespace
+
+uint32_t tripClockEpochNow(void* context) {
+  static_assert(kDtcHistoryMinEpochSec == TripClock::kMinPlausibleEpochSec,
+                "DTC history and trip clock disagree on the epoch floor");
+  if (context == nullptr) return 0;
+  auto* clock = static_cast<TripClock*>(context);
+  const uint32_t epoch = clock->nowEpochSec(currentRtcSec());
+  return epoch >= TripClock::kMinPlausibleEpochSec ? epoch : 0;
+}
 
 TripLocalDateTime epochToLocalDateTime(uint32_t epochSec,
                                        int16_t utcOffsetMin) {
