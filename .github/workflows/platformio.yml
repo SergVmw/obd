@@ -66,6 +66,7 @@ jobs:
           python tools/check_trace_schema.py
           python tools/check_pid_support_report.py
           python tools/check_pid_names.py
+          python tools/check_production_profile.py
           python tools/check_trip_history_integration.py
           python tools/check_sta_readonly_integration.py
           python tools/check_ci_coverage.py
