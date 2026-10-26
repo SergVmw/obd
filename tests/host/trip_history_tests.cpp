@@ -241,6 +241,59 @@ void testWhicheverComesFirstBoundaryAndShortMoveMerge() {
   }
 }
 
+// The dump carries these numbers so that "the trip did not close" can be
+// answered from one snapshot instead of from a guess. The pair that matters is
+// parkedSinceRtcSec against the RTC: after a power cycle they come from
+// different lives, and a stored value ahead of the running clock means the
+// window can never expire however long the vehicle stands. That is the same
+// arithmetic the close is built on, asserted here so that what the dump shows
+// can be read without the source open.
+void testBoundarySnapshotReportsTheCloseArithmetic() {
+  {
+    TripBoundary b;
+    const TripBoundary::Snapshot fresh = b.snapshot();
+    CHECK(!fresh.hasRun);
+    CHECK(!fresh.sawConfirmedStop);
+    CHECK(!fresh.inParkedWindow);
+    CHECK(!fresh.gapCheckedThisWindow);
+    CHECK(!fresh.heldOpenAcrossPause);
+    CHECK(fresh.parkedSinceRtcSec == 0);
+  }
+
+  // A recovered open trip is seeded as already parked, at the last moment the
+  // engine ran. That value is persisted, so it survives the power cycle that
+  // resets the RTC.
+  TripBoundary b;
+  b.seedRecoveredOpenTrip(true, 9000);
+  const TripBoundary::Snapshot seeded = b.snapshot();
+  CHECK(seeded.hasRun);
+  CHECK(seeded.sawConfirmedStop);
+  CHECK(seeded.inParkedWindow);
+  CHECK(seeded.parkedSinceRtcSec == 9000);
+
+  // An RTC that restarted below that value cannot satisfy the comparison, and
+  // the boundary keeps saying None: at 901 s, at 8 600 s, indefinitely. The
+  // distance here is 10.9 km, so the 100 m floor is not what holds it open.
+  CHECK(b.update(901, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
+        TripBoundaryAction::None);
+  CHECK(b.update(8600, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
+        TripBoundaryAction::None);
+  CHECK(b.snapshot().hasRun);
+  CHECK(b.snapshot().inParkedWindow);
+
+  // Moving is what clears it: the window closes, and the next one is opened
+  // from the running clock, which is why the first drive after such a boot
+  // closes the trip normally.
+  CHECK(b.update(8700, false, 0.0f, true, 40.0f, 10.9, 5, 100) ==
+        TripBoundaryAction::None);
+  CHECK(!b.snapshot().inParkedWindow);
+  CHECK(b.update(8800, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
+        TripBoundaryAction::None);
+  CHECK(b.snapshot().parkedSinceRtcSec == 8800);
+  CHECK(b.update(9100, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
+        TripBoundaryAction::CloseByGap);
+}
+
 void testCodec148ByteExactOffsetsAndFrozenTripState() {
   static_assert(sizeof(TripState) == 88, "TripState must stay frozen at 88 B");
   static_assert(PersistenceSnapshot::kSchema == 1,
@@ -957,6 +1010,8 @@ int main() {
            testClockSyncPersistenceAndPowerLossInvalidation);
   runGroup("whichever-comes-first boundary, sleep wake into running engine and <100 m merge",
            testWhicheverComesFirstBoundaryAndShortMoveMerge);
+  runGroup("boundary snapshot reports the close arithmetic the dump shows",
+           testBoundarySnapshotReportsTheCloseArithmetic);
   runGroup("148-byte TripRecord exact byte layout and frozen 88-byte TripState",
            testCodec148ByteExactOffsetsAndFrozenTripState);
   runGroup("open-trip warm-up, true rawSpeedKph peak, pre-upgrade trip and past-K immutability",

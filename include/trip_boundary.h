@@ -27,6 +27,35 @@ class TripBoundary {
 
   bool heldOpenAcrossPause() const { return heldOpenAcrossPause_; }
 
+  // Read-only view of the parked-window arithmetic, for the diagnostics dump.
+  //
+  // The gap close compares two clock values that come from different lives:
+  // the RTC restarts with the power, while parkedSinceRtcSec_ can come back
+  // from NVS through seedRecoveredOpenTrip(). When that comparison cannot
+  // hold - rtcNowSec smaller than the stored value - the window never expires
+  // and the trip simply stays open, with nothing anywhere saying why. These
+  // are the numbers that decide it, and a dump without them cannot separate a
+  // boundary that never ran from one whose comparison never held.
+  struct Snapshot {
+    uint32_t parkedSinceRtcSec = 0;
+    bool hasRun = false;
+    bool sawConfirmedStop = false;
+    bool inParkedWindow = false;
+    bool gapCheckedThisWindow = false;
+    bool heldOpenAcrossPause = false;
+  };
+
+  Snapshot snapshot() const {
+    Snapshot out;
+    out.parkedSinceRtcSec = parkedSinceRtcSec_;
+    out.hasRun = hasRun_;
+    out.sawConfirmedStop = sawConfirmedStop_;
+    out.inParkedWindow = inParkedWindow_;
+    out.gapCheckedThisWindow = gapCheckedThisWindow_;
+    out.heldOpenAcrossPause = heldOpenAcrossPause_;
+    return out;
+  }
+
  private:
   bool hasRun_ = false;
   bool sawConfirmedStop_ = false;

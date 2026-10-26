@@ -875,6 +875,23 @@ void ObdClient::parseResponse(const twai_message_t& message, uint32_t now) {
     case 0x01:
       if (payloadLength >= 6) {
         diagnostics_.observeMonitorStatus(a, now, message.identifier);
+        // The same four bytes again, this time for the three the lamp and the
+        // count do not use.
+        //
+        // Readiness used to be filled from one place only: the monitor request
+        // that opens the engine-discovery chain. That request is sent while the
+        // engine ECU is still unidentified, and identification completes from
+        // ordinary polling within seconds of the first answer, so on a car
+        // whose block is already known the chain never runs and this page
+        // stayed empty for the whole life of the install - measured here as
+        // readinessKnown false with monitorAgeMs 104, i.e. with the very frame
+        // below arriving twice a second.
+        //
+        // observeReadiness carries the same acceptsEngineResponse guard as
+        // observeMonitorStatus above, so a transmission block that also answers
+        // PID 01 cannot relabel the engine's monitors.
+        diagnostics_.observeReadiness(&message.data[3], payloadLength - 2U, now,
+                                      message.identifier);
       }
       break;
     case 0x05:

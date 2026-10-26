@@ -2868,6 +2868,47 @@ void ServicePortal::sendDtcStatus() {
                          state.engineEcuLocked &&
                          !state.postClearVerificationPending;
 
+  // The trip-boundary arithmetic, in the numbers that decide it.
+  //
+  // A trip that never closes leaves no trace anywhere: the history simply
+  // reports zero writes, which is exactly what a gauge that has not driven
+  // looks like too. The gap close compares an RTC value that restarts with the
+  // power against a parkedSinceRtcSec_ that can arrive from NVS in
+  // seedRecoveredOpenTrip(), so the one thing a dump cannot otherwise show is
+  // whether that comparison held. gapElapsedSec is null exactly when it cannot:
+  // rtcNowSec is behind the stored value, the window never expires, and no
+  // close is decided until the vehicle moves and a new window is opened from
+  // the current clock.
+  {
+    const uint32_t rtcNow = currentRtcSec();
+    const TripBoundary::Snapshot boundary = tripBoundary_.snapshot();
+    const TripContextData& context = tripContext_.data();
+    const ConfigData& config = configStore_.data();
+    JsonObject b = doc["boundary"].to<JsonObject>();
+    b["rtcNowSec"] = rtcNow;
+    b["rtcStartSec"] = context.startRtcSec;
+    b["rtcLastActiveSec"] = context.lastActiveRtcSec;
+    b["parkedSinceRtcSec"] = boundary.parkedSinceRtcSec;
+    b["gapThresholdSec"] =
+        static_cast<uint32_t>(config.tripGapMin) * 60UL;
+    if (rtcNow >= boundary.parkedSinceRtcSec) {
+      b["gapElapsedSec"] = rtcNow - boundary.parkedSinceRtcSec;
+    } else {
+      // Not "zero": the comparison the close is built on does not hold.
+      b["gapElapsedSec"] = nullptr;
+    }
+    b["distanceM"] = engine_.trip().totalDistanceKm * 1000.0;
+    b["minDistanceM"] = config.tripMinDistanceM;
+    b["hasRun"] = boundary.hasRun;
+    b["sawConfirmedStop"] = boundary.sawConfirmedStop;
+    b["inParkedWindow"] = boundary.inParkedWindow;
+    b["gapCheckedThisWindow"] = boundary.gapCheckedThisWindow;
+    b["heldOpenAcrossPause"] = boundary.heldOpenAcrossPause;
+    b["startEpochSec"] = context.startEpochSec;
+    b["historyWrites"] = tripHistory_.writeCount();
+    b["historyFailures"] = tripHistory_.failureCount();
+  }
+
   String output;
   output.reserve(12288);
   serializeJson(doc, output);

@@ -21,6 +21,34 @@ embedded = (ROOT / "src/web_ui_gz.h").read_text(encoding="utf-8")
 
 assert "{0x01, 500}" in client_h, "MIL PID 01 must be polled at 500 ms"
 assert "diagnostics_.observeMonitorStatus" in client
+
+
+# Readiness has to be filled from the polled PID 01 answer, not only from the
+# discovery chain. The chain's monitor request is skipped whenever the engine
+# ECU is already identified, which is every install after its first seconds, so
+# that single source left the page empty for good: measured as readinessKnown
+# false with monitorAgeMs 104 on a real car.
+#
+# Comments are stripped first. This file already passed once on a
+# commented-out line (see section 18e of the project notes), and the assertion
+# below is about a call that must actually run.
+def code_only(text):
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+client_code = code_only(client)
+assert re.search(
+    r"diagnostics_\.observeReadiness\(\s*&message\.data\[3\],\s*"
+    r"payloadLength\s*-\s*2U", client_code), \
+    "the polled PID 01 answer must also fill readiness"
+assert client_code.count("observeReadiness(") == 1, \
+    "readiness is filled from one place: the PID 01 decode in handleFrame"
+assert re.search(r"if \(payloadLength >= 6\) \{\s*"
+                 r"diagnostics_\.observeMonitorStatus\(a, now, message\.identifier\);",
+                 client_code), \
+    "readiness must stay behind the same four-byte guard as the lamp"
+assert "observeReadiness(payload + 2" in code_only(diag)
 for service in ("ReadStored", "ReadPending", "ReadPermanent"):
     assert service in diag_h and service in diag
 for value in ("case Request::ReadStored: return 0x03", "case Request::ReadPending: return 0x07",
@@ -245,6 +273,30 @@ assert "telemetry_.dtcReadinessSupported" in diag
 assert 'dtc["readinessSupported"]' in portal
 assert 'readiness["monitors"]' in portal
 assert "readinessSupported" in (ROOT / "src/sta_readonly.cpp").read_text(encoding="utf-8")
+
+# The trip-boundary view in the same dump. A trip that never closes leaves no
+# trace anywhere else: the history reports zero writes, which is also what a
+# gauge that has not driven looks like. The numbers below are what separates
+# the two, so they have to be in the answer and not merely in the state.
+portal_code = code_only(portal)
+boundary_hdr = (ROOT / "include/trip_boundary.h").read_text(encoding="utf-8")
+assert "struct Snapshot" in boundary_hdr and "Snapshot snapshot() const" in boundary_hdr
+for member in ("parkedSinceRtcSec", "hasRun", "sawConfirmedStop",
+               "inParkedWindow", "gapCheckedThisWindow",
+               "heldOpenAcrossPause"):
+    assert re.search(r"out\.%s\s*=" % member, boundary_hdr), \
+        "the snapshot must carry %s" % member
+for key in ("rtcNowSec", "rtcStartSec", "rtcLastActiveSec", "parkedSinceRtcSec",
+            "gapThresholdSec", "gapElapsedSec", "distanceM", "minDistanceM",
+            "hasRun", "sawConfirmedStop", "inParkedWindow",
+            "gapCheckedThisWindow", "heldOpenAcrossPause", "startEpochSec",
+            "historyWrites", "historyFailures"):
+    assert re.search(r'b\["%s"\]\s*=' % key, portal_code), \
+        "the boundary view must report %s" % key
+assert re.search(r"if \(rtcNow >= boundary\.parkedSinceRtcSec\) \{", portal_code), \
+    "the view must report the same comparison the close is built on"
+assert re.search(r"b\[\"gapElapsedSec\"\] = nullptr;", portal_code), \
+    "a gap the clock cannot express must be null, never zero"
 
 # Service memo: only 03/07/0A may be remembered, NRC 0x11 is the only code that
 # is, and the scan must skip a service whose answer is known.

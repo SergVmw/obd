@@ -752,6 +752,71 @@ void testFuelSystemStatusSurvivesEveryBitPattern() {
   }
 }
 
+// Readiness lives in bytes B, C and D of the PID 01 answer, which is the one
+// frame the poller decodes twice a second for the lamp and the DTC count. It
+// used to be filled only by the monitor request that opens the engine-discovery
+// chain, and that request is skipped for every car whose engine ECU is already
+// identified - which is every car after its first few seconds. The result was a
+// readiness page that could never fill: 41 01 arriving with a two-digit
+// monitorAgeMs while readinessUpdatedAt stayed at zero.
+void testReadinessIsFilledFromThePolledMonitorAnswer() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x01);
+  CHECK(rig.awaitingPid(0x01, 0x01));
+  CHECK(!rig.client.diagnosticsState().readinessKnown);
+
+  // Lamp off, no codes, B = 0x07, C = 0xE5, D = 0x00 - the byte pattern this
+  // vehicle's ME17 answers with.
+  const uint8_t answer[] = {0x06, 0x41, 0x01, 0x00, 0x07, 0xE5, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, answer, sizeof(answer)));
+  rig.deliver();
+
+  const ObdDiagnosticsState& state = rig.client.diagnosticsState();
+  CHECK(state.milKnown);
+  CHECK(!state.milCommanded);
+  CHECK(state.ecuReportedDtcCount == 0);
+  CHECK(state.readinessKnown);
+  CHECK(state.monitorDataB == 0x07);
+  CHECK(state.monitorDataC == 0xE5);
+  CHECK(state.monitorDataD == 0x00);
+  CHECK(state.readinessUpdatedAt != 0);
+}
+
+// The same frame answered by a block that is not the engine must not relabel
+// the engine's monitors. The transmission block answers PID 01 as well, and
+// Mode 01 goes out to the functional address, so both answers arrive here; the
+// acceptsEngineResponse guard is what separates them, and it has to hold on
+// this path too because this path now writes state that used to be written only
+// by a request addressed to one block.
+void testReadinessIgnoresAnUnidentifiedBlock() {
+  Rig rig;
+  rig.identifyEngine();
+
+  rig.pumpUntilPidPending(0x01, 0x01);
+  const uint8_t engine[] = {0x06, 0x41, 0x01, 0x00, 0x07, 0xE5, 0x00};
+  h2g_twai_stub::queueRx(fromEcu(0x7E8, engine, sizeof(engine)));
+  rig.deliver();
+
+  const ObdDiagnosticsState& first = rig.client.diagnosticsState();
+  CHECK(first.readinessKnown);
+  CHECK(first.monitorDataB == 0x07);
+  CHECK(first.monitorDataC == 0xE5);
+
+  // A different three bytes from the other responder, on the same parameter.
+  rig.pumpUntilPidPending(0x01, 0x01);
+  const uint8_t other[] = {0x06, 0x41, 0x01, 0x00, 0xFF, 0xFF, 0xFF};
+  h2g_twai_stub::queueRx(fromEcu(0x7E9, other, sizeof(other)));
+  rig.deliver();
+
+  const ObdDiagnosticsState& state = rig.client.diagnosticsState();
+  CHECK(state.readinessKnown);
+  CHECK(state.monitorDataB == 0x07);
+  CHECK(state.monitorDataC == 0xE5);
+  CHECK(state.monitorDataD == 0x00);
+}
+
 // PID 14's two bytes are both kept raw. The voltage conversion is deliberately
 // not done here: 0.00495 V per bit is J1979's arithmetic, and doing it in the
 // telemetry layer would bury it where a wrong scaling would look like a failed
@@ -1702,6 +1767,10 @@ int main() {
        testFuelSystemStatusKeepsTheWholeByte);
   test("every PID 03 bit pattern survives",
        testFuelSystemStatusSurvivesEveryBitPattern);
+  test("readiness is filled from the polled monitor answer",
+       testReadinessIsFilledFromThePolledMonitorAnswer);
+  test("readiness ignores an unidentified block",
+       testReadinessIgnoresAnUnidentifiedBlock);
   test("PID 14 keeps both bytes raw", testO2KeepsBothBytesRaw);
   test("a short PID 14 answer changes nothing",
        testShortO2AnswerChangesNothing);
