@@ -23,6 +23,7 @@
 #include "probe_png.h"
 #include "sta_readonly.h"
 #include "storage_mutex.h"
+#include "storage_timing.h"
 #include "telemetry.h"
 #include "trip_boundary.h"
 #include "trip_clock.h"
@@ -982,6 +983,54 @@ bool LittleFsStorage::begin() {
   return true;
 }
 
+// The counters behind /api/status.storage. Nothing here is clever, which is the
+// point: the numbers are only worth reading if "max" is a max and "count" counts,
+// and a reset that leaves a stale maximum behind would hide the very spike the
+// field exists to expose.
+void testStorageTimingCounters() {
+  resetStorageTiming();
+  StorageTimingStats& s = storageTiming();
+  CHECK(s.readCount == 0 && s.readMaxMs == 0 && s.loopMaxMs == 0);
+
+  // A wait and a read are recorded apart, and each keeps its own maximum.
+  noteStorageRead(3, 120);
+  noteStorageRead(40, 90);
+  noteStorageRead(5, 400);
+  CHECK(s.readCount == 3);
+  CHECK(s.readWaitMaxMs == 40);
+  CHECK(s.readWaitLastMs == 5);
+  CHECK(s.readMaxMs == 400);
+  CHECK(s.readLastMs == 400);
+
+  // Equal values must not disturb the maxima, and a smaller one must not lower
+  // them.
+  noteStorageRead(40, 400);
+  CHECK(s.readCount == 4);
+  CHECK(s.readWaitMaxMs == 40);
+  CHECK(s.readMaxMs == 400);
+  noteStorageRead(1, 1);
+  CHECK(s.readWaitMaxMs == 40);
+  CHECK(s.readMaxMs == 400);
+
+  noteLoopPeriod(12);
+  noteLoopPeriod(250);
+  noteLoopPeriod(11);
+  CHECK(s.loopMaxMs == 250);
+  CHECK(s.loopLastMs == 11);
+
+  // A reset clears everything, including the maxima.
+  resetStorageTiming();
+  CHECK(s.readCount == 0 && s.readMaxMs == 0 && s.readWaitMaxMs == 0);
+  CHECK(s.loopMaxMs == 0 && s.loopLastMs == 0);
+
+  // On the host the clock is a constant zero - the counters still increment, so
+  // the call sites are exercised by this very suite rather than skipped.
+  CHECK(storageTimingNowMs() == 0);
+  noteStorageRead(storageTimingNowMs(), storageTimingNowMs());
+  CHECK(storageTiming().readCount == 1);
+  resetStorageTiming();
+}
+
 int main(int argc, char** argv) {
   const char* dumpDir = argc > 1 ? argv[1] : "";
   StorageLock nestedOuter;
@@ -994,7 +1043,8 @@ int main(int argc, char** argv) {
   testStrictReadOnlyHttpWireParserAndAttackSurface();
   testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(dumpDir);
   testServicePortalIsolationBindGuardsAndDualCoreRaceFuzzer();
+  testStorageTimingCounters();
 
-  std::printf("\nAll 7 ASan/UBSan STA Read-Only test suites passed.\n");
+  std::printf("\nAll 8 ASan/UBSan STA Read-Only test suites passed.\n");
   return 0;
 }

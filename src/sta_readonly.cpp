@@ -12,6 +12,7 @@
 #include "json_writer.h"
 #include "headunit_web_ui_gz.h"
 #include "storage_mutex.h"
+#include "storage_timing.h"
 #include "version.h"
 
 #if defined(ESP32) && !defined(H2G_HOST_TESTS)
@@ -386,11 +387,17 @@ void writeTripsJson(size_t offset, size_t limit, const TripHistory& tripHistory,
   bool healthy = false;
   uint32_t headSeq = 0;
   {
+    // The lock is timed apart from the read: waiting means the Wi-Fi task holds
+    // it, taking long means the archive itself costs that much.
+    const uint32_t lockStartMs = storageTimingNowMs();
     StorageLock lock;
+    const uint32_t lockedAtMs = storageTimingNowMs();
     ready = tripHistory.ready();
     healthy = tripHistory.healthy();
     headSeq = tripHistory.headSequence();
     tripHistory.readPage(offset, limit, page);
+    const uint32_t nowMs = storageTimingNowMs();
+    noteStorageRead(lockedAtMs - lockStartMs, nowMs - lockedAtMs);
   }
 
   JsonBuf j(512 + page.trips.size() * 640);
@@ -566,10 +573,14 @@ void writeDaysJson(size_t limit, const TripHistory& tripHistory,
   bool ready = false;
   bool healthy = false;
   {
+    const uint32_t lockStartMs = storageTimingNowMs();
     StorageLock lock;
+    const uint32_t lockedAtMs = storageTimingNowMs();
     ready = tripHistory.ready();
     healthy = tripHistory.healthy();
     tripHistory.readDays(limit, res);
+    const uint32_t nowMs = storageTimingNowMs();
+    noteStorageRead(lockedAtMs - lockStartMs, nowMs - lockedAtMs);
   }
 
   JsonBuf j(512 + res.days.size() * 480);

@@ -10,6 +10,7 @@
 #include "probe_png.h"
 #include "sta_client_logic.h"
 #include "storage_mutex.h"
+#include "storage_timing.h"
 
 #include <ArduinoJson.h>
 #include <esp_app_format.h>
@@ -1854,6 +1855,20 @@ void ServicePortal::sendStatus() {
     bad["pid"] = pid;
     bad["expectedBytes"] = telemetry_.malformedExpected;
     bad["receivedBytes"] = telemetry_.malformedReceived;
+  }
+  // Measured, not asserted: how long the archive read holds the storage mutex,
+  // how long it waits for it, and how long a pass of loop() lasts. A read that
+  // walks all 2048 records is visible here or it is not happening.
+  {
+    JsonObject storage = doc["storage"].to<JsonObject>();
+    const StorageTimingStats& t = storageTiming();
+    storage["readCount"] = t.readCount;
+    storage["readWaitLastMs"] = t.readWaitLastMs;
+    storage["readWaitMaxMs"] = t.readWaitMaxMs;
+    storage["readLastMs"] = t.readLastMs;
+    storage["readMaxMs"] = t.readMaxMs;
+    storage["loopLastMs"] = t.loopLastMs;
+    storage["loopMaxMs"] = t.loopMaxMs;
   }
   doc["freeHeap"] = ESP.getFreeHeap();
   JsonObject dtc = doc["dtc"].to<JsonObject>();

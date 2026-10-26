@@ -623,6 +623,185 @@ const zlib = require('node:zlib');
         await new Promise(r => strictGauge.close(r));
         await new Promise(r => talker.close(r));
       }
+
+      // ---- 0.4.44 regressions: the four ways the sweep could still fail ------
+      //
+      // The page used to truncate the gateway candidate list to its 24 fastest
+      // entries and then sweep those in every round. A phone whose browser hides
+      // the local address produces dozens of subnets that refuse instantly, so
+      // the real one could rank below the cut-off - and because the list is
+      // rebuilt identically every round, it was never scanned at all. This test
+      // builds exactly that: 39 subnets that refuse in well under a millisecond,
+      // and a real one whose gateway takes 150 ms to answer, which sorts it last.
+      {
+        const slowGw = http.createServer((_req, res) => {
+          setTimeout(() => { res.writeHead(404, { 'Access-Control-Allow-Origin': '*' }); res.end('gw'); }, 150);
+        });
+        await new Promise(r => slowGw.listen(0, '127.0.20.1', r));
+        const wGwPort = slowGw.address().port;
+        const wGauge = http.createServer(makeH2Handler());
+        await new Promise(r => wGauge.listen(0, '127.0.20.187', r));
+        const wLanPort = wGauge.address().port;
+        try {
+          const wCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+          const wPage = await wCtx.newPage();
+          const wErrors = [];
+          wPage.on('pageerror', e => wErrors.push(String(e)));
+          const wUrl = `file://${openHtmlPath}?gwBase=127.0&maxSub=40&gwPort=${wGwPort}` +
+            `&port=${wLanPort}&apHost=&probe=/h2probe&noredirect=1`;
+          await wPage.goto(wUrl, { waitUntil: 'domcontentloaded' });
+          // Round 1 must end without the gauge, because its subnet is not in the
+          // first window. If it turns up there, the setup proves nothing and the
+          // test says so instead of passing on a technicality.
+          const stage = await wPage.waitForFunction(() => {
+            const badge = document.getElementById('stateBadge').textContent;
+            const st = document.getElementById('statusTxt').textContent;
+            if (badge === 'НАЙДЕН') return 'found-in-round-1';
+            if (/попытка #/.test(st)) return 'round-2';
+            return false;
+          }, null, { timeout: 20000 }).then(h => h.jsonValue());
+          assert.equal(stage, 'round-2',
+            'the slow gateway must rank outside the first window (setup check)');
+          await wPage.waitForFunction(
+            () => document.getElementById('stateBadge').textContent === 'НАЙДЕН',
+            null, { timeout: 30000 });
+          assert.match(await wPage.textContent('#statusTxt'), /127\.0\.20\.187/,
+            'the subnet that ranked last must still be swept and found');
+          assert.deepEqual(wErrors, [], `window-rotation page errors: ${wErrors.join('; ')}`);
+          await wCtx.close();
+          console.log('  [ok] 39 instant-reject subnets cannot hide the real one: window rotates and 127.0.20.187 is found in round 2');
+        } finally {
+          await new Promise(r => slowGw.close(r));
+          await new Promise(r => wGauge.close(r));
+        }
+      }
+
+      // A network with no gauge on it must keep saying so. Nothing may be
+      // reported as found, and the page must survive a full round of failures.
+      {
+        const aKill = net.createServer(sock => sock.destroy());
+        await new Promise(r => aKill.listen(0, '0.0.0.0', r));
+        const aLanPort = aKill.address().port;
+        try {
+          const aCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+          const aPage = await aCtx.newPage();
+          const aErrors = [];
+          aPage.on('pageerror', e => aErrors.push(String(e)));
+          const aUrl = `file://${openHtmlPath}?gwBase=127.0&maxSub=2&port=${aLanPort}` +
+            `&apHost=&probe=/h2probe&noredirect=1`;
+          await aPage.goto(aUrl, { waitUntil: 'domcontentloaded' });
+          await aPage.waitForTimeout(6000);
+          assert.notEqual(await aPage.textContent('#stateBadge'), 'НАЙДЕН',
+            'an empty network must never be reported as found');
+          assert.match(await aPage.textContent('#statusTxt'), /попытка #/,
+            'the page must keep retrying instead of stopping');
+          assert.deepEqual(aErrors, [], `empty-network page errors: ${aErrors.join('; ')}`);
+          await aCtx.close();
+          console.log('  [ok] empty network: no false НАЙДЕН, retries continue, zero page errors');
+        } finally {
+          await new Promise(r => aKill.close(r));
+        }
+      }
+
+      // «Повтор» has to interrupt, not wait its turn. Four gateways answer, no
+      // host ever does, so one round is a sweep of four subnets with 450 ms per
+      // probe - about eight seconds. The click has to produce a fresh gateway
+      // sweep within a couple of seconds; before 0.4.44 the guard in
+      // runDiscoveryRound() swallowed it whole.
+      {
+        const freeProbe = net.createServer();
+        await new Promise(r => freeProbe.listen(0, '127.0.0.1', r));
+        const rGwPort = freeProbe.address().port;
+        await new Promise(r => freeProbe.close(r));
+        let gwHits = 0;
+        const rGws = [];
+        for (let s = 0; s <= 3; s++) {
+          const srv = http.createServer((_q, r) => {
+            gwHits++;
+            r.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+            r.end('gw');
+          });
+          await new Promise(r => srv.listen(rGwPort, `127.0.${s}.1`, r));
+          rGws.push(srv);
+        }
+        const hanging = new Set();
+        const rSlow = net.createServer(sock => {
+          hanging.add(sock);
+          sock.on('close', () => hanging.delete(sock));
+        });
+        await new Promise(r => rSlow.listen(0, '0.0.0.0', r));
+        const rLanPort = rSlow.address().port;
+        try {
+          const rCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+          const rPage = await rCtx.newPage();
+          const rErrors = [];
+          rPage.on('pageerror', e => rErrors.push(String(e)));
+          const rUrl = `file://${openHtmlPath}?gwBase=127.0&maxSub=3&gwPort=${rGwPort}` +
+            `&port=${rLanPort}&apHost=&probe=/h2probe&noredirect=1`;
+          await rPage.goto(rUrl, { waitUntil: 'domcontentloaded' });
+          // Wait until the sweep is genuinely in progress: the status line names
+          // a host range, which only the subnet scanner does.
+          await rPage.waitForFunction(
+            () => /Сканирование/.test(document.getElementById('detailTxt').textContent),
+            null, { timeout: 15000 });
+          await rPage.waitForTimeout(1200);
+          const hitsBeforeClick = gwHits;
+          assert.ok(hitsBeforeClick >= 4, `round 1 should have probed all four gateways, saw ${hitsBeforeClick}`);
+          await rPage.click('#rescanBtn');
+          const deadline = Date.now() + 2500;
+          while (gwHits === hitsBeforeClick && Date.now() < deadline) {
+            await rPage.waitForTimeout(50);
+          }
+          assert.ok(gwHits > hitsBeforeClick,
+            `«Повтор» must start a new generation immediately, but the gateway sweep did not restart ` +
+            `within 2.5 s (hits stayed at ${hitsBeforeClick}) - the old sweep is still running`);
+          assert.deepEqual(rErrors, [], `retry-during-sweep page errors: ${rErrors.join('; ')}`);
+          await rCtx.close();
+          console.log(`  [ok] «Повтор» interrupts a running sweep (new gateway pass in <2.5 s, was ${hitsBeforeClick} hits)`);
+        } finally {
+          for (const s of hanging) s.destroy();
+          await new Promise(r => rSlow.close(r));
+          for (const srv of rGws) await new Promise(r => srv.close(r));
+        }
+      }
+
+      // The priority pass sweeps .2..63 of the four best candidates and the full
+      // pass used to sweep those same 62 addresses again: 24x253 + 4x62 = 6320
+      // probes per round instead of 6072. One candidate subnet makes the count
+      // exact - a whole round is 253 probes, or 315 with the duplicate.
+      {
+        const dGw = http.createServer((_q, r) => {
+          r.writeHead(404, { 'Access-Control-Allow-Origin': '*' });
+          r.end('gw');
+        });
+        await new Promise(r => dGw.listen(0, '127.0.0.1', r));
+        const dGwPort = dGw.address().port;
+        let probes = 0;
+        const dKill = net.createServer(sock => {
+          probes++;
+          sock.destroy();
+        });
+        await new Promise(r => dKill.listen(0, '0.0.0.0', r));
+        const dLanPort = dKill.address().port;
+        try {
+          const dCtx = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+          const dPage = await dCtx.newPage();
+          const dUrl = `file://${openHtmlPath}?gwBase=127.0&maxSub=0&gwPort=${dGwPort}` +
+            `&port=${dLanPort}&apHost=&probe=/h2probe&noredirect=1`;
+          await dPage.goto(dUrl, { waitUntil: 'domcontentloaded' });
+          // One round finishes in tens of milliseconds; the retry timer is 2.5 s,
+          // so 1.2 s of observation holds exactly one round.
+          await dPage.waitForTimeout(1200);
+          assert.equal(probes, 253,
+            `one round of one subnet must probe .2..254 exactly once each; got ${probes} ` +
+            `(315 would mean the priority pass swept .2..63 a second time)`);
+          await dCtx.close();
+          console.log('  [ok] no duplicate low-half sweep: 253 probes for one subnet, not 315');
+        } finally {
+          await new Promise(r => dKill.close(r));
+          await new Promise(r => dGw.close(r));
+        }
+      }
     } finally {
       for (const s of blackholeSockets) s.destroy();
       decoyServer.close();

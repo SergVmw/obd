@@ -191,6 +191,16 @@ html, body {
   var roundNum = 0;
   var scanRunning = false;
   var retryTimer = null;
+  // Every stage captures the generation it started in; the retry button raises
+  // a new one so a running sweep stops instead of holding it dead.
+  var scanGen = 0;
+  // Prefixes whose low half this round already proved empty - the full pass
+  // used to sweep .2..63 again for the four the priority pass had just covered.
+  var lowScanned = {};
+  // Window of the candidate list the next round starts from; the list itself is
+  // never truncated, so no subnet is dropped.
+  var gwCursor = 0;
+  var GW_WINDOW = 24;
 
   function withPort(ipOrHost) {
     if (!ipOrHost) return '';
@@ -334,9 +344,13 @@ html, body {
     var active = 0;
     var CONCURRENCY = 42;
     var finished = false;
+    var gen = scanGen;
     var span = Math.max(1, to - from + 1);
 
     function pump() {
+      // A newer generation owns the search now; abandon this range silently and
+      // leave whatever is still in flight to drain without extending the chain.
+      if (gen !== scanGen) { finished = true; return; }
       if (foundHost) {
         if (!finished) { finished = true; doneCb(true); }
         return;
@@ -347,6 +361,7 @@ html, body {
           var candidate = withPort(prefix + '.' + h);
           probeHostImage(candidate, 450, function(ok) {
             active--;
+            if (gen !== scanGen) { finished = true; return; }
             if (ok && !foundHost) {
               adoptHost(candidate);
               if (!finished) { finished = true; doneCb(true); }
@@ -380,18 +395,30 @@ html, body {
   // behind mDNS - the number of guesses is the whole problem.
   function scanPrefix(prefix, doneCb) {
     var lowTo = Math.min(63, MAX_HOST);
-    scanRange(prefix, 2, lowTo, function(hit) {
-      if (hit || foundHost || MAX_HOST <= lowTo) { doneCb(hit); return; }
+    var gen = scanGen;
+    function high() {
+      if (MAX_HOST <= lowTo) { doneCb(false); return; }
       scanRange(prefix, lowTo + 1, MAX_HOST, doneCb);
+    }
+    // 62 probes per prefix to re-sweep a half the priority pass just covered.
+    if (lowScanned[prefix]) { high(); return; }
+    scanRange(prefix, 2, lowTo, function(hit) {
+      if (gen !== scanGen) return;
+      if (hit || foundHost || MAX_HOST <= lowTo) { doneCb(hit); return; }
+      lowScanned[prefix] = true;
+      high();
     });
   }
 
   function scanPrefixList(prefixes, idx, doneCb) {
+    var gen = scanGen;
+    if (gen !== scanGen) return;
     if (foundHost || idx >= prefixes.length) {
       doneCb(!!foundHost);
       return;
     }
     scanPrefix(prefixes[idx], function(hit) {
+      if (gen !== scanGen) return;
       if (hit || foundHost) { doneCb(true); return; }
       scanPrefixList(prefixes, idx + 1, doneCb);
     });
@@ -402,12 +429,17 @@ html, body {
   // the first, so this ends the search in a couple of seconds; if the gauge sits
   // high in the pool the full pass below still finds it.
   function scanLowHalfList(prefixes, idx, doneCb) {
+    var gen = scanGen;
+    if (gen !== scanGen) return;
     if (foundHost || idx >= prefixes.length) {
       doneCb(!!foundHost);
       return;
     }
-    scanRange(prefixes[idx], 2, Math.min(63, MAX_HOST), function(hit) {
+    var p = prefixes[idx];
+    scanRange(p, 2, Math.min(63, MAX_HOST), function(hit) {
+      if (gen !== scanGen) return;
       if (hit || foundHost) { doneCb(true); return; }
+      lowScanned[p] = true;
       scanLowHalfList(prefixes, idx + 1, doneCb);
     });
   }
@@ -457,21 +489,28 @@ html, body {
   // available. Every candidate is timed, and the order is by that time: the
   // address refused by the local stack - the phone's own hotspot address - comes
   // back first, while a subnet that merely has no route comes back slower or not
-  // at all. The list is capped so a phone that fails everything quickly cannot
-  // queue up a sweep of all 256 subnets.
+  // at all.
+  //
+  // The whole list comes back sorted and the caller takes a window from it.
+  // Truncating here was a defect: with thirty instantly-failing subnets the
+  // real one can rank below the cut-off, and since this runs fresh every round
+  // the same thirty outrank it every time - never scanned, not merely late.
   function detectActiveGateways(alreadyTried, cb) {
     var maxSub = parseInt(Q.maxSub, 10);
     if (isNaN(maxSub) || maxSub < 0 || maxSub > 255) maxSub = 255;
     var cur = 0, active = 0, CONC = 48;
     var hits = [], done = false;
+    var gen = scanGen;
     function finish() {
+      if (gen !== scanGen) return;
       hits.sort(function(a, b) { return a.ms - b.ms; });
-      var list = [], n = Math.min(24, hits.length);
-      for (var i = 0; i < n; i++) list.push(hits[i].p);
+      var list = [];
+      for (var i = 0; i < hits.length; i++) list.push(hits[i].p);
       cb(list);
     }
 
     function pump() {
+      if (gen !== scanGen) { done = true; return; }
       if (foundHost) {
         if (!done) { done = true; finish(); }
         return;
@@ -547,9 +586,24 @@ html, body {
     }
   }
 
+  // One window per round, cursor advancing and wrapping, so every subnet is
+  // covered within ceil(n / GW_WINDOW) rounds even when more than GW_WINDOW of
+  // them refuse instantly and would otherwise outrank the real one forever.
+  function takeGatewayWindow(all) {
+    var n = all.length;
+    if (n === 0) return [];
+    var count = Math.min(GW_WINDOW, n);
+    if (gwCursor >= n) gwCursor = 0;
+    var window = [];
+    for (var i = 0; i < count; i++) window.push(all[(gwCursor + i) % n]);
+    gwCursor = (gwCursor + count) % n;
+    return window;
+  }
+
   function runDiscoveryRound() {
     if (foundHost || scanRunning) return;
     scanRunning = true;
+    lowScanned = {};
     roundNum++;
     $('statusTxt').textContent = roundNum === 1
       ? 'Поиск H2 Gauge в сети Wi-Fi...'
@@ -584,9 +638,10 @@ html, body {
         scanPrefixList(priorityPrefixes, 0, function(hit) {
           if (hit || foundHost) { scanRunning = false; return; }
           detectActiveGateways(seen, function(gwPrefixes) {
-            scanLowHalfList(gwPrefixes.slice(0, 4), 0, function() {
+            var window = takeGatewayWindow(gwPrefixes);
+            scanLowHalfList(window.slice(0, 4), 0, function() {
               if (foundHost) { scanRunning = false; return; }
-              scanPrefixList(gwPrefixes, 0, function(gwHit) {
+              scanPrefixList(window, 0, function(gwHit) {
                 scanRunning = false;
                 if (!gwHit && !foundHost) {
                   setProgress(12, 'Прибор пока не ответил — автоматический повтор через 2.5 с');
@@ -601,6 +656,9 @@ html, body {
   }
 
   function handleManualOpen() {
+    // A typed subnet is a statement, not a guess: sweep it whole even if some
+    // earlier round already proved its low half empty.
+    lowScanned = {};
     var raw = ($('manualInp').value || '').replace(/\s+/g, '');
     if (!raw) { runDiscoveryRound(); return; }
     if (/^\d{1,3}$/.test(raw)) {
@@ -636,7 +694,14 @@ html, body {
     if (e.keyCode === 13) handleManualOpen();
   });
   $('rescanBtn').addEventListener('click', function() {
+    if (foundHost) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // Raise a new generation: every sweep already in flight stops extending
+    // itself on its next step, and this round starts from a clean slate.
+    scanGen++;
+    scanRunning = false;
+    lowScanned = {};
+    gwCursor = 0;
     runDiscoveryRound();
   });
 

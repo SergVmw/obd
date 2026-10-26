@@ -3,6 +3,7 @@
 #include <esp_sleep.h>
 
 #include "screen_gate.h"
+#include "storage_timing.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 
@@ -508,6 +509,14 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  // Period between passes, not the time spent inside one: a pass that blocks on
+  // the storage mutex never reaches its own end, and an early return would skip
+  // the measurement exactly when the loop was in trouble.
+  {
+    static uint32_t lastLoopStartMs = 0;
+    if (lastLoopStartMs != 0) noteLoopPeriod(now - lastLoopStartMs);
+    lastLoopStartMs = now;
+  }
   // Service mode owns the two-press gesture; the dashboard owns it as a double
   // page turn. Stated here rather than derived from the brightness setting,
   // because a slot selector that only works in manual brightness is a selector
