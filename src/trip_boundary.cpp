@@ -41,6 +41,19 @@ TripBoundaryAction TripBoundary::update(uint32_t rtcNowSec, bool rpmValid,
       distanceMeters >= static_cast<double>(tripMinDistanceM);
   const uint32_t gapThresholdSec = static_cast<uint32_t>(tripGapMin) * 60UL;
 
+  // A parked window can be anchored to a clock that no longer exists: the seed
+  // restores the last moment the engine ran from NVS, and a cold boot restarts
+  // the RTC from zero. An anchor ahead of the live clock can never satisfy the
+  // comparison below - not in five minutes, not in seventeen hours - so the
+  // window would never expire and the trip would stay open with nothing saying
+  // why. The parked time elapsed against a clock that has gone backwards is
+  // unmeasurable, so it is honestly zero: re-anchor to now and let this window
+  // run its tripGapMin like any other.
+  if (inParkedWindow_ && parkedSinceRtcSec_ > rtcNowSec) {
+    parkedSinceRtcSec_ = rtcNowSec;
+    gapCheckedThisWindow_ = false;
+  }
+
   // Priority rule ("whichever comes first"): if a parked window already was in
   // progress and its duration reached tripGapMin at or before this tick, the
   // gap expired first even if this waking sample already shows RPM >= 200.

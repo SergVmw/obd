@@ -271,27 +271,45 @@ void testBoundarySnapshotReportsTheCloseArithmetic() {
   CHECK(seeded.inParkedWindow);
   CHECK(seeded.parkedSinceRtcSec == 9000);
 
-  // An RTC that restarted below that value cannot satisfy the comparison, and
-  // the boundary keeps saying None: at 901 s, at 8 600 s, indefinitely. The
-  // distance here is 10.9 km, so the 100 m floor is not what holds it open.
+  // A cold boot restarts the RTC from zero while the stored anchor is still
+  // the last moment the engine ran in the previous power session, so the
+  // anchor starts out ahead of the live clock. An anchor the clock cannot
+  // reach can never satisfy the gap comparison, so the first tick in that
+  // state re-anchors the window to now instead of leaving it unexpirable:
+  // the elapsed parked time is unmeasurable, it is honestly zero.
   CHECK(b.update(901, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
         TripBoundaryAction::None);
-  CHECK(b.update(8600, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
-        TripBoundaryAction::None);
-  CHECK(b.snapshot().hasRun);
+  CHECK(b.snapshot().parkedSinceRtcSec == 901);
   CHECK(b.snapshot().inParkedWindow);
-
-  // Moving is what clears it: the window closes, and the next one is opened
-  // from the running clock, which is why the first drive after such a boot
-  // closes the trip normally.
-  CHECK(b.update(8700, false, 0.0f, true, 40.0f, 10.9, 5, 100) ==
+  // Five minutes of that window, and the trip closes exactly as it would have
+  // closed had the clock never gone backwards.
+  CHECK(b.update(1200, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
         TripBoundaryAction::None);
-  CHECK(!b.snapshot().inParkedWindow);
-  CHECK(b.update(8800, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
-        TripBoundaryAction::None);
-  CHECK(b.snapshot().parkedSinceRtcSec == 8800);
-  CHECK(b.update(9100, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
+  CHECK(b.update(1201, false, 0.0f, false, 0.0f, 10.9, 5, 100) ==
         TripBoundaryAction::CloseByGap);
+  CHECK(b.snapshot().hasRun == false);
+  CHECK(b.snapshot().inParkedWindow == false);
+
+  // The same boot without a trip long enough to record: the re-anchored
+  // window expires, the 100 m floor holds the trip open, and the next drive
+  // merges into it - the short-move rule still wins over the clock repair.
+  {
+    TripBoundary short_move;
+    short_move.seedRecoveredOpenTrip(true, 9000);
+    CHECK(short_move.update(901, false, 0.0f, false, 0.0f, 0.045, 5, 100) ==
+          TripBoundaryAction::None);
+    CHECK(short_move.update(1201, false, 0.0f, false, 0.0f, 0.045, 5, 100) ==
+          TripBoundaryAction::None);
+    CHECK(short_move.heldOpenAcrossPause());
+    CHECK(short_move.update(1300, true, 900.0f, true, 0.0f, 0.045, 5, 100) ==
+          TripBoundaryAction::None);
+    CHECK(short_move.update(1400, true, 900.0f, true, 60.0f, 9.2, 5, 100) ==
+          TripBoundaryAction::None);
+    CHECK(short_move.update(1450, true, 0.0f, true, 0.0f, 9.2, 5, 100) ==
+          TripBoundaryAction::None);
+    CHECK(short_move.update(1751, true, 0.0f, true, 0.0f, 9.2, 5, 100) ==
+          TripBoundaryAction::CloseByGap);
+  }
 }
 
 void testCodec148ByteExactOffsetsAndFrozenTripState() {

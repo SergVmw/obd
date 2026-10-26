@@ -9,6 +9,12 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
+def code_only(text: str) -> str:
+    """Strip comments so that a check cannot pass on a commented-out line."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def gunzip_header(path: pathlib.Path) -> str:
     text = path.read_text(encoding="utf-8")
     raw = bytes(int(m.group(1), 16) for m in re.finditer(r"0x([0-9a-fA-F]{2})", text))
@@ -61,6 +67,28 @@ def main() -> int:
     # 4. Main loop uses true rawSpeedKph (NEVER displaySpeedOffsetKph / speedKph)
     assert "telemetry.rawSpeedKph.value" in main_cpp
     assert "closeOpenTripToHistory" in main_cpp
+
+    # 4b. One boundary rule, both modes. The service branch of loop() returns
+    # before the tail of the loop, so a close that lives only in that tail does
+    # not exist while the portal is open - and the vehicle can be switched off
+    # inside service mode. The service timeout is not a substitute: every page
+    # poll refreshes it, so it never becomes due while a tab is open. Assert the
+    # shape rather than a string: one helper, called from both branches, plus
+    # the boot tick that still says out loud that it knows nothing yet.
+    main_code = code_only(main_cpp)
+    assert main_code.count("tripBoundary.update(") == 1, \
+        "one boundary call site: the helper every path goes through"
+    assert re.search(r"updateTripBoundary\(millis\(\), bootRtcSec\)", main_code), \
+        "the boot tick runs through the same helper"
+    assert re.search(r"updateTripBoundary\(now, rtcNowSec\);", main_code), \
+        "the normal path must go through the helper"
+    assert re.search(r"updateTripBoundary\(now, currentRtcSec\(\)\);", main_code), \
+        "the service branch must advance the boundary too"
+    assert main_code.count("updateTripBoundary(") == 4, \
+        "definition plus three call sites"
+    service_tail = main_code.split("if (serviceMode) {", 1)[1]
+    assert "updateTripBoundary(" in service_tail.split("return;", 1)[0], \
+        "the boundary must run before the service branch returns"
 
     # 5. Portal endpoints and pure-UTC header
     for route, method in [

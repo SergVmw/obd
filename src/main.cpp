@@ -112,6 +112,25 @@ void closeOpenTripToHistory(uint32_t now, uint32_t rtcSec) {
   }
 }
 
+// The trip boundary is a property of the vehicle, not of the mode the gauge is
+// in. A driver can arrive, open the portal with the engine still running, look
+// at what he came for and switch the engine off without ever leaving service
+// mode; a close that only exists outside service mode would then wait for the
+// portal to be abandoned, and the service timeout cannot be relied on for that
+// because every page poll refreshes it. So both branches make the same call:
+// while the engine runs nothing closes, and tripGapMin after it stops the trip
+// closes wherever the gauge happens to be.
+void updateTripBoundary(uint32_t now, uint32_t rtcSec) {
+  if (tripBoundary.update(rtcSec, telemetry.rpm.valid(now),
+                          telemetry.rpm.value, telemetry.rawSpeedKph.valid(now),
+                          telemetry.rawSpeedKph.value, trip.totalDistanceKm,
+                          configStore.data().tripGapMin,
+                          configStore.data().tripMinDistanceM) !=
+      TripBoundaryAction::None) {
+    closeOpenTripToHistory(now, rtcSec);
+  }
+}
+
 void serviceDtcPersistence(uint32_t now) {
   StorageLock lock;
   dtcHistoryPersistence.periodic(now, obdClient.dtcHistory());
@@ -452,12 +471,10 @@ void setup() {
   }
   tripBoundary.seedRecoveredOpenTrip(tripStateHasActivity(trip),
                                      tripContext.data().lastActiveRtcSec);
-  if (tripBoundary.update(bootRtcSec, false, 0.0f, false, 0.0f,
-                          trip.totalDistanceKm, configStore.data().tripGapMin,
-                          configStore.data().tripMinDistanceM) !=
-      TripBoundaryAction::None) {
-    closeOpenTripToHistory(millis(), bootRtcSec);
-  }
+  // Same tick as everywhere else. At boot there is no telemetry yet, so the
+  // helper sees an invalid RPM and an invalid speed, which is exactly the
+  // "engine not running, vehicle not moving" reading it needs after a seed.
+  updateTripBoundary(millis(), bootRtcSec);
   historyView.syncIfNeeded(tripHistory);
   lpgInput.begin();
 
@@ -578,6 +595,7 @@ void loop() {
     serviceDtcPersistence(now);
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
+    updateTripBoundary(now, currentRtcSec());
     servicePortal.loop();
     // Rollback without a laptop: double-click (either fast DoublePress or two
     // normal taps within 1.5 s) opens the selector with the H2 Gauge manifest
@@ -677,14 +695,7 @@ void loop() {
       tripClock.flushPendingPersist();
     }
   }
-  if (tripBoundary.update(rtcNowSec, telemetry.rpm.valid(now),
-                          telemetry.rpm.value, telemetry.rawSpeedKph.valid(now),
-                          telemetry.rawSpeedKph.value, trip.totalDistanceKm,
-                          configStore.data().tripGapMin,
-                          configStore.data().tripMinDistanceM) !=
-      TripBoundaryAction::None) {
-    closeOpenTripToHistory(now, rtcNowSec);
-  }
+  updateTripBoundary(now, rtcNowSec);
 
   const bool lpgActive = lpgInput.update(now, configStore.data());
   telemetryEngine.update(now, configStore.data(), lpgActive);
