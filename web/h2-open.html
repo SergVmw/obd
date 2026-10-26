@@ -327,18 +327,21 @@ html, body {
     });
   }
 
-  function scanPrefix(prefix, doneCb) {
-    var nextHost = 2;
+  // One contiguous host range of one /24. Split out of scanPrefix so a wrong
+  // subnet can be abandoned after its low half instead of after the whole /24.
+  function scanRange(prefix, from, to, doneCb) {
+    var nextHost = from;
     var active = 0;
     var CONCURRENCY = 42;
     var finished = false;
+    var span = Math.max(1, to - from + 1);
 
     function pump() {
       if (foundHost) {
         if (!finished) { finished = true; doneCb(true); }
         return;
       }
-      while (active < CONCURRENCY && nextHost <= MAX_HOST && !foundHost) {
+      while (active < CONCURRENCY && nextHost <= to && !foundHost) {
         (function(h) {
           active++;
           var candidate = withPort(prefix + '.' + h);
@@ -350,10 +353,10 @@ html, body {
               return;
             }
             if (h % 32 === 0) {
-              setProgress(25 + Math.round((h / MAX_HOST) * 65),
-                'Сканирование ' + prefix + '.2..' + MAX_HOST + ' (' + h + '/' + MAX_HOST + ')');
+              setProgress(25 + Math.round(((h - from) / span) * 65),
+                'Сканирование ' + prefix + '.' + from + '..' + to + ' (' + h + ' из ' + to + ')');
             }
-            if (nextHost > MAX_HOST && active === 0) {
+            if (nextHost > to && active === 0) {
               if (!finished) { finished = true; doneCb(false); }
             } else {
               pump();
@@ -361,13 +364,26 @@ html, body {
           });
         })(nextHost++);
       }
-      if (nextHost > MAX_HOST && active === 0 && !finished) {
+      if (nextHost > to && active === 0 && !finished) {
         finished = true;
         doneCb(false);
       }
     }
-    setProgress(24, 'Сканирование подсети ' + prefix + '.0/24...');
+    setProgress(24, 'Сканирование ' + prefix + '.' + from + '..' + to + '...');
     pump();
+  }
+
+  // A hotspot hands out addresses from the bottom of its pool, so the gauge is
+  // nearly always in .2..63. Trying the low half of a subnet before its high
+  // half is what makes a wrong guess cost a second instead of ten, and on a
+  // phone that has to guess the subnet at all - WebRTC hides the local address
+  // behind mDNS - the number of guesses is the whole problem.
+  function scanPrefix(prefix, doneCb) {
+    var lowTo = Math.min(63, MAX_HOST);
+    scanRange(prefix, 2, lowTo, function(hit) {
+      if (hit || foundHost || MAX_HOST <= lowTo) { doneCb(hit); return; }
+      scanRange(prefix, lowTo + 1, MAX_HOST, doneCb);
+    });
   }
 
   function scanPrefixList(prefixes, idx, doneCb) {
@@ -378,6 +394,21 @@ html, body {
     scanPrefix(prefixes[idx], function(hit) {
       if (hit || foundHost) { doneCb(true); return; }
       scanPrefixList(prefixes, idx + 1, doneCb);
+    });
+  }
+
+  // The low half of several candidate subnets before any one full sweep. On a
+  // phone three or four prefixes look plausible and the right one is usually
+  // the first, so this ends the search in a couple of seconds; if the gauge sits
+  // high in the pool the full pass below still finds it.
+  function scanLowHalfList(prefixes, idx, doneCb) {
+    if (foundHost || idx >= prefixes.length) {
+      doneCb(!!foundHost);
+      return;
+    }
+    scanRange(prefixes[idx], 2, Math.min(63, MAX_HOST), function(hit) {
+      if (hit || foundHost) { doneCb(true); return; }
+      scanLowHalfList(prefixes, idx + 1, doneCb);
     });
   }
 
@@ -422,15 +453,27 @@ html, body {
     }
   }
 
+  // Which subnets are real is a guess, and on a phone it is the only guess
+  // available. Every candidate is timed, and the order is by that time: the
+  // address refused by the local stack - the phone's own hotspot address - comes
+  // back first, while a subnet that merely has no route comes back slower or not
+  // at all. The list is capped so a phone that fails everything quickly cannot
+  // queue up a sweep of all 256 subnets.
   function detectActiveGateways(alreadyTried, cb) {
     var maxSub = parseInt(Q.maxSub, 10);
     if (isNaN(maxSub) || maxSub < 0 || maxSub > 255) maxSub = 255;
     var cur = 0, active = 0, CONC = 48;
     var hits = [], done = false;
+    function finish() {
+      hits.sort(function(a, b) { return a.ms - b.ms; });
+      var list = [], n = Math.min(24, hits.length);
+      for (var i = 0; i < n; i++) list.push(hits[i].p);
+      cb(list);
+    }
 
     function pump() {
       if (foundHost) {
-        if (!done) { done = true; cb(hits); }
+        if (!done) { done = true; finish(); }
         return;
       }
       while (active < CONC && cur <= maxSub && !foundHost) {
@@ -445,9 +488,9 @@ html, body {
             if (settled) return;
             settled = true;
             active--;
-            if (fastReject) hits.push(pfx);
+            if (fastReject) hits.push({ p: pfx, ms: (+new Date()) - t0 });
             if (cur > maxSub && active === 0) {
-              if (!done) { done = true; cb(hits); }
+              if (!done) { done = true; finish(); }
             } else {
               pump();
             }
@@ -466,7 +509,7 @@ html, body {
       }
       if (cur > maxSub && active === 0 && !done) {
         done = true;
-        cb(hits);
+        finish();
       }
     }
     setProgress(55, 'Определение активного шлюза точки доступа...');
@@ -541,12 +584,15 @@ html, body {
         scanPrefixList(priorityPrefixes, 0, function(hit) {
           if (hit || foundHost) { scanRunning = false; return; }
           detectActiveGateways(seen, function(gwPrefixes) {
-            scanPrefixList(gwPrefixes, 0, function(gwHit) {
-              scanRunning = false;
-              if (!gwHit && !foundHost) {
-                setProgress(12, 'Прибор пока не ответил — автоматический повтор через 2.5 с');
-                retryTimer = setTimeout(runDiscoveryRound, 2500);
-              }
+            scanLowHalfList(gwPrefixes.slice(0, 4), 0, function() {
+              if (foundHost) { scanRunning = false; return; }
+              scanPrefixList(gwPrefixes, 0, function(gwHit) {
+                scanRunning = false;
+                if (!gwHit && !foundHost) {
+                  setProgress(12, 'Прибор пока не ответил — автоматический повтор через 2.5 с');
+                  retryTimer = setTimeout(runDiscoveryRound, 2500);
+                }
+              });
             });
           });
         });
