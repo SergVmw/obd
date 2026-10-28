@@ -21,7 +21,26 @@ def format_c_array(data: bytes) -> str:
     return "\n".join(lines)
 
 
-def write_progmem_header(out_path: Path, src_label: str, symbol: str, data: bytes) -> None:
+def write_progmem_header(
+    out_path: Path,
+    src_label: str,
+    symbol: str,
+    data: bytes,
+    inject_offset: int | None = None,
+) -> None:
+    # The open page is served with the gauge's own address spliced in at a fixed
+    # byte offset, so the byte array alone is not enough: the server has to know
+    # where the address belongs. Emitting the offset next to the array keeps the
+    # two from drifting apart - both are generated from the same page bytes.
+    inject = (
+        ""
+        if inject_offset is None
+        else (
+            f"const size_t {symbol}InjectOffset = {inject_offset};\n"
+            f"static_assert({symbol}InjectOffset <= {symbol}Len, "
+            f"\"{symbol}: injection point outside the page\");\n"
+        )
+    )
     header = (
         "#pragma once\n"
         f"// Generated from {src_label} by tools/embed_headunit_web.py — do not edit directly.\n"
@@ -35,6 +54,7 @@ def write_progmem_header(out_path: Path, src_label: str, symbol: str, data: byte
         "#endif\n"
         "#endif\n\n"
         f"const size_t {symbol}Len = {len(data)};\n"
+        f"{inject}"
         f"const uint8_t {symbol}[] PROGMEM = {{\n"
         + format_c_array(data)
         + "\n};\n"
@@ -48,7 +68,21 @@ def main() -> None:
     write_progmem_header(OUT_HEADER, "web/headunit.html", "kHeadUnitWebUiGz", compressed)
 
     open_raw = OPEN_SRC_HTML.read_bytes()
-    write_progmem_header(OPEN_OUT_HEADER, "web/h2-open.html", "kHeadUnitOpenHtml", open_raw)
+    # The page declares var INJ='',AP_HOST = ... - the server fills that string
+    # literal with its own address. An empty INJ is the file:// case and the AP
+    # default still applies, so the page works from a download either way.
+    marker = b"INJ='"
+    at = open_raw.find(marker)
+    if at < 0:
+        raise SystemExit("web/h2-open.html: injection marker INJ=' not found")
+    inject_offset = at + len(marker)
+    write_progmem_header(
+        OPEN_OUT_HEADER,
+        "web/h2-open.html",
+        "kHeadUnitOpenHtml",
+        open_raw,
+        inject_offset=inject_offset,
+    )
     OPEN_RELEASE_COPY.write_bytes(open_raw)
 
     print(

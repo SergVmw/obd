@@ -760,10 +760,37 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
   CHECK(openResp.contentDisposition != nullptr);
   CHECK(std::strcmp(openResp.contentDisposition,
                     "Content-Disposition: attachment; filename=\"h2-open.html\"\r\n") == 0);
+  // The page leaves in three pieces with the gauge's address spliced between
+  // them. On the host there is no radio, so the splice is empty and the three
+  // pieces must still add up to the shipped file byte for byte.
   CHECK(openResp.staticBody != nullptr);
-  CHECK(openResp.staticLen == kHeadUnitOpenHtmlLen);
+  CHECK(openResp.staticLen == kHeadUnitOpenHtmlInjectOffset);
+  // kHeadUnitOpenHtml is a const array at namespace scope, so it has internal
+  // linkage: this translation unit holds its own copy and pointer identity with
+  // the one inside sta_readonly.cpp cannot be assumed. Contents are what matter.
+  CHECK(openResp.staticTail != nullptr);
+  CHECK(openResp.staticLen + openResp.staticTailLen == kHeadUnitOpenHtmlLen);
+  CHECK(openResp.injectText[0] == '\0');
+  CHECK(openResp.bodyBytes() == kHeadUnitOpenHtmlLen);
   CHECK(std::memcmp(openResp.staticBody, kHeadUnitOpenHtml,
-                    kHeadUnitOpenHtmlLen) == 0);
+                    kHeadUnitOpenHtmlInjectOffset) == 0);
+  CHECK(std::memcmp(openResp.staticTail,
+                    kHeadUnitOpenHtml + kHeadUnitOpenHtmlInjectOffset,
+                    openResp.staticTailLen) == 0);
+  // The splice point must sit immediately after the marker the page declares,
+  // or the address would land in the middle of an unrelated token.
+  CHECK(kHeadUnitOpenHtmlInjectOffset >= 5);
+  CHECK(std::memcmp(kHeadUnitOpenHtml + kHeadUnitOpenHtmlInjectOffset - 5,
+                    "INJ='", 5) == 0);
+  // The address is spliced inside a JS string literal, so Content-Length has to
+  // count it: a page sent with a stale length would hang the browser waiting for
+  // bytes that never come.
+  {
+    StaHttpResponse spliced = openResp;
+    std::snprintf(spliced.injectText, sizeof(spliced.injectText),
+                  "10.92.230.168");
+    CHECK(spliced.bodyBytes() == kHeadUnitOpenHtmlLen + 13);
+  }
 
   CHECK(StrictJsonParser(liveResp.jsonBody).parseDocument());
   CHECK(StrictJsonParser(tripsResp.jsonBody).parseDocument());
@@ -778,7 +805,19 @@ void testCrossLayerJsonParityNanSafetyAndSaeDtcFormatting(const char* dumpDir) {
       std::fclose(f);
     };
     writeFileBytes("root.html.gz", rootResp.staticBody, rootResp.staticLen);
-    writeFileBytes("h2-open.html", openResp.staticBody, openResp.staticLen);
+    // The dump must be the page as a client receives it: prefix, spliced
+    // address, tail. Writing only staticBody would drop everything after the
+    // injection point and the harness comparison would be meaningless.
+    {
+      std::string page(static_cast<const char*>(static_cast<const void*>(
+                           openResp.staticBody)),
+                       openResp.staticLen);
+      page.append(openResp.injectText);
+      page.append(static_cast<const char*>(static_cast<const void*>(
+                       openResp.staticTail)),
+                   openResp.staticTailLen);
+      writeFileBytes("h2-open.html", page.data(), page.size());
+    }
     writeFileBytes("live.json", liveResp.jsonBody.data(),
                    liveResp.jsonBody.size());
     writeFileBytes("trips.json", tripsResp.jsonBody.data(),

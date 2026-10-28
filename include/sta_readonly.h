@@ -112,8 +112,22 @@ struct StaHttpResponse {
   const char* contentDisposition = nullptr;
   const uint8_t* staticBody = nullptr;
   size_t staticLen = 0;
+  // The open page is sent in three pieces: everything up to the address, the
+  // gauge's own address, and the rest. A single span cannot express that, and a
+  // heap copy would duplicate 20 KB of flash-resident page per request. Empty
+  // injectText keeps the plain single-span behaviour for every other asset.
+  const uint8_t* staticTail = nullptr;
+  size_t staticTailLen = 0;
+  char injectText[20] = {0};
   bool includeAllowGet = false;
   std::string jsonBody;
+
+  size_t bodyBytes() const {
+    if (!staticBody) return jsonBody.size();
+    size_t n = staticLen + staticTailLen;
+    for (const char* c = injectText; *c; ++c) ++n;
+    return n;
+  }
 };
 
 struct StaRuntimeStatus {

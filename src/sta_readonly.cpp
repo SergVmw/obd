@@ -875,6 +875,24 @@ StaLiveSnapshot buildLiveSnapshot(uint32_t nowMs, uint32_t rtcNowSec,
   return s;
 }
 
+// The address the phone or head unit must type to reach this page again.
+// Only meaningful while the station link is up; host tests and a dead radio both
+// get an empty string, which the page reads as "no hint".
+void fillOwnAddress(char* out, size_t capacity) {
+  if (capacity == 0) return;
+  out[0] = '\0';
+#if defined(ESP32) && !defined(H2G_HOST_TESTS)
+  if (WiFi.status() == WL_CONNECTED) {
+    const IPAddress ip = WiFi.localIP();
+    std::snprintf(out, capacity, "%u.%u.%u.%u",
+                  static_cast<unsigned>(ip[0]), static_cast<unsigned>(ip[1]),
+                  static_cast<unsigned>(ip[2]), static_cast<unsigned>(ip[3]));
+  }
+#else
+  (void)capacity;
+#endif
+}
+
 void dispatchRequest(const char* method, const char* path, const char* query,
                      const StaLiveSnapshot& snapshot,
                      const TripHistory& tripHistory, StaHttpResponse& out) {
@@ -911,8 +929,15 @@ void dispatchRequest(const char* method, const char* path, const char* query,
     out.isGzipStatic = false;
     out.contentDisposition =
         "Content-Disposition: attachment; filename=\"h2-open.html\"\r\n";
+    // The download carries this gauge's own address, so the page saved to the
+    // head unit does not have to find a subnet it was never told. Empty when the
+    // radio is down: then the file is exactly the shipped page and the AP
+    // default inside it still applies.
+    fillOwnAddress(out.injectText, sizeof(out.injectText));
     out.staticBody = kHeadUnitOpenHtml;
-    out.staticLen = kHeadUnitOpenHtmlLen;
+    out.staticLen = kHeadUnitOpenHtmlInjectOffset;
+    out.staticTail = kHeadUnitOpenHtml + kHeadUnitOpenHtmlInjectOffset;
+    out.staticTailLen = kHeadUnitOpenHtmlLen - kHeadUnitOpenHtmlInjectOffset;
     return;
   }
 
@@ -1197,8 +1222,7 @@ void serveClientSession(WiFiClient& client, WiFiServer& server,
     const bool keepAlive =
         !clientAskedClose && !shouldStopRadioNow() &&
         (servedOnSocket + 1U < kMaxKeepAliveRequests);
-    const size_t bodyLen =
-        resp.staticBody ? resp.staticLen : resp.jsonBody.size();
+    const size_t bodyLen = resp.bodyBytes();
     char headerBuf[512];
     const int hLen = std::snprintf(
         headerBuf, sizeof(headerBuf),
@@ -1227,6 +1251,16 @@ void serveClientSession(WiFiClient& client, WiFiServer& server,
     if (resp.staticBody && resp.staticLen > 0) {
       client.write_P(reinterpret_cast<const char*>(resp.staticBody),
                      resp.staticLen);
+      if (resp.injectText[0] != '\0') {
+        size_t injectLen = 0;
+        while (resp.injectText[injectLen] != '\0') ++injectLen;
+        client.write(reinterpret_cast<const uint8_t*>(resp.injectText),
+                     injectLen);
+      }
+      if (resp.staticTail != nullptr && resp.staticTailLen > 0) {
+        client.write_P(reinterpret_cast<const char*>(resp.staticTail),
+                       resp.staticTailLen);
+      }
     } else if (!resp.jsonBody.empty()) {
       client.write(reinterpret_cast<const uint8_t*>(resp.jsonBody.data()),
                    resp.jsonBody.size());

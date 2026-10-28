@@ -182,23 +182,14 @@ html, body {
   var GW_FIRST_OCTETS = Q.gwBase ? Q.gwBase : '192.168';
   var MAX_HOST = Math.min(254, Math.max(2, parseInt(Q.maxHost, 10) || 254));
   var PROBE_PATH = Q.probe || '/h2probe';
-  // Where the gauge's own access point puts it. Deterministic, and the one
-  // address worth trying before scanning anything: in AP mode the phone is
-  // talking to this device already, it just does not know it.
-  var AP_HOST = Q.apHost || '192.168.4.1';
+  var INJ='',AP_HOST = Q.apHost || INJ || '192.168.4.1';
 
   var foundHost = null;
   var roundNum = 0;
   var scanRunning = false;
   var retryTimer = null;
-  // Every stage captures the generation it started in; the retry button raises
-  // a new one so a running sweep stops instead of holding it dead.
   var scanGen = 0;
-  // Prefixes whose low half this round already proved empty - the full pass
-  // used to sweep .2..63 again for the four the priority pass had just covered.
   var lowScanned = {};
-  // Window of the candidate list the next round starts from; the list itself is
-  // never truncated, so no subnet is dropped.
   var gwCursor = 0;
   var GW_WINDOW = 24;
 
@@ -273,11 +264,6 @@ html, body {
     }
   }
 
-  // Discovery probe. An <img> load is not subject to CORS, so this answers the
-  // same way on Android 7's WebView and on Android 11's Chrome. The JSON probe
-  // below does not: a file:// page reading a cross-origin JSON is blocked
-  // without Access-Control-Allow-Origin, which is exactly why the gauge stopped
-  // being found on the newer phone while manual entry kept working.
   function probeHostImage(host, timeoutMs, cb) {
     var img = new Image();
     var done = false;
@@ -287,8 +273,6 @@ html, body {
       done = true;
       if (timer) { clearTimeout(timer); timer = null; }
       img.onload = img.onerror = null;
-      // Dropping the src releases the request slot; without it a slow probe
-      // keeps a socket open through the whole sweep.
       try { img.src = ''; } catch (_) {}
       cb(ok);
     }
@@ -298,9 +282,6 @@ html, body {
     img.src = 'http://' + host + PROBE_PATH + '?_=' + (+new Date());
   }
 
-  // Reads the version after the address is known. Best effort by design: on a
-  // browser that blocks the read we still have a confirmed address, and a
-  // redirect that works is worth more than a version string that does not.
   function confirmHost(host, timeoutMs, cb) {
     var xhr = new XMLHttpRequest();
     var done = false;
@@ -329,16 +310,12 @@ html, body {
     try { xhr.send(null); } catch (_) { finish(false, null); }
   }
 
-  // Confirms an address and opens it. The version read is a separate, optional
-  // step: when it fails the address is still good.
   function adoptHost(host) {
     confirmHost(host, 900, function(ok, data) {
       finishFound(host, ok ? data : null);
     });
   }
 
-  // One contiguous host range of one /24. Split out of scanPrefix so a wrong
-  // subnet can be abandoned after its low half instead of after the whole /24.
   function scanRange(prefix, from, to, doneCb) {
     var nextHost = from;
     var active = 0;
@@ -348,8 +325,6 @@ html, body {
     var span = Math.max(1, to - from + 1);
 
     function pump() {
-      // A newer generation owns the search now; abandon this range silently and
-      // leave whatever is still in flight to drain without extending the chain.
       if (gen !== scanGen) { finished = true; return; }
       if (foundHost) {
         if (!finished) { finished = true; doneCb(true); }
@@ -388,11 +363,6 @@ html, body {
     pump();
   }
 
-  // A hotspot hands out addresses from the bottom of its pool, so the gauge is
-  // nearly always in .2..63. Trying the low half of a subnet before its high
-  // half is what makes a wrong guess cost a second instead of ten, and on a
-  // phone that has to guess the subnet at all - WebRTC hides the local address
-  // behind mDNS - the number of guesses is the whole problem.
   function scanPrefix(prefix, doneCb) {
     var lowTo = Math.min(63, MAX_HOST);
     var gen = scanGen;
@@ -400,7 +370,6 @@ html, body {
       if (MAX_HOST <= lowTo) { doneCb(false); return; }
       scanRange(prefix, lowTo + 1, MAX_HOST, doneCb);
     }
-    // 62 probes per prefix to re-sweep a half the priority pass just covered.
     if (lowScanned[prefix]) { high(); return; }
     scanRange(prefix, 2, lowTo, function(hit) {
       if (gen !== scanGen) return;
@@ -424,10 +393,6 @@ html, body {
     });
   }
 
-  // The low half of several candidate subnets before any one full sweep. On a
-  // phone three or four prefixes look plausible and the right one is usually
-  // the first, so this ends the search in a couple of seconds; if the gauge sits
-  // high in the pool the full pass below still finds it.
   function scanLowHalfList(prefixes, idx, doneCb) {
     var gen = scanGen;
     if (gen !== scanGen) return;
@@ -485,16 +450,6 @@ html, body {
     }
   }
 
-  // Which subnets are real is a guess, and on a phone it is the only guess
-  // available. Every candidate is timed, and the order is by that time: the
-  // address refused by the local stack - the phone's own hotspot address - comes
-  // back first, while a subnet that merely has no route comes back slower or not
-  // at all.
-  //
-  // The whole list comes back sorted and the caller takes a window from it.
-  // Truncating here was a defect: with thirty instantly-failing subnets the
-  // real one can rank below the cut-off, and since this runs fresh every round
-  // the same thirty outrank it every time - never scanned, not merely late.
   function detectActiveGateways(alreadyTried, cb) {
     var maxSub = parseInt(Q.maxSub, 10);
     if (isNaN(maxSub) || maxSub < 0 || maxSub > 255) maxSub = 255;
@@ -586,9 +541,6 @@ html, body {
     }
   }
 
-  // One window per round, cursor advancing and wrapping, so every subnet is
-  // covered within ceil(n / GW_WINDOW) rounds even when more than GW_WINDOW of
-  // them refuse instantly and would otherwise outrank the real one forever.
   function takeGatewayWindow(all) {
     var n = all.length;
     if (n === 0) return [];
@@ -614,7 +566,9 @@ html, body {
       if (h && !seenHost[h]) { seenHost[h] = true; directHosts.push(h); }
     }
     if (Q.host) pushDirect(withPort(Q.host));
-    // The gauge's own AP address, before mDNS and before any sweep.
+    if (location.hostname) pushDirect(location.host);
+    var typed = ($('manualInp').value || '').replace(/\s+/g, '');
+    if (/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(typed)) pushDirect(withPort(typed));
     if (AP_HOST) pushDirect(withPort(AP_HOST));
     var hashHost = window.location.hash ? window.location.hash.slice(1) : '';
     if (hashHost) pushDirect(withPort(hashHost));
@@ -656,8 +610,6 @@ html, body {
   }
 
   function handleManualOpen() {
-    // A typed subnet is a statement, not a guess: sweep it whole even if some
-    // earlier round already proved its low half empty.
     lowScanned = {};
     var raw = ($('manualInp').value || '').replace(/\s+/g, '');
     if (!raw) { runDiscoveryRound(); return; }
@@ -679,10 +631,6 @@ html, body {
       if (ok) {
         adoptHost(target);
       } else {
-        // The owner typed an address; a probe that failed here may be a
-        // browser policy rather than a device that is not there, so the
-        // navigation still happens. That path is how the address was reached
-        // before discovery learned to work without CORS.
         rememberHost(target);
         if (!NO_REDIRECT) window.location.href = 'http://' + target + '/';
       }
@@ -696,8 +644,6 @@ html, body {
   $('rescanBtn').addEventListener('click', function() {
     if (foundHost) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    // Raise a new generation: every sweep already in flight stops extending
-    // itself on its next step, and this round starts from a clean slate.
     scanGen++;
     scanRunning = false;
     lowScanned = {};
