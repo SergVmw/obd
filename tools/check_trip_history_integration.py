@@ -44,17 +44,20 @@ def main() -> int:
     #    migration). The record size did not change; only the version and the
     #    meaning of one field did, which is what lets a saved configuration move
     #    without a reset.
-    assert "#define H2G_CONFIG_SCHEMA 14" in version_h
+    # 0.4.46 appended the clock-driven night window, so the record grew from
+    # 348 to 352 bytes and a schema-14 record migrates through migrateV13.
+    assert "#define H2G_CONFIG_SCHEMA 15" in version_h
     assert "kV13RecordSize = 348" in app_cfg_cpp
     assert "migrateV13" in app_cfg_cpp and "lpgBasisRatio" in app_cfg_cpp
     assert "kV12FieldsEnd = 226" in app_cfg_cpp
     assert "kV12ChecksumOffset = 228" in app_cfg_cpp
     assert "kV13ChecksumOffset = 344" in app_cfg_cpp
-    assert "kV13ChecksumOffset + 4 == sizeof(ConfigData)" in app_cfg_cpp
+    assert "kV15ChecksumOffset + 4 == sizeof(ConfigData)" in app_cfg_cpp
     assert "offsetof(ConfigData, tripGapMin) == kV11FieldsEnd" in app_cfg_cpp
     assert "offsetof(ConfigData, tripMinDistanceM) == 222" in app_cfg_cpp
     assert "offsetof(ConfigData, utcOffsetMin) == 224" in app_cfg_cpp
-    assert "offsetof(ConfigData, checksum) == kV13ChecksumOffset" in app_cfg_cpp
+    assert "offsetof(ConfigData, checksum) == kV15ChecksumOffset" in app_cfg_cpp
+    assert "offsetof(ConfigData, brightnessNightStartMin) == kV14FieldsEnd" in app_cfg_cpp
     assert "kV11FieldsEnd = 221" in app_cfg_cpp
 
     # 3. Storage layout sizes match design spec

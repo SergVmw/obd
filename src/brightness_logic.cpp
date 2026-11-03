@@ -26,7 +26,7 @@ uint16_t median5(const uint16_t* samples) {
 
 bool BrightnessLogic::validSettings(const BrightnessSettings& s,
                                     uint8_t day, uint8_t night) {
-  return static_cast<uint8_t>(s.mode) <= 3 && s.reserved == 0 &&
+  return static_cast<uint8_t>(s.mode) <= 4 && s.reserved == 0 &&
          day >= 10 && day <= 100 && night >= 5 && night <= 80 && night <= day &&
          s.dayAdc <= 4095 &&
          static_cast<uint32_t>(s.nightAdc) + kMinConfiguredSpan <= s.dayAdc &&
@@ -145,7 +145,30 @@ void BrightnessLogic::learn(uint32_t now, uint16_t adc) {
   resetWindow(now);
 }
 
+bool BrightnessLogic::nightWindowActive(int32_t minute, uint16_t startMin,
+                                           uint16_t endMin) {
+  if (minute < 0 || minute > 1439) return false;
+  if (startMin > 1439 || endMin > 1439) return false;
+  if (startMin == endMin) return false;
+  if (startMin < endMin) return minute >= startMin && minute < endMin;
+  // Crossing midnight: 21:00..07:00 is night on both sides of 00:00.
+  return minute >= startMin || minute < endMin;
+}
+
+void BrightnessLogic::setClock(int32_t minuteOfDay, uint16_t nightStartMin,
+                               uint16_t nightEndMin) {
+  localMinuteOfDay_ = minuteOfDay;
+  clockNight_ = nightWindowActive(minuteOfDay, nightStartMin, nightEndMin);
+}
+
 float BrightnessLogic::desiredPercent() const {
+  // The clock mode is a two-level switch with the same fade as the sensor
+  // path, not a ramp across a window: the sun does not fade the cabin at a
+  // measurable rate inside one minute, and a gradual slope would leave the
+  // panel at an unreadable level for the whole transition.
+  if (settings_.mode == BrightnessMode::Time) {
+    return clockNight_ ? nightPercent_ : dayPercent_;
+  }
   if (settings_.mode != BrightnessMode::Auto) {
     return initialPercent(settings_, dayPercent_, nightPercent_);
   }

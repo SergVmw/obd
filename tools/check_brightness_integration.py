@@ -30,7 +30,10 @@ for field in fields:
 # type/range against regressions in the ArduinoJson/WebServer integration.
 integer_ranges = {
     "brightnessDay": (10, 100), "brightnessNight": (5, 80),
-    "brightnessMode": (0, 3), "lightNightAdc": (0, 4095),
+    # 4 is the clock mode added in 0.4.46; the gate tracks the enum, so a
+    # new mode value cannot be offered by the portal and rejected by valid().
+    "brightnessMode": (0, 4), "lightNightAdc": (0, 4095),
+    "nightStartMin": (0, 1439), "nightEndMin": (0, 1439),
     "lightDayAdc": (0, 4095), "lightDimDelayMs": (0, 30000),
     "lightBrightenDelayMs": (0, 30000), "rotation": (0, 3),
     "startPage": (0, 4), "mainCenterValue": (0, 3),

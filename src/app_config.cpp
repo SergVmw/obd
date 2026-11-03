@@ -72,6 +72,13 @@ constexpr size_t kV13ChecksumOffset = 344;
 // to physical gas litres or to petrol-equivalent ones, exactly as schemas 7/8
 // and 9/10 are told apart.
 constexpr size_t kV13RecordSize = 348;
+// Schema 15 appends the night window of the clock-driven brightness mode:
+// brightnessNightStartMin (2 B @ 342), brightnessNightEndMin (2 B @ 344),
+// moving checksum to 348 and sizeof(ConfigData) to 352. Bytes 342..343 were
+// alignment padding in schema 13 and in schema 14, which is why the migration
+// below copies only the 342 bytes those records actually defined.
+constexpr size_t kV14FieldsEnd = 342;
+constexpr size_t kV15ChecksumOffset = 348;
 static_assert(std::is_trivially_copyable<ConfigData>::value &&
                   std::is_standard_layout<ConfigData>::value,
               "NVS config must remain trivially copyable and standard-layout");
@@ -103,9 +110,13 @@ static_assert(offsetof(ConfigData, staPassword) == 260,
               "Schema-13 staPassword offset");
 static_assert(offsetof(ConfigData, staHostname) == 325,
               "Schema-13 staHostname offset");
-static_assert(offsetof(ConfigData, checksum) == kV13ChecksumOffset,
-              "Schema-13 checksum offset");
-static_assert(kV13ChecksumOffset + 4 == sizeof(ConfigData),
+static_assert(offsetof(ConfigData, brightnessNightStartMin) == kV14FieldsEnd,
+              "Schema-14 defined prefix changed; update migrateV13 explicitly");
+static_assert(offsetof(ConfigData, brightnessNightEndMin) == 344,
+              "Schema-15 night window end offset");
+static_assert(offsetof(ConfigData, checksum) == kV15ChecksumOffset,
+              "Schema-15 checksum offset");
+static_assert(kV15ChecksumOffset + 4 == sizeof(ConfigData),
               "the checksum must end the record; a field appended after it "
               "would not be covered by it");
 static_assert(kV13RecordSize == kV13ChecksumOffset + 4,
@@ -325,6 +336,10 @@ ConfigData ConfigStore::defaults() {
   c.tripGapMin = 5;
   c.tripMinDistanceM = 100;
   c.utcOffsetMin = 180;
+  // 21:00..07:00, the window the owner described. Minutes since local midnight
+  // and local means "after utcOffsetMin", which the caller applies.
+  c.brightnessNightStartMin = 21 * 60;
+  c.brightnessNightEndMin = 7 * 60;
 
   c.staEnabled = false;
   c.staSsid[0] = '\0';
@@ -371,6 +386,15 @@ bool ConfigStore::valid(const ConfigData& config) {
          BrightnessLogic::validSettings(config.brightness,
                                          config.brightnessDay,
                                          config.brightnessNight) &&
+         // The window is validated even when the mode does not use it: a record
+         // written by a newer portal and later switched back into Time mode must
+         // not carry a window the logic would read as "always day" silently.
+         // start == end is refused rather than treated as an empty window,
+         // because the portal cannot express the difference and a stored pair
+         // that reads as day is a confusing way to say "off".
+         config.brightnessNightStartMin < 1440 &&
+         config.brightnessNightEndMin < 1440 &&
+         config.brightnessNightStartMin != config.brightnessNightEndMin &&
          config.rotation <= 3 &&
          // Five screens, 0..4, which is DashboardUi::kPageCount. This bound
          // said 3 while the cycle already had five: the portal offers every
@@ -634,7 +658,10 @@ bool ConfigStore::migrateV13(const uint8_t* record, ConfigData& destination) {
   memcpy(&magic, record, sizeof(magic));
   memcpy(&schema, record + 4, sizeof(schema));
   memcpy(&storedChecksum, record + kV13ChecksumOffset, sizeof(storedChecksum));
-  if (magic != kMagic || schema != 13 ||
+  // Schemas 13 and 14 share a length and an offset, and differ only in what two
+  // of the bytes mean, so one function reads both. Schema 14 already carries the
+  // petrol-equivalent basis, so the upgrade applies to 13 alone.
+  if (magic != kMagic || (schema != 13 && schema != 14) ||
       storedChecksum != fnv1a(record, kV13ChecksumOffset)) return false;
 
   destination = defaults();
@@ -643,8 +670,11 @@ bool ConfigStore::migrateV13(const uint8_t* record, ConfigData& destination) {
   // was appended, and no byte that used to be padding became a field. What
   // changed is the meaning of two of those bytes, which the shared upgrade
   // restates in one place for every migration path.
-  memcpy(static_cast<void*>(&destination), record, kV13ChecksumOffset);
-  upgradePreSchema14(destination);
+  // Only the bytes a schema-13 or schema-14 record defined: 342..343 were
+  // alignment padding before schema 15, and copying them would turn whatever
+  // the compiler left there into a night window.
+  memcpy(static_cast<void*>(&destination), record, kV14FieldsEnd);
+  if (schema == 13) upgradePreSchema14(destination);
   destination.schemaVersion = H2G_CONFIG_SCHEMA;
   destination.checksum = checksum(destination);
   return valid(destination);
@@ -675,15 +705,25 @@ bool ConfigStore::begin() {
       if (schema == H2G_CONFIG_SCHEMA) {
         memcpy(&config_, record, sizeof(config_));
         loaded = valid(config_);
-      } else if (schema == 13) {
-        // Same length, older meaning: the LPG coefficient inside refers to
-        // physical gas litres and the boost scale to the old factory pair.
-        loaded = migrateV13(record, config_);
-        preSchema14 = loaded;
-        needsSave = loaded;
       } else {
         loaded = false;
       }
+    }
+  } else if (storedLength == kV13RecordSize) {
+    // Schemas 13 and 14 are this length: schema 15 added four bytes, so records
+    // written before it all arrive here. The stored version still says whether
+    // the LPG coefficient inside refers to physical gas litres (13) or to
+    // petrol-equivalent ones (14), and the trip in progress depends on the
+    // answer.
+    uint8_t record[kV13RecordSize]{};
+    loaded = preferences_.getBytes("config", record, sizeof(record)) ==
+             sizeof(record);
+    if (loaded) {
+      uint16_t schema = 0;
+      memcpy(&schema, record + 4, sizeof(schema));
+      loaded = migrateV13(record, config_);
+      preSchema14 = loaded && schema == 13;
+      needsSave = loaded;
     }
   } else if (storedLength == kV12RecordSize) {
     uint8_t record[kV12RecordSize]{};

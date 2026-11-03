@@ -302,6 +302,19 @@ struct ConfigData {
   char staPassword[65];
   char staHostname[17];
 
+  // Schema 15: the night window for BrightnessMode::Time, as minutes since
+  // local midnight. Appended after staHostname for the reason every earlier
+  // field was appended: a field inserted before the schema-5 offsets would move
+  // the bytes migrateV5 reads, and the two bytes at 342..343 were alignment
+  // padding a schema-13 record never defined, so they are not copied out of an
+  // older record at all.
+  //
+  // The window is deliberately shared by every instance of the mode rather than
+  // being per-season: one pair of times, editable from the portal, is what the
+  // owner asked for, and a second pair would need a calendar to be useful.
+  uint16_t brightnessNightStartMin;  // 342..343
+  uint16_t brightnessNightEndMin;    // 344..345
+
   uint32_t checksum;
 };
 

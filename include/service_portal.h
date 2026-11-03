@@ -26,6 +26,7 @@
 #include "trip_clock.h"
 #include "trip_context.h"
 #include "trip_history.h"
+#include "ve_log.h"
 
 class ServicePortal {
  public:
@@ -39,7 +40,8 @@ class ServicePortal {
                 CanMonitor& canMonitor, ObdClient& obdClient,
                 BrightnessManager& brightness, OtaDiagnostics& otaDiagnostics,
                 TripClock& tripClock, TripContextStore& tripContext,
-                TripBoundary& tripBoundary, TripHistory& tripHistory
+                TripBoundary& tripBoundary, TripHistory& tripHistory,
+                VeLog& veLog
 #ifdef H2G_DIAGNOSTIC_BUILD
                 , ObdTraceRecorder& diagnosticTrace
 #endif
@@ -53,7 +55,8 @@ class ServicePortal {
         obdClient_(obdClient),
         brightness_(brightness), otaDiagnostics_(otaDiagnostics),
         tripClock_(tripClock), tripContext_(tripContext),
-        tripBoundary_(tripBoundary), tripHistory_(tripHistory)
+        tripBoundary_(tripBoundary), tripHistory_(tripHistory),
+        veLog_(veLog)
 #ifdef H2G_DIAGNOSTIC_BUILD
         , diagnosticTrace_(diagnosticTrace)
 #endif
@@ -90,6 +93,8 @@ class ServicePortal {
   void receiveTime();
   void sendTrips();
   void sendTripDays();
+  void sendVe();
+  void clearVe();
   void closeCurrentTrip();
   void clearTripHistory();
   void sendStatus();
@@ -189,6 +194,7 @@ class ServicePortal {
   TripContextStore& tripContext_;
   TripBoundary& tripBoundary_;
   TripHistory& tripHistory_;
+  VeLog& veLog_;
 #ifdef H2G_DIAGNOSTIC_BUILD
   ObdTraceRecorder& diagnosticTrace_;
 #endif

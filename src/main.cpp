@@ -63,12 +63,27 @@ OneButton button;
 LpgValveInput lpgInput;
 PowerManager powerManager;
 BrightnessManager brightnessManager;
+
 ScreenGate screenGate;
 OtaDiagnostics otaDiagnostics;
 TripClock tripClock;
+// Minutes since local midnight for the clock-driven brightness mode, or -1 when
+// the clock has never synchronized. Built from the same epochToLocalDateTime and
+// the same utcOffsetMin the trip history and the portal print, so the panel
+// cannot disagree with the timestamps on the next screen. -1 is "unknown", not
+// midnight: the logic answers "day" for it, which is the recoverable direction.
+static int32_t localMinuteOfDay(const ConfigData& config) {
+  const uint32_t epochSec = tripClock.nowEpochSec(currentRtcSec());
+  if (epochSec < TripClock::kMinPlausibleEpochSec) return -1;
+  const TripLocalDateTime local =
+      epochToLocalDateTime(epochSec, config.utcOffsetMin);
+  return static_cast<int32_t>(local.hour) * 60 + local.minute;
+}
 TripContextStore tripContext;
 TripBoundary tripBoundary;
 TripHistory tripHistory;
+VeLog veLog;
+VeSampler veSampler;
 TripHistoryView historyView;
 StaReadOnlyRuntime staRuntime;
 ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
@@ -77,7 +92,7 @@ ServicePortal servicePortal(configStore, telemetry, telemetryEngine, tripStore,
                             littleFsStorage, canMonitor, obdClient,
                             brightnessManager,
                             otaDiagnostics, tripClock, tripContext,
-                            tripBoundary, tripHistory
+                            tripBoundary, tripHistory, veLog
 #ifdef H2G_DIAGNOSTIC_BUILD
                             , diagnosticTrace
 #endif
@@ -451,6 +466,11 @@ void setup() {
   if (!tripHistory.begin(littleFsStorage)) {
     ESP_LOGW(kTag, "Trip history unavailable");
   }
+  // The VE log is 128 KiB of the filesystem and one file: a failure here costs
+  // the curve, never the gauge, so it warns and keeps going.
+  if (!veLog.begin(littleFsStorage)) {
+    ESP_LOGW(kTag, "VE log unavailable");
+  }
   // File scope, not a local: 1416 bytes of recovered history inside setup() is
   // a quarter of the loopTask stack before a single record has been read.
   if (!dtcHistoryPersistence.begin(littleFsStorage, recoveredDtcHistory)) {
@@ -548,7 +568,8 @@ void loop() {
   }
   // Also runs in service mode so saved brightness changes and live ADC work
   // without a reboot. During a raw OTA body the hardware PWM holds its duty.
-  brightnessManager.update(now, configStore.data());
+  brightnessManager.update(now, configStore.data(),
+                           localMinuteOfDay(configStore.data()));
 
   // The gauge hangs off the OBD battery line, which this car leaves live all
   // night, so the only thing that ever turned anything off was the low-voltage
@@ -693,6 +714,31 @@ void loop() {
   serviceDtcPersistence(now);
 
   const uint32_t rtcNowSec = currentRtcSec();
+
+  // VE capture, after the OBD loop so the numbers are the ones this iteration
+  // just received, and outside any service session: the portal reads the log
+  // and must not be racing a write while it does.
+  {
+    VeRecord veRecord;
+    if (veSampler.tick(now, telemetry, veRecord)) {
+      const uint32_t epoch = tripClock.nowEpochSec(rtcNowSec);
+      if (epoch >= TripClock::kMinPlausibleEpochSec) {
+        veRecord.epochSec = epoch;
+        veRecord.flags |= VeFlag::ClockKnown;
+      }
+      StorageLock lock;
+      veLog.append(veRecord);
+    }
+    // One filesystem write a minute, whatever the sample count: the buffer is
+    // small and a flush per sample would put a flash erase on the main loop
+    // twelve times a minute.
+    static uint32_t lastVeFlushAt = 0;
+    if (now - lastVeFlushAt >= 60000U) {
+      lastVeFlushAt = now;
+      StorageLock lock;
+      veLog.flush();
+    }
+  }
   {
     const uint32_t syncedUtc = staRuntime.consumeSyncedUtcEpochSec();
     if (syncedUtc != 0) {

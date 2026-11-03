@@ -8,7 +8,10 @@
 class BrightnessManager {
  public:
   bool begin(uint32_t now, const ConfigData& config);
-  void update(uint32_t now, const ConfigData& config);
+  // localMinuteOfDay is minutes since local midnight, or negative when the
+  // clock is not synchronized; only the clock-driven mode reads it.
+  void update(uint32_t now, const ConfigData& config,
+              int32_t localMinuteOfDay = -1);
   bool checkpoint();
   bool resetCalibration(uint32_t now);
   const BrightnessLogic& state() const { return logic_; }

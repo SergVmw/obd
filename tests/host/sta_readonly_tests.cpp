@@ -232,11 +232,11 @@ class StrictJsonParser {
 
 void testSchema13LayoutAndPaddingPoisonMigration() {
   resetHostEnv();
-  // Schema 14 keeps the schema-13 byte layout exactly: 0.4.37 changed what two
-  // fields mean, not where they are, which is why this record is still 348
-  // bytes and why begin() has to read the stored version to tell them apart.
-  CHECK(H2G_CONFIG_SCHEMA == 14);
-  CHECK(sizeof(ConfigData) == 348);
+  // 0.4.46 appended the clock-driven night window, so a schema-13 or schema-14
+  // record (both 348 bytes) now arrives through the length branch and has to be
+  // read by version: 0.4.37 changed what two fields mean without moving them.
+  CHECK(H2G_CONFIG_SCHEMA == 15);
+  CHECK(sizeof(ConfigData) == 352);
 
   ConfigData base = ConfigStore::defaults();
   CHECK(!base.staEnabled);
@@ -306,8 +306,8 @@ void testSchema13ExhaustiveBitFlipRejection() {
   CHECK(prefs.getBytes("config", golden, sizeof(golden)) == sizeof(golden));
   prefs.end();
 
-  // Reverse/mutation test: flip every single bit across all 348 bytes (2784
-  // distinct 1-bit corruptions) and verify 100% rejection via FNV-1a checksum.
+  // Reverse/mutation test: flip every single bit across the whole record and
+  // verify 100% rejection via the FNV-1a checksum.
   const size_t totalBits = sizeof(ConfigData) * 8;
   for (size_t bit = 0; bit < totalBits; ++bit) {
     uint8_t mutated[sizeof(ConfigData)];
@@ -325,8 +325,8 @@ void testSchema13ExhaustiveBitFlipRejection() {
     CHECK(std::strcmp(checkStore.data().staSsid, "") == 0);
     CHECK(std::strcmp(checkStore.data().staHostname, "h2") == 0);
   }
-  std::printf("PASS exhaustive %zu single-bit flip mutations rejected across 348-byte Schema 14\n",
-              totalBits);
+  std::printf("PASS exhaustive %zu single-bit flip mutations rejected across the %zu-byte record\n",
+              totalBits, sizeof(ConfigData));
 }
 
 void testStaValidationAndStateMachinePolicy() {

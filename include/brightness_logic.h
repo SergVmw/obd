@@ -8,6 +8,11 @@ enum class BrightnessMode : uint8_t {
   Manual = 1,
   AlwaysDay = 2,
   AlwaysNight = 3,
+  // Schema 15. Night and day follow the local clock instead of the light
+  // sensor. The reason is not preference: under a windscreen the sensor sees
+  // street lighting, headlights and tunnels, so Auto switches the panel at
+  // dusk and at every overpass. The clock cannot be surprised by a lamp.
+  Time = 4,
 };
 
 // Appended to the schema-5 config prefix; keep a deterministic 12-byte layout.
@@ -44,6 +49,20 @@ class BrightnessLogic {
              uint8_t dayPercent, uint8_t nightPercent,
              const LightCalibration& calibration = LightCalibration{},
              uint16_t initialAdc = 0xFFFF);
+  // Local time as minutes since midnight, or a negative value when the clock is
+  // not synchronized yet. Only the Time mode reads it; every other mode keeps
+  // behaving exactly as before, so an unsynced clock cannot darken a panel that
+  // follows the sensor or a fixed level.
+  void setClock(int32_t minuteOfDay, uint16_t nightStartMin,
+                uint16_t nightEndMin);
+  bool clockNight() const { return clockNight_; }
+  int32_t localMinuteOfDay() const { return localMinuteOfDay_; }
+  // A window that crosses midnight (21:00..07:00) is the normal case, so the
+  // comparison cannot be a simple start <= now < end. An unknown time, an
+  // empty window and an out-of-range minute all answer "day": a bright panel is
+  // recoverable with one press, a dark one in daylight is not.
+  static bool nightWindowActive(int32_t localMinuteOfDay, uint16_t startMin,
+                                uint16_t endMin);
   void sample(uint32_t now, uint16_t rawAdc,
               const BrightnessSettings& settings,
               uint8_t dayPercent, uint8_t nightPercent);
@@ -99,4 +118,7 @@ class BrightnessLogic {
   uint16_t windowMin_ = 4095;
   uint16_t windowMax_ = 0;
   bool windowClipped_ = false;
+
+  int32_t localMinuteOfDay_ = -1;
+  bool clockNight_ = false;
 };

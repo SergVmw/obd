@@ -71,9 +71,15 @@ bool BrightnessManager::begin(uint32_t now, const ConfigData& config) {
   return storageOpened_;
 }
 
-void BrightnessManager::update(uint32_t now, const ConfigData& config) {
+void BrightnessManager::update(uint32_t now, const ConfigData& config,
+                               int32_t localMinuteOfDay) {
   if (now - lastSampleAt_ < BrightnessLogic::kSampleMs) return;
   lastSampleAt_ = now;
+  // Refreshed every sample rather than on change: the window is two bytes in
+  // the config and the caller already has it, so there is nothing to cache and
+  // an edited window takes effect on the next tick instead of at reboot.
+  logic_.setClock(localMinuteOfDay, config.brightnessNightStartMin,
+                  config.brightnessNightEndMin);
   // Bounded work: four ADC1 conversions, then one median/EMA step. ADC1 is
   // available with Wi-Fi active on ESP32-S3; ADC2 is deliberately not used.
   logic_.sample(now, readLightAdc(), config.brightness,

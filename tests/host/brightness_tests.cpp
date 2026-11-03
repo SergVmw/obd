@@ -107,11 +107,34 @@ std::vector<uint8_t> v13Record(float lpgCorrection, float boostMaxBar,
   c.tripGapMin = 5;
   c.tripMinDistanceM = 100;
   c.utcOffsetMin = 180;
-  std::vector<uint8_t> result(sizeof(ConfigData));
-  std::memcpy(result.data(), &c, offsetof(ConfigData, checksum));
-  const uint32_t hash = fnv(result.data(), offsetof(ConfigData, checksum));
-  std::memcpy(result.data() + offsetof(ConfigData, checksum), &hash,
-              sizeof(hash));
+  // A schema-13 record is 348 bytes with the checksum at 344, and it defines
+  // only the first 342 of them: bytes 342..343 were alignment padding then and
+  // are the night window now. Writing it with today's sizeof would build a
+  // record no device in the field ever stored, and the migration would be
+  // tested against a layout that does not exist.
+  constexpr size_t kRecordBytes = 348;
+  constexpr size_t kFieldsEnd = 342;
+  constexpr size_t kChecksumOffset = 344;
+  std::vector<uint8_t> result(kRecordBytes, 0);
+  std::memcpy(result.data(), &c, kFieldsEnd);
+  const uint32_t hash = fnv(result.data(), kChecksumOffset);
+  std::memcpy(result.data() + kChecksumOffset, &hash, sizeof(hash));
+  return result;
+}
+
+// Schema 14 is schema 13's length and layout with the petrol-equivalent basis
+// already applied, so the only byte that tells them apart is the version.
+std::vector<uint8_t> v14Record(float lpgCorrection) {
+  ConfigData c = ConfigStore::defaults();
+  c.schemaVersion = 14;
+  c.lpgCorrection = lpgCorrection;
+  constexpr size_t kRecordBytes = 348;
+  constexpr size_t kFieldsEnd = 342;
+  constexpr size_t kChecksumOffset = 344;
+  std::vector<uint8_t> result(kRecordBytes, 0);
+  std::memcpy(result.data(), &c, kFieldsEnd);
+  const uint32_t hash = fnv(result.data(), kChecksumOffset);
+  std::memcpy(result.data() + kChecksumOffset, &hash, sizeof(hash));
   return result;
 }
 
@@ -858,6 +881,113 @@ void testSchema13To14MigratesTheGasCoefficientAndBoostScale() {
   }
 }
 
+// 0.4.46: brightness by the clock.
+void testNightWindowArithmetic() {
+  using B = BrightnessLogic;
+  const uint16_t start = 21 * 60;
+  const uint16_t end = 7 * 60;
+  CHECK(!B::nightWindowActive(20 * 60 + 59, start, end));
+  CHECK(B::nightWindowActive(start, start, end));
+  CHECK(B::nightWindowActive(23 * 60, start, end));
+  CHECK(B::nightWindowActive(0, start, end));
+  CHECK(B::nightWindowActive(6 * 60 + 59, start, end));
+  // The end minute itself is day: a 21:00..07:00 window must put exactly one
+  // sample at 07:00 on the bright side, or the panel never leaves night.
+  CHECK(!B::nightWindowActive(end, start, end));
+  CHECK(!B::nightWindowActive(12 * 60, start, end));
+  // A window that does not cross midnight still works, so the portal's pair is
+  // not secretly restricted to the wrapping case.
+  CHECK(!B::nightWindowActive(59, 60, 120));
+  CHECK(B::nightWindowActive(60, 60, 120));
+  CHECK(B::nightWindowActive(119, 60, 120));
+  CHECK(!B::nightWindowActive(120, 60, 120));
+  // Unknown time, empty window, out-of-range minute: day in every case.
+  CHECK(!B::nightWindowActive(-1, start, end));
+  CHECK(!B::nightWindowActive(1440, start, end));
+  CHECK(!B::nightWindowActive(23 * 60, 300, 300));
+  CHECK(!B::nightWindowActive(23 * 60, 1440, end));
+  CHECK(!B::nightWindowActive(23 * 60, start, 5000));
+}
+
+void testClockModeDrivesThePanelAndIgnoresTheSensor() {
+  BrightnessSettings s;
+  s.mode = BrightnessMode::Time;
+  BrightnessLogic logic;
+  logic.begin(0, s, 82, 26);
+  uint32_t now = 0;
+  const auto run = [&](int steps, uint16_t adc) {
+    for (int i = 0; i < steps; ++i) {
+      now += 500;
+      logic.sample(now, adc, s, 82, 26);
+    }
+  };
+
+  // 23:00 with a bright ADC reading: the sensor must not win.
+  logic.setClock(23 * 60, 21 * 60, 7 * 60);
+  CHECK(logic.clockNight());
+  run(120, 3500);
+  CHECK(near(logic.currentPercent(), 26.0f, 0.6f));
+
+  // Noon with a dark ADC reading: still day.
+  logic.setClock(12 * 60, 21 * 60, 7 * 60);
+  CHECK(!logic.clockNight());
+  run(120, 40);
+  CHECK(near(logic.currentPercent(), 82.0f, 0.6f));
+
+  // Unsynchronized clock: day, because a dark panel in daylight is the failure
+  // that cannot be recovered from the road.
+  logic.setClock(-1, 21 * 60, 7 * 60);
+  CHECK(!logic.clockNight());
+  run(120, 40);
+  CHECK(near(logic.currentPercent(), 82.0f, 0.6f));
+
+  // The fade is the existing ramp, not a jump: one second after the switch the
+  // level has moved by roughly the configured rate and not by the whole span.
+  logic.setClock(23 * 60, 21 * 60, 7 * 60);
+  run(2, 3500);
+  CHECK(logic.currentPercent() < 82.0f);
+  CHECK(logic.currentPercent() > 26.0f);
+}
+
+void testSchema14RecordTakesTheFactoryNightWindow() {
+  Preferences::storage["h2gauge/config"] = v14Record(1.35f);
+  ConfigStore store;
+  CHECK(store.begin());
+  CHECK(store.data().schemaVersion == H2G_CONFIG_SCHEMA);
+  // Schema 14 is already on the petrol-equivalent basis: the coefficient must
+  // come through untouched, unlike the schema-13 path that rescales it.
+  CHECK(near(store.data().lpgCorrection, 1.35f, 1e-4f));
+  CHECK(store.data().brightnessNightStartMin == 21 * 60);
+  CHECK(store.data().brightnessNightEndMin == 7 * 60);
+  // And the migrated record is what gets written back, at the current length.
+  CHECK(Preferences::storage["h2gauge/config"].size() == sizeof(ConfigData));
+}
+
+void testNightWindowSaveReloadAndBounds() {
+  ConfigStore store;
+  CHECK(store.begin());
+  store.data().brightness.mode = BrightnessMode::Time;
+  store.data().brightnessNightStartMin = 20 * 60 + 30;
+  store.data().brightnessNightEndMin = 6 * 60 + 15;
+  CHECK(store.save());
+
+  ConfigStore reloaded;
+  CHECK(reloaded.begin());
+  CHECK(reloaded.data().brightness.mode == BrightnessMode::Time);
+  CHECK(reloaded.data().brightnessNightStartMin == 20 * 60 + 30);
+  CHECK(reloaded.data().brightnessNightEndMin == 6 * 60 + 15);
+
+  // An empty window is refused rather than stored as "always day": the portal
+  // cannot express the difference and a mode that silently stops working is
+  // worse than a save that fails loudly.
+  reloaded.data().brightnessNightStartMin = 6 * 60 + 15;
+  CHECK(!reloaded.save());
+  reloaded.data().brightnessNightStartMin = 21 * 60;
+  CHECK(reloaded.save());
+  reloaded.data().brightnessNightEndMin = 1440;
+  CHECK(!reloaded.save());
+}
+
 int main() {
   test("settings constraints and safe default", [] {
     auto c = ConfigStore::defaults();
@@ -871,8 +1001,12 @@ int main() {
     c.brightness.dimDelayMs = 30001;
     CHECK(!BrightnessLogic::validSettings(c.brightness, 82, 26));
     c.brightness.dimDelayMs = 30000;
+    // Schema 15 makes 4 the clock mode, so the first invalid value is 5.
     c.brightness.mode = static_cast<BrightnessMode>(4);
+    CHECK(BrightnessLogic::validSettings(c.brightness, 82, 26));
+    c.brightness.mode = static_cast<BrightnessMode>(5);
     CHECK(!BrightnessLogic::validSettings(c.brightness, 82, 26));
+    c.brightness.mode = BrightnessMode::AlwaysDay;
   });
   test("fixed day/night and remembered manual level ignore ADC", [] {
     for (const auto mode : {BrightnessMode::AlwaysDay, BrightnessMode::AlwaysNight,
@@ -1294,6 +1428,18 @@ int main() {
   });
   test("disabling LPG drops the decision at once and keeps it dropped", [] {
     testDisablingLpgDropsTheDecisionAtOnce();
+  });
+  test("the night window crosses midnight, excludes its end and treats unknown time as day", [] {
+    testNightWindowArithmetic();
+  });
+  test("the clock mode drives the panel and ignores the light sensor", [] {
+    testClockModeDrivesThePanelAndIgnoresTheSensor();
+  });
+  test("a schema-14 record keeps its settings and takes the factory night window", [] {
+    testSchema14RecordTakesTheFactoryNightWindow();
+  });
+  test("the night window survives a save and refuses an empty or out-of-range pair", [] {
+    testNightWindowSaveReloadAndBounds();
   });
   std::printf("\n%d host regression groups passed. Hardware behavior is not simulated.\n", passed);
 }

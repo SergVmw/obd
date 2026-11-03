@@ -47,10 +47,12 @@ jobs:
           python tools/test_sta_readonly.py
           python tools/test_sta_diagnostic.py
           python tools/test_power_and_rollback.py
+          python tools/test_ve_log.py
 
       - name: Check embedded UI, fonts and OTA invariants
         run: |
           python tools/check_brightness_integration.py
+          python tools/check_ve_table.py
           python tools/check_config_ranges.py
           python tools/check_doc_links.py
           python tools/check_stack_budget.py

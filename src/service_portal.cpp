@@ -577,6 +577,8 @@ void ServicePortal::setupRoutes() {
   });
   server_.on("/api/trip/close", HTTP_POST, [this]() { closeCurrentTrip(); });
   server_.on("/api/trips/clear", HTTP_POST, [this]() { clearTripHistory(); });
+  server_.on("/api/ve", HTTP_GET, [this]() { sendVe(); });
+  server_.on("/api/ve/clear", HTTP_POST, [this]() { clearVe(); });
 
   server_.on("/api/fuel/petrol-calibration", HTTP_GET,
              [this]() { sendPetrolCalibration(); });
@@ -713,6 +715,11 @@ void ServicePortal::sendConfig() {
   display["lightDayAdc"] = c.brightness.dayAdc;
   display["lightDimDelayMs"] = c.brightness.dimDelayMs;
   display["lightBrightenDelayMs"] = c.brightness.brightenDelayMs;
+  // Minutes since local midnight, not a formatted string: the portal renders
+  // them as <input type="time"> on its own, and the record keeps the same
+  // integer the logic compares against.
+  display["nightStartMin"] = c.brightnessNightStartMin;
+  display["nightEndMin"] = c.brightnessNightEndMin;
   display["rotation"] = c.rotation;
   display["startPage"] = c.displayStartPage();
   display["mainCenterValue"] = static_cast<uint8_t>(c.mainCenterValue());
@@ -829,7 +836,8 @@ void ServicePortal::receiveConfig() {
     // of being silently changed in the persisted candidate.
     const IntegerField integerFields[] = {
         {"brightnessDay", 10, 100}, {"brightnessNight", 5, 80},
-        {"brightnessMode", 0, 3}, {"lightNightAdc", 0, 4095},
+        {"brightnessMode", 0, 4}, {"lightNightAdc", 0, 4095},
+        {"nightStartMin", 0, 1439}, {"nightEndMin", 0, 1439},
         {"lightDayAdc", 0, 4095}, {"lightDimDelayMs", 0, 30000},
         {"lightBrightenDelayMs", 0, 30000}, {"rotation", 0, 3},
         {"startPage", 0, 4}, {"mainCenterValue", 0, 3},
@@ -871,6 +879,10 @@ void ServicePortal::receiveConfig() {
     c.brightness.brightenDelayMs = d["lightBrightenDelayMs"] | c.brightness.brightenDelayMs;
     c.brightnessDay = clampValue<int>(d["brightnessDay"] | c.brightnessDay, 10, 100);
     c.brightnessNight = clampValue<int>(d["brightnessNight"] | c.brightnessNight, 5, 80);
+    c.brightnessNightStartMin = clampValue<int>(
+        d["nightStartMin"] | c.brightnessNightStartMin, 0, 1439);
+    c.brightnessNightEndMin = clampValue<int>(
+        d["nightEndMin"] | c.brightnessNightEndMin, 0, 1439);
     c.rotation = clampValue<int>(d["rotation"] | c.rotation, 0, 3);
     c.setDisplayStartPage(clampValue<int>(
         d["startPage"] | c.displayStartPage(), 0, 4));
@@ -2064,6 +2076,10 @@ void ServicePortal::sendStatus() {
   else if (c.brightness.mode == BrightnessMode::AlwaysNight) level = "night";
   else if (c.brightness.mode == BrightnessMode::Manual) {
     level = c.brightness.manualNight ? "night" : "day";
+  } else if (c.brightness.mode == BrightnessMode::Time) {
+    // Reported from the logic's own answer rather than recomputed here, so the
+    // portal cannot claim "day" while the panel is dimmed.
+    level = light.clockNight() ? "night" : "day";
   } else if (c.brightnessDay == c.brightnessNight) level = "fixed";
   else if (light.targetPercent() <= c.brightnessNight) level = "night";
   else if (light.targetPercent() >= c.brightnessDay) level = "day";
@@ -4998,6 +5014,104 @@ void ServicePortal::closeCurrentTrip() {
   resp["sequence"] = rec.sequence;
   String output;
   serializeJson(resp, output);
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
+}
+
+// The VE log, served in pages and streamed rather than built as one document.
+//
+// A full log is 8192 records; as a JsonDocument that is tens of kilobytes of
+// heap the portal shares with the Wi-Fi stack and the OBD task, and the only
+// thing the browser does with it is add the numbers up anyway. The page is
+// therefore written straight into a small buffer and handed to the client in
+// pieces, so the memory cost does not grow with the page size.
+//
+// Integers on the wire, scaled as they are in the file: the browser divides by
+// ten. Numbers the fit needs as floats are reconstructed there, which keeps this
+// handler free of any opinion about volumetric efficiency at all.
+void ServicePortal::sendVe() {
+  size_t from = 0;
+  size_t count = VeLog::kDefaultPageLimit;
+  if (server_.hasArg("from")) {
+    const long v = server_.arg("from").toInt();
+    if (v > 0) from = static_cast<size_t>(v);
+  }
+  if (server_.hasArg("count")) {
+    const long v = server_.arg("count").toInt();
+    count = static_cast<size_t>(clampValue<int>(
+        static_cast<int>(v), 1, static_cast<int>(VeLog::kMaxPageLimit)));
+  }
+
+  std::vector<VeRecord> records;
+  bool ready = false;
+  bool healthy = false;
+  size_t total = 0;
+  {
+    StorageLock lock;
+    veLog_.readPage(from, count, records);
+    ready = veLog_.ready();
+    healthy = veLog_.healthy();
+    total = veLog_.count();
+  }
+  const size_t end = from + records.size();
+
+  server_.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server_.send(200, "application/json", "");
+
+  char buf[96];
+  snprintf(buf, sizeof(buf),
+           "{\"ready\":%s,\"healthy\":%s,\"capacity\":%u,\"count\":%u,"
+           "\"from\":%u,\"to\":%u,\"hasMore\":%s,\"firmware\":\"%s\","
+           "\"records\":[",
+           ready ? "true" : "false", healthy ? "true" : "false",
+           static_cast<unsigned>(VeLog::kCapacity),
+           static_cast<unsigned>(total), static_cast<unsigned>(from),
+           static_cast<unsigned>(end), end < total ? "true" : "false",
+           H2G_FW_VERSION);
+  server_.sendContent(buf);
+
+  // Batched into one string before sending: eight records per call is eight
+  // times fewer TLS-less writes to the socket, and the buffer is a fixed size on
+  // the stack rather than a String that grows with the page.
+  char chunk[512];
+  size_t used = 0;
+  for (size_t i = 0; i < records.size(); ++i) {
+    const VeRecord& r = records[i];
+    const int written = snprintf(
+        chunk + used, sizeof(chunk) - used,
+        "%s[%lu,%u,%u,%u,%u,%d,%u,%u]",
+        i == 0 ? "" : ",", static_cast<unsigned long>(r.epochSec),
+        static_cast<unsigned>(r.rpm * 10.0f + 0.5f),
+        static_cast<unsigned>(r.mapKpa * 10.0f + 0.5f),
+        static_cast<unsigned>(r.baroKpa * 10.0f + 0.5f),
+        static_cast<unsigned>(r.loadPct * 2.0f + 0.5f),
+        static_cast<int>(r.iatC),
+        static_cast<unsigned>(r.ageMs / 100.0f + 0.5f), r.flags);
+    if (written <= 0) break;
+    used += static_cast<size_t>(written);
+    if (used + 64 >= sizeof(chunk) || i + 1 == records.size()) {
+      server_.sendContent(chunk, used);
+      used = 0;
+    }
+  }
+  server_.sendContent("]}");
+}
+
+// Clearing the log is maintenance, not calibration: it deletes measurements and
+// changes no setting, so it needs no confirmation beyond the POST itself. It is
+// here because a full ring otherwise keeps only what it holds and the owner has
+// no way to say "start over from this drive".
+void ServicePortal::clearVe() {
+  bool ok = false;
+  {
+    StorageLock lock;
+    ok = veLog_.clear();
+  }
+  JsonDocument doc;
+  doc["cleared"] = ok;
+  String output;
+  output.reserve(64);
+  serializeJson(doc, output);
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);
 }

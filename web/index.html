@@ -29,7 +29,7 @@
  <div class="card"><small>Выбор топлива / режим</small><b id="sFuel">—</b><span class="meta" id="sFuelDetail">—</span></div>
 </div>
 <section class="box" id="app">
-<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="trips">Поездки</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button><button class="tab" data-tab="diag">Диагностика</button></nav>
+<nav class="tabs"><button class="tab active" data-tab="display">Экран</button><button class="tab" data-tab="boost">Наддув</button><button class="tab" data-tab="fuel">Расход / ГБО</button><button class="tab" data-tab="trips">Поездки</button><button class="tab" data-tab="control">Управление</button><button class="tab" data-tab="obd">OBD</button><button class="tab" data-tab="system">Система</button><button class="tab" data-tab="diag">Диагностика</button><button class="tab" data-tab="ve">Кривая VE</button></nav>
 
 <div class="pane active" id="display"><h2>Экран</h2><p class="desc">Яркость, оформление и интерактивный предпросмотр главного экрана.</p>
  <div class="preview">
@@ -69,10 +69,18 @@
  </div>
  <div class="section" id="brightnessSettings"><h3>Управление яркостью</h3>
   <div class="grid">
-   <div class="full"><label for="brightnessMode">Режим подсветки</label><select id="brightnessMode"><option value="0">Авто: фоторезистор, плавная адаптация</option><option value="1">Ручное: День / Ночь</option><option value="2" selected>Всегда день</option><option value="3">Всегда ночь</option></select></div>
+   <div class="full"><label for="brightnessMode">Режим подсветки</label><select id="brightnessMode"><option value="0">Авто: фоторезистор, плавная адаптация</option><option value="1">Ручное: День / Ночь</option><option value="2" selected>Всегда день</option><option value="3">Всегда ночь</option><option value="4">По времени суток: ночь по часам</option></select></div>
    <div class="check full" id="manualBrightnessRow" hidden><input id="manualNight" type="checkbox"><label for="manualNight">Ночь в ручном режиме. 4 быстрых нажатия кнопки переключают День / Ночь; выбор запоминается.</label></div>
    <div class="rangeSetting"><label for="brightnessDay">Дневная яркость, % · сохраняется</label><input id="brightnessDay" type="range" min="10" max="100" step="1" value="82" required><div class="range-value"><span>День</span><b id="brightnessDayValue">82%</b></div></div>
    <div class="rangeSetting"><label for="brightnessNight">Ночная яркость, % · сохраняется</label><input id="brightnessNight" type="range" min="5" max="80" step="1" value="26" required><div class="range-value"><span>Ночь</span><b id="brightnessNightValue">26%</b></div></div>
+  </div>
+  <div id="timeBrightnessFields" hidden>
+   <p class="note" style="margin:13px 0">Ночь и день переключаются по часам прибора, без фоторезистора. Время берётся из внутренних часов: они синхронизируются при подключении к точке доступа и идут дальше сами, поэтому после полного обесточивания до первой синхронизации прибор считает время неизвестным и держит дневную яркость.</p>
+   <div class="grid">
+    <div><label for="nightStartMin">Начало ночи</label><input id="nightStartMin" type="time" value="21:00" required></div>
+    <div><label for="nightEndMin">Конец ночи</label><input id="nightEndMin" type="time" value="07:00" required></div>
+    <div class="full"><p class="note" style="margin:0">Окно может переходить через полночь: 21:00–07:00 означает ночь и вечером, и утром. Часовой пояс — тот же, что в «Поездках» (смещение UTC), поэтому экран и метки времени не расходятся.</p></div>
+   </div>
   </div>
   <div id="autoBrightnessFields" hidden>
    <p class="note" style="margin:13px 0">Ниже ночного порога — ночная яркость, выше дневного — дневная. Между ними яркость меняется плавно. Фильтрация, гистерезис и задержки уменьшают реакцию на фонари и короткие тени. Это регулировка PWM по внешнему свету, не измерение яркости экрана.</p>
@@ -338,6 +346,22 @@
  <div class="section"><h3>Обновление прошивки</h3><div class="note">Откройте <b>192.168.4.1</b> в обычном Chrome, Safari или Firefox. Выберите только app-образ <b>.bin</b>, не factory/bootloader/partitions. Перед передачей прибор проверит имя, размер, заголовок ESP32-S3, питание, движение и свободный OTA-раздел. После нажатия «Установить» дождитесь сообщения о проверенном boot-разделе: общий лимит OTA — 3 минуты, затем прибор сам перезагрузится; RESET нажимать не нужно.</div><div class="buttons"><input id="firmware" class="firmwarePicker" type="file" aria-label="Выбрать app-образ .bin"><button class="btn primary" id="install" disabled>Установить</button></div><div class="progress"><div class="bar" id="bar"></div></div><div class="otaState"><span id="otaText">Файл не выбран</span><span id="pct">0%</span></div></div>
  <div class="section"><div class="buttons"><button class="btn" id="defaults">Загрузить заводские значения</button><button class="btn" id="reboot">Перезагрузить</button><button class="btn danger" id="factory">Полный заводской сброс</button></div></div>
 </div>
+<div class="pane" id="ve"><h2>Кривая VE</h2>
+<p class="desc">Прибор записывает измерения для подгонки таблицы наполнения: обороты, давление во впуске, нагрузку блока управления (PID 04) и температуру воздуха (PID 0F). Один сэмпл раз в 5 секунд при работающем двигателе. Здесь эти данные показываются как есть, без применения: таблица в прошивке не меняется.</p>
+<div class="section"><h3>Сбор</h3>
+ <div class="grid"><div class="full"><p class="note" id="veInfo">Нажмите «Загрузить данные», чтобы прочитать кольцо целиком и построить график.</p></div></div>
+ <div class="buttons"><button class="btn primary" id="veLoad">Загрузить данные</button><button class="btn" id="veClear">Очистить кольцо</button></div>
+ <p class="note">Кольцо рассчитано на 8192 сэмпла — это около 11 часов работы двигателя, то есть примерно неделя обычных поездок. При заполнении старые записи вытесняются новыми.</p>
+</div>
+<div class="section"><h3>Измерено против прошивки</h3>
+ <div id="veChart" class="note">Данные ещё не загружены.</div>
+ <div id="veLegend" class="note"></div>
+</div>
+<div class="section"><h3>Вердикт по точкам</h3>
+ <div id="veTable" class="note">Данные ещё не загружены.</div>
+ <p class="note">Точка считается измеренной при 30 и более сэмплах. Выше 100 кПа нагрузка упирается в 100 %, и этот метод там ничего не измеряет: верхние пять точек таблицы остаются как заданы.</p>
+</div>
+</div>
 <div class="pane" id="diag"><h2>Диагностика</h2><p class="desc">Выгрузка состояния прибора в JSON. Каждый файл открывается текстовым редактором и годится для разбора в поле — присылайте их вместе с описанием, что смотрели на экране.</p>
  <div class="section"><h3>Скачать всё одним нажатием</h3>
   <div class="buttons"><button class="btn primary" id="diagAll">Скачать все доступные JSON</button></div>
@@ -367,17 +391,20 @@ const $=id=>document.getElementById(id), n=id=>Number($(id).value), v=id=>$(id).
 let otaActive=false,otaMaxImageBytes=4194304,otaProbeBytes=288,otaTimeoutMs=180000;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab,.pane').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='trips')refreshTripsAll();if(b.dataset.tab==='obd'){startDidPolling()}else{stopDidPolling()}});
 async function api(path,opt={}){const headers={'X-H2G-Epoch':String(Math.floor(Date.now()/1000)),...(opt.headers||{})};const r=await fetch(path,{cache:'no-store',...opt,headers}),text=await r.text();if(!r.ok){let message=text;try{const j=JSON.parse(text),code=j.code?` [${j.code}]`:'',retry=Number(j.retryAfterSeconds)>0?` Повторите через ${j.retryAfterSeconds} с.`:'';message=(j.error||j.message||text)+code+retry}catch{}throw Error(message||`HTTP ${r.status}`)}if(!text)return null;return r.headers.get('content-type')?.includes('json')?JSON.parse(text):text}
+function toMinutes(text){const m=/^(\d{1,2}):(\d{2})$/.exec(String(text||''));if(!m)return NaN;const h=+m[1],mi=+m[2];return h>23||mi>59?NaN:h*60+mi}
+function toTime(minutes){const t=Number.isFinite(minutes)?Math.trunc(minutes):1260;if(t<0||t>1439)return '21:00';return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0')}
 function set(id,value){const e=$(id);if(!e||value===undefined)return;e.type==='checkbox'?e.checked=!!value:e.value=value}
 function formatUtcOffsetLabel(mins){const m=Number.isFinite(mins)?Math.trunc(mins):180,sign=m>=0?'+':'-',abs=Math.abs(m);return `UTC${sign}${String(Math.floor(abs/60)).padStart(2,'0')}:${String(abs%60).padStart(2,'0')}`}
 function updateUtcOffsetLabel(){const el=$('utcOffsetLabel');if(el)el.textContent=formatUtcOffsetLabel(n('utcOffsetMin'))}
 function updateBrightnessValueLabels(){$('brightnessDayValue').textContent=n('brightnessDay')+'%';$('brightnessNightValue').textContent=n('brightnessNight')+'%'}
-const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainCellLeft:6,mainCellRight:7,mainDigitSize:0,displaySpeedOffsetKph:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,boostPointerMode:0,boostPointerColor:0,boostPointerTipRadius:99,boostPointerBaseRadius:86,boostPointerHalfAngleTenths:35,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.2,boostWarningBar:.9,boostDangerBar:1.05,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1.2,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000,lpgOnDelayMs:0},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18',staEnabled:false,staSsid:'',staPassword:'',staHostname:'h2'},trips:{tripGapMin:5,tripMinDistanceM:100,utcOffsetMin:180}};
+const DEFAULT_CONFIG={display:{brightnessDay:82,brightnessNight:26,brightnessMode:2,nightStartMin:1260,nightEndMin:420,manualNight:false,lightAutoCalibrate:true,lightNightAdc:600,lightDayAdc:3000,lightDimDelayMs:3000,lightBrightenDelayMs:1000,rotation:0,startPage:0,mainCenterValue:0,mainCellLeft:6,mainCellRight:7,mainDigitSize:0,displaySpeedOffsetKph:0,uiLanguage:0,autoReturnSec:5,pageFuel:true,pageTemperature:true,pageDiagnostics:false,peakEnabled:true,colorText:'#F2FAF7',colorVacuum:'#5DC9E8',colorBoost:'#5EF0A8',colorWarning:'#FFBD59',colorDanger:'#FF5F68'},boost:{baroSource:0,boostArcStyle:0,boostPointerMode:0,boostPointerColor:0,boostPointerTipRadius:99,boostPointerBaseRadius:86,boostPointerHalfAngleTenths:35,fixedBaroKpa:99.4,boostOffsetBar:0,boostMinBar:-1,boostMaxBar:1.2,boostWarningBar:.9,boostDangerBar:1.05,smoothingMs:250},fuel:{fuelSource:0,petrolCorrection:1,lpgCorrection:1.2,switchSpeedKph:5,saveTrip:true,dfcoEnabled:true,fuelTrimEnabled:true},lpg:{lpgEnabled:false,lpgActiveLow:true,lpgDebounceMs:800,lpgOffDelayMs:1000,lpgOnDelayMs:0},controls:{longPressMs:1800,serviceHoldMs:5000,serviceTimeoutMin:15,screenOffDelaySec:60,lockLongWhenMoving:true},obd:{obdTimeoutMs:120,maxRequestsPerSecond:50},service:{deviceName:'H2 Gauge',apName:'H2-Gauge',apPassword:'h2gauge18',staEnabled:false,staSsid:'',staPassword:'',staHostname:'h2'},trips:{tripGapMin:5,tripMinDistanceM:100,utcOffsetMin:180}};
 function syncLpgUi(){const on=c('lpgEnabled');document.querySelectorAll('.lpgOnly').forEach(e=>e.classList.toggle('isOff',!on));const opt=$('previewFuel')?.querySelector('option[value=lpg]');if(opt)opt.disabled=!on;if(!on&&$('previewFuel'))$('previewFuel').value='petrol';drawGaugePreview()}
 function apply(o){const d=o.display||{},b=o.boost||{},f=o.fuel||{},l=o.lpg||{},x=o.controls||{},s=o.service||{},ob=o.obd||{},tr=o.trips||{};
 Object.entries(d).forEach(([k,z])=>set(k,z));Object.entries(b).forEach(([k,z])=>set(k,z));Object.entries(f).forEach(([k,z])=>set(k,z));Object.entries(l).forEach(([k,z])=>set(k,z));Object.entries(x).forEach(([k,z])=>set(k,z));Object.entries(s).forEach(([k,z])=>set(k,z));Object.entries(ob).forEach(([k,z])=>set(k,z));Object.entries(tr).forEach(([k,z])=>set(k,z));
 if(f.speedDensityOnly){set('fuelSource',5);$('fuelSource').disabled=true;for(const option of $('fuelSource').options)option.disabled=option.value!=='5';$('fuelSourceNote').textContent='Эта тестовая сборка принудительно использует Speed-Density: PID 0B MAP + PID 0C RPM + PID 0F IAT. PID 10 и PID 5E не опрашиваются. Начальная VE = 0.85; расход оценочный и может потребовать калибровки.'}
+set('nightStartMin',toTime(d.nightStartMin??1260));set('nightEndMin',toTime(d.nightEndMin??420));
 syncLpgUi();syncBrightnessUi();updateBrightnessValueLabels();updateUtcOffsetLabel()}
-function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainCellLeft:n('mainCellLeft'),mainCellRight:n('mainCellRight'),mainDigitSize:n('mainDigitSize'),displaySpeedOffsetKph:n('displaySpeedOffsetKph'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),boostPointerMode:n('boostPointerMode'),boostPointerColor:n('boostPointerColor'),boostPointerTipRadius:n('boostPointerTipRadius'),boostPointerBaseRadius:n('boostPointerBaseRadius'),boostPointerHalfAngleTenths:n('boostPointerHalfAngleTenths'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs'),lpgOnDelayMs:n('lpgOnDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword'),staEnabled:c('staEnabled'),staSsid:v('staSsid'),staPassword:v('staPassword'),staHostname:v('staHostname')},trips:{tripGapMin:n('tripGapMin'),tripMinDistanceM:n('tripMinDistanceM'),utcOffsetMin:n('utcOffsetMin')}}}
+function config(){return{display:{brightnessDay:n('brightnessDay'),brightnessNight:n('brightnessNight'),brightnessMode:n('brightnessMode'),nightStartMin:toMinutes($('nightStartMin').value),nightEndMin:toMinutes($('nightEndMin').value),manualNight:c('manualNight'),lightAutoCalibrate:c('lightAutoCalibrate'),lightNightAdc:n('lightNightAdc'),lightDayAdc:n('lightDayAdc'),lightDimDelayMs:n('lightDimDelayMs'),lightBrightenDelayMs:n('lightBrightenDelayMs'),rotation:n('rotation'),startPage:n('startPage'),mainCenterValue:n('mainCenterValue'),mainCellLeft:n('mainCellLeft'),mainCellRight:n('mainCellRight'),mainDigitSize:n('mainDigitSize'),displaySpeedOffsetKph:n('displaySpeedOffsetKph'),uiLanguage:n('uiLanguage'),autoReturnSec:n('autoReturnSec'),pageFuel:c('pageFuel'),pageTemperature:c('pageTemperature'),pageDiagnostics:c('pageDiagnostics'),peakEnabled:c('peakEnabled'),colorText:v('colorText'),colorVacuum:v('colorVacuum'),colorBoost:v('colorBoost'),colorWarning:v('colorWarning'),colorDanger:v('colorDanger')},boost:{baroSource:n('baroSource'),boostArcStyle:n('boostArcStyle'),boostPointerMode:n('boostPointerMode'),boostPointerColor:n('boostPointerColor'),boostPointerTipRadius:n('boostPointerTipRadius'),boostPointerBaseRadius:n('boostPointerBaseRadius'),boostPointerHalfAngleTenths:n('boostPointerHalfAngleTenths'),fixedBaroKpa:n('fixedBaroKpa'),boostOffsetBar:n('boostOffsetBar'),boostMinBar:n('boostMinBar'),boostMaxBar:n('boostMaxBar'),boostWarningBar:n('boostWarningBar'),boostDangerBar:n('boostDangerBar'),smoothingMs:n('smoothingMs')},fuel:{fuelSource:n('fuelSource'),petrolCorrection:n('petrolCorrection'),lpgCorrection:n('lpgCorrection'),switchSpeedKph:n('switchSpeedKph'),saveTrip:c('saveTrip'),dfcoEnabled:c('dfcoEnabled'),fuelTrimEnabled:c('fuelTrimEnabled')},lpg:{lpgEnabled:c('lpgEnabled'),lpgActiveLow:c('lpgActiveLow'),lpgDebounceMs:n('lpgDebounceMs'),lpgOffDelayMs:n('lpgOffDelayMs'),lpgOnDelayMs:n('lpgOnDelayMs')},controls:{longPressMs:n('longPressMs'),serviceHoldMs:n('serviceHoldMs'),serviceTimeoutMin:n('serviceTimeoutMin'),screenOffDelaySec:n('screenOffDelaySec'),lockLongWhenMoving:c('lockLongWhenMoving')},obd:{obdTimeoutMs:n('obdTimeoutMs'),maxRequestsPerSecond:n('maxRequestsPerSecond')},service:{deviceName:v('deviceName'),apName:v('apName'),apPassword:v('apPassword'),staEnabled:c('staEnabled'),staSsid:v('staSsid'),staPassword:v('staPassword'),staHostname:v('staHostname')},trips:{tripGapMin:n('tripGapMin'),tripMinDistanceM:n('tripMinDistanceM'),utcOffsetMin:n('utcOffsetMin')}}}
 function staFormError(){
  const ssid=v('staSsid'),pass=v('staPassword'),host=v('staHostname').trim();
  if(ssid.length>32)return 'Панель магнитолы: длина SSID не должна превышать 32 символа.';
@@ -392,7 +419,7 @@ function tripsFormError(){
  return '';
 }
 function syncBrightnessUi(){
- const mode=n('brightnessMode');$('manualBrightnessRow').hidden=mode!==1;$('autoBrightnessFields').hidden=mode!==0;
+ const mode=n('brightnessMode');$('manualBrightnessRow').hidden=mode!==1;$('autoBrightnessFields').hidden=mode!==0;$('timeBrightnessFields').hidden=mode!==4;
  $('lightThresholdHelp').textContent=c('lightAutoCalibrate')?'Введённые пороги — исходные, до обучения. После обучения используются рабочие пороги ниже. Для точных ручных порогов отключите автокалибровку.':'Используются введённые пороги. Между ночным и дневным порогами нужно не менее 200 отсчётов ADC.';
  updateBrightnessValueLabels();
 }
@@ -401,6 +428,7 @@ function brightnessFormError(){
   const e=$(id);if(e.value.trim()===''||!Number.isInteger(n(id))||!e.checkValidity())return 'Яркость: проверьте целые числа и допустимые диапазоны.';
  }
  if(n('brightnessNight')>n('brightnessDay'))return 'Ночная яркость не должна быть выше дневной.';
+ if(n('brightnessMode')===4){const a=toMinutes($('nightStartMin').value),b=toMinutes($('nightEndMin').value);if(!Number.isFinite(a)||!Number.isFinite(b))return 'Укажите начало и конец ночи в формате ЧЧ:ММ.';if(a===b)return 'Начало и конец ночи совпадают: окно было бы пустым.';}
  if(n('lightDayAdc')-n('lightNightAdc')<200)return 'Дневной порог ADC должен быть выше ночного минимум на 200.';
  return '';
 }
@@ -1175,6 +1203,169 @@ let fw=null;
 $('firmware').onchange=e=>{const f=e.target.files&&e.target.files[0],name=(f?.name||'').toLowerCase();fw=null;$('install').disabled=true;$('bar').style.width='0%';$('pct').textContent='0%';if(!f){$('otaText').textContent='Файл не выбран';return}if(!name.endsWith('.bin')){e.target.value='';$('otaText').textContent='Ошибка: выберите файл с расширением .bin';return}if(['factory','bootloader','partition','merged','spiffs','littlefs','filesystem'].some(x=>name.includes(x))){e.target.value='';$('otaText').textContent='Ошибка: нужен только app-образ, без factory/bootloader/partitions';return}if(f.size<4096||f.size>otaMaxImageBytes){e.target.value='';$('otaText').textContent=`Ошибка: размер app-образа должен быть от 4 КБ до ${(otaMaxImageBytes/1048576).toFixed(2)} МБ`;return}fw=f;$('install').disabled=false;$('otaText').textContent=f.name+' · '+(f.size/1048576).toFixed(2)+' МБ'};
 function otaErrorMessage(payload,status){let r=payload;try{if(typeof r==='string')r=JSON.parse(r)}catch{}if(!r||typeof r!=='object')return `Ошибка ${status||''}: ${String(payload||'OTA failed')}`.trim();const code=r.code?` [${r.code}]`:'';const progress=Number(r.expectedBytes)>0?` (${Number(r.receivedBytes||0)} из ${Number(r.expectedBytes)} байт)`:'';return `Ошибка ${status||r.status||''}${code}: ${r.error||'OTA failed'}${progress}`.trim()}
 $('install').onclick=async()=>{if(!fw||!confirm('Установить '+fw.name+'? После проверки прибор перезагрузится сам. Не выключайте питание.'))return;$('install').disabled=true;otaActive=true;let settled=false;const failed=m=>{if(settled)return;settled=true;otaActive=false;$('otaText').textContent=m;$('install').disabled=!fw;status()};try{$('otaText').textContent='Чтение метаданных app-образа…';const caps=await api('/api/ota/status');otaMaxImageBytes=Number(caps.maxImageBytes)||otaMaxImageBytes;otaProbeBytes=Number(caps.probeBytes)||otaProbeBytes;otaTimeoutMs=Number(caps.timeoutMs)||otaTimeoutMs;if(fw.size>otaMaxImageBytes)throw Error(`образ больше OTA-раздела (${(otaMaxImageBytes/1048576).toFixed(2)} МБ)`);const probe=new Uint8Array(await fw.slice(0,otaProbeBytes).arrayBuffer());if(probe.length!==otaProbeBytes)throw Error('не удалось прочитать полный заголовок образа');const probeHex=Array.from(probe,b=>b.toString(16).padStart(2,'0')).join('');const p=await api('/api/ota/preflight',{method:'POST',headers:{'Content-Type':'application/json','X-H2G-Action':'ota'},body:JSON.stringify({filename:fw.name,size:fw.size,probeHex})});if(!p?.accepted)throw Error('сервер не подтвердил совместимость образа');otaMaxImageBytes=Number(p.maxImageBytes)||otaMaxImageBytes;otaTimeoutMs=Number(p.timeoutMs)||otaTimeoutMs;$('otaText').textContent=`Предварительная проверка пройдена. Цель: ${p.targetPartition}. Начинается передача…`}catch(e){failed('Предварительная проверка OTA: '+e.message);return}if(canTimer){clearInterval(canTimer);canTimer=null;$('canAuto').textContent='Авто: выкл.'}const x=new XMLHttpRequest;x.open('POST','/api/ota');x.setRequestHeader('Content-Type','application/octet-stream');x.setRequestHeader('X-H2G-Action','ota');x.setRequestHeader('X-H2G-Filename',encodeURIComponent(fw.name));x.timeout=otaTimeoutMs+30000;x.upload.onprogress=e=>{if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);$('bar').style.width=p+'%';$('pct').textContent=p+'%';$('otaText').textContent=p<100?'Передача app-образа…':'Передано. ESP32 проверяет образ и boot-раздел…'}};const recover=async fallback=>{if(settled)return;await new Promise(r=>setTimeout(r,250));try{const s=await api('/api/ota/status');failed(s?.error?otaErrorMessage(s,s.status):fallback)}catch{failed(fallback)}};x.onload=()=>{if(x.status!==200){failed(otaErrorMessage(x.responseText,x.status));return}try{const r=JSON.parse(x.responseText);if(!r.ok||!r.verified||!r.bootVerified)throw Error('сервер не подтвердил boot-раздел');settled=true;$('bar').style.width='100%';$('pct').textContent='100%';$('otaText').textContent=`Проверено, выбран ${r.targetPartition}. Автоматическая перезагрузка…`}catch(e){failed('Ошибка подтверждения OTA: '+e.message)}};x.onerror=()=>recover('Соединение потеряно до подтверждения OTA');x.onabort=()=>recover('Загрузка отменена до подтверждения OTA');x.ontimeout=()=>recover('Общий тайм-аут OTA');x.send(fw)};
+
+/* ---- Кривая VE: чтение кольца и график ------------------------------------
+   Считает браузер, а не прибор. Причина не в удобстве: VE выводится из четырёх
+   чисел (обороты, MAP, нагрузка, IAT) и константы пикового наполнения, и если
+   бы прибор хранил готовое VE, эта константа застыла бы в архиве и пересчитать
+   данные другим допущением стало бы невозможно. В файле лежат измерения,
+   трактовка живёт здесь и может меняться с выпусками.
+
+   Таблица ниже — копия kVeByMapKpa/kVeByMapValue из src/telemetry.cpp.
+   Совпадение проверяет гейт tools/check_ve_table.py: разъехавшиеся копии
+   показывали бы владельцу кривую, которой в прошивке нет. */
+const VE_KPA=[30,35,40,45,50,60,70,80,90,100,110,130,150,170,190];
+const VE_CUR=[.42,.45,.48,.51,.54,.60,.66,.71,.76,.81,.84,.88,.90,.89,.87];
+const VE_MIN_N=30, VE_VD=1.497e-3, VE_R=287.05, VE_PSTP=101300, VE_TSTP=298.15,
+      VE_REFP=101.3, VE_PEAK=.92;
+
+/* Наполнение по модели SAE J1979: нагрузка блока отнесена к его же пиковому
+   расходу при данных оборотах, поэтому отношение этих двух величин и есть VE.
+   Атмосферное давление берётся измеренное, если оно есть: подстановка 101.3
+   вместо реального 95 сдвигает весь график на 6 %. */
+function veOf(r){
+ const rpm=+r[1]/10, map=+r[2]/10, baro=+r[3]/10||VE_REFP, load=+r[4]/2, iat=+r[5];
+ if(!(rpm>=200)||!(map>0)||!(load>0))return null;
+ const kK=iat+273.15; if(!(kK>200))return null;
+ const rhoStp=VE_PSTP/(VE_R*VE_TSTP), rhoAt=(map*1000)/(VE_R*kK);
+ const airEcu=(load/100)*VE_VD*(rpm/120)*rhoStp*VE_PEAK*(baro/VE_REFP)*Math.sqrt(VE_TSTP/kK);
+ const airGeom=VE_VD*(rpm/120)*rhoAt;
+ if(!(airGeom>0))return null;
+ const ve=airEcu/airGeom;
+ return isFinite(ve)&&ve>0.1&&ve<1.6?ve:null;
+}
+function veMedian(a){const b=a.slice().sort((x,y)=>x-y),m=b.length>>1;
+ return b.length%2?b[m]:(b[m-1]+b[m])/2}
+function vePct(a,p){const b=a.slice().sort((x,y)=>x-y);
+ return b[Math.min(b.length-1,Math.max(0,Math.round((b.length-1)*p)))]}
+
+let veLoaded=null;
+async function veLoadAll(){
+ const btn=$('veLoad'); btn.disabled=true;
+ const info=$('veInfo');
+ try{
+  let from=0,total=0,rows=[];
+  for(;;){
+   const page=await api('/api/ve?from='+from+'&count=512');
+   if(!page.ready){info.textContent='Кольцо VE недоступно на приборе: файл не создан.';btn.disabled=false;return}
+   rows=rows.concat(page.records||[]);
+   from=page.to||rows.length; total=page.count||0;
+   info.textContent='Прочитано '+rows.length+' из '+total+' сэмплов…';
+   if(!page.hasMore||!page.records||!page.records.length)break;
+  }
+  veLoaded=rows;
+  veRender(rows,total);
+ }catch(e){info.textContent='Ошибка чтения: '+e.message}
+ btn.disabled=false;
+}
+
+function veRender(rows,total){
+ const info=$('veInfo');
+ const meas=[]; let used=0,first=0,last=0;
+ rows.forEach(r=>{
+  const ve=veOf(r); if(ve===null)return;
+  used++;
+  if(r[0]){if(!first||r[0]<first)first=r[0];if(r[0]>last)last=r[0]}
+  meas.push({map:+r[2]/10,ve:ve,rpm:+r[1]/10,load:+r[4]/2,iat:+r[5]});
+ });
+ const hours=used*5/3600;
+ info.textContent=total?('В кольце '+total+' сэмплов, к расчёту принято '+used+
+  ' — это '+hours.toFixed(1)+' ч работы двигателя'+
+  (first?', с '+new Date(first*1000).toLocaleDateString('ru-RU')+
+   ' по '+new Date(last*1000).toLocaleDateString('ru-RU'):', часы прибора не синхронизированы'))+'.'
+  :'Кольцо пустое: данных для графика нет.';
+
+ // корзины по MAP: границы посередине между точками таблицы
+ const bins=VE_KPA.map((k,i)=>{
+  const lo=i? (VE_KPA[i-1]+k)/2 : k-5;
+  const hi=i<VE_KPA.length-1? (k+VE_KPA[i+1])/2 : k+5;
+  return {kpa:k,lo:lo,hi:hi,vals:[]};
+ });
+ meas.forEach(m=>{
+  for(const b of bins){if(m.map>=b.lo&&m.map<b.hi){b.vals.push(m.ve);break}}
+ });
+ bins.forEach(b=>{
+  b.n=b.vals.length;
+  if(b.n){b.med=veMedian(b.vals);b.p10=vePct(b.vals,.1);b.p90=vePct(b.vals,.9)}
+  b.cur=VE_CUR[VE_KPA.indexOf(b.kpa)];
+ });
+ veDrawChart(bins);
+ veDrawTable(bins,meas.length);
+}
+
+function veDrawChart(bins){
+ const W=760,H=380,L=56,R=16,T=16,B=44;
+ const X0=25,X1=195,Y0=.30,Y1=.95;
+ const sx=v=>L+(v-X0)/(X1-X0)*(W-L-R), sy=v=>T+(Y1-v)/(Y1-Y0)*(H-T-B);
+ let g='';
+ g+='<rect x="'+sx(100)+'" y="'+T+'" width="'+(sx(X1)-sx(100))+'" height="'+(H-T-B)+'" fill="#141a18"/>';
+ g+='<text x="'+((sx(100)+sx(X1))/2)+'" y="'+(T+16)+'" text-anchor="middle" fill="#4a5f58" font-size="10">нагрузка упирается в 100 % — не измеряется</text>';
+ for(let v=X0+5;v<=X1;v+=20){
+  g+='<line x1="'+sx(v)+'" y1="'+T+'" x2="'+sx(v)+'" y2="'+(H-B)+'" stroke="#1a2a25"/>';
+  g+='<text x="'+sx(v)+'" y="'+(H-B+16)+'" text-anchor="middle" fill="#6b817a" font-size="10">'+v+'</text>';
+ }
+ for(let y=Y0;y<=Y1+.001;y+=.1){
+  g+='<line x1="'+L+'" y1="'+sy(y)+'" x2="'+(W-R)+'" y2="'+sy(y)+'" stroke="#1a2a25"/>';
+  g+='<text x="'+(L-8)+'" y="'+(sy(y)+3)+'" text-anchor="end" fill="#6b817a" font-size="10">'+y.toFixed(2)+'</text>';
+ }
+ g+='<text x="'+((L+W-R)/2)+'" y="'+(H-6)+'" text-anchor="middle" fill="#8aa39a" font-size="11">MAP, кПа</text>';
+ g+='<text x="14" y="'+((T+H-B)/2)+'" text-anchor="middle" fill="#8aa39a" font-size="11" transform="rotate(-90 14 '+((T+H-B)/2)+')">VE</text>';
+ let d='';
+ VE_KPA.forEach((k,i)=>{d+=(i?' L':'M')+sx(k)+' '+sy(VE_CUR[i])});
+ g+='<path d="'+d+'" fill="none" stroke="#5ef0a8" stroke-width="2.5" stroke-linejoin="round"/>';
+ bins.forEach(b=>{
+  if(!b.n)return;
+  const ok=b.n>=VE_MIN_N, col=ok?'#5dc9e8':'#4a5f58';
+  const r=Math.max(3,Math.min(8,Math.sqrt(b.n)*.8));
+  g+='<line x1="'+sx(b.kpa)+'" y1="'+sy(b.p10)+'" x2="'+sx(b.kpa)+'" y2="'+sy(b.p90)+'" stroke="'+col+'" stroke-width="1.5" opacity=".55"/>';
+  g+='<line x1="'+(sx(b.kpa)-5)+'" y1="'+sy(b.p10)+'" x2="'+(sx(b.kpa)+5)+'" y2="'+sy(b.p10)+'" stroke="'+col+'" stroke-width="1.5" opacity=".55"/>';
+  g+='<line x1="'+(sx(b.kpa)-5)+'" y1="'+sy(b.p90)+'" x2="'+(sx(b.kpa)+5)+'" y2="'+sy(b.p90)+'" stroke="'+col+'" stroke-width="1.5" opacity=".55"/>';
+  g+='<circle cx="'+sx(b.kpa)+'" cy="'+sy(b.med)+'" r="'+r+'" fill="'+col+'" opacity="'+(ok?.95:.5)+'"/>';
+  g+='<text x="'+sx(b.kpa)+'" y="'+(sy(b.p90)-8)+'" text-anchor="middle" fill="'+col+'" font-size="9">n'+b.n+'</text>';
+ });
+ $('veChart').innerHTML='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block">'+g+'</svg>';
+ $('veLegend').innerHTML='<span style="color:#5ef0a8">━ в прошивке</span> &nbsp; '+
+  '<span style="color:#5dc9e8">● измерено, с коридором p10–p90</span> &nbsp; '+
+  '<span style="color:#4a5f58">● мало данных</span>';
+}
+
+function veDrawTable(bins,sampleCount){
+ let h='<table style="width:100%;border-collapse:collapse;font:11px ui-monospace,Consolas,monospace">'+
+  '<tr style="color:#8aa39a"><th style="text-align:left;padding:6px 8px">MAP, кПа</th><th style="text-align:left">точек</th>'+
+  '<th style="text-align:left">измерено</th><th style="text-align:left">p10–p90</th>'+
+  '<th style="text-align:left">в прошивке</th><th style="text-align:left">разница</th><th style="text-align:left">решение</th></tr>';
+ bins.forEach(b=>{
+  const c='padding:6px 8px;border-top:1px solid #1a2a25';
+  h+='<tr><td style="'+c+'">'+b.kpa+'</td>';
+  if(!b.n){h+='<td style="'+c+';color:#4a5f58">—</td><td style="'+c+';color:#4a5f58">—</td><td style="'+c+';color:#4a5f58">—</td><td style="'+c+'">'+b.cur.toFixed(2)+'</td><td style="'+c+';color:#4a5f58">—</td><td style="'+c+';color:#4a5f58">'+(b.kpa>100?'вне метода':'нет данных')+'</td></tr>';
+   return}
+  const d=b.med-b.cur, outside=(b.med>b.p90||b.med<b.p10);
+  let verdict='оставить', vc='#8aa39a';
+  if(b.kpa>100){verdict='вне метода';vc='#4a5f58'}
+  else if(b.n<VE_MIN_N){verdict='мало данных';vc='#4a5f58'}
+  if(b.kpa<=100&&b.n>=VE_MIN_N&&outside&&Math.abs(d)>0.02){
+    verdict=(d>0?'поднять ':'опустить ')+b.cur.toFixed(2)+' → '+(b.cur+d).toFixed(3);
+    vc=d>0?'#5ef0a8':'#ffbd59';
+  }
+  h+='<td style="'+c+'">'+b.n+'</td><td style="'+c+'">'+b.med.toFixed(3)+'</td>'+
+     '<td style="'+c+'">'+b.p10.toFixed(3)+'–'+b.p90.toFixed(3)+'</td>'+
+     '<td style="'+c+'">'+b.cur.toFixed(2)+'</td>'+
+     '<td style="'+c+';color:'+(d>=0?'#5ef0a8':'#ffbd59')+'">'+(d>=0?'+':'')+d.toFixed(3)+'</td>'+
+     '<td style="'+c+';color:'+vc+'">'+verdict+'</td></tr>';
+ });
+ h+='</table>';
+ $('veTable').innerHTML=h+ (sampleCount? '' : '<p class="note">Сэмплов, пригодных для расчёта, нет.</p>');
+}
+
+$('veLoad').onclick=veLoadAll;
+$('veClear').onclick=async()=>{
+ if(!confirm('Удалить все записанные измерения VE? Таблица в прошивке не изменится, но накопленные данные будут потеряны.'))return;
+ try{await api('/api/ve/clear',{method:'POST',headers:{'X-H2G-Action':'ve-clear'}});
+  $('veInfo').textContent='Кольцо VE очищено.';$('veChart').textContent='Данные ещё не загружены.';
+  $('veTable').textContent='Данные ещё не загружены.';$('veLegend').textContent=''}
+ catch(e){$('veInfo').textContent='Ошибка: '+e.message}
+};
+
 document.querySelectorAll('#display input,#display select,#boost input,#boost select').forEach(e=>e.addEventListener('input',drawGaugePreview));apply(DEFAULT_CONFIG);load();status();loadAssets();loadPetrolCalibration();loadDtcs();setInterval(status,1200);setInterval(loadDtcs,2000);setInterval(loadPetrolCalibration,3000);
 </script>
 </body></html>
