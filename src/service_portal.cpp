@@ -5055,52 +5055,57 @@ void ServicePortal::sendVe() {
   }
   const size_t end = from + records.size();
 
-  server_.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server_.send(200, "application/json", "");
+  // Собираем весь ответ в одну строку и отдаём за один send: потоковая
+  // передача через sendContent могла обрезаться на середине массива
+  // записей, и браузер получал битый JSON (Unterminated string).
+  String output;
+  output.reserve(1024 + records.size() * 48);
 
-  char buf[96];
-  snprintf(buf, sizeof(buf),
-           "{\"ready\":%s,\"healthy\":%s,\"capacity\":%u,\"count\":%u,"
-           "\"from\":%u,\"to\":%u,\"hasMore\":%s,\"firmware\":\"%s\","
-           "\"records\":[",
-           ready ? "true" : "false", healthy ? "true" : "false",
-           static_cast<unsigned>(VeLog::kCapacity),
-           static_cast<unsigned>(total), static_cast<unsigned>(from),
-           static_cast<unsigned>(end), end < total ? "true" : "false",
-           H2G_FW_VERSION);
-  server_.sendContent(buf);
+  output += "{\"ready\":";
+  output += ready ? "true" : "false";
+  output += ",\"healthy\":";
+  output += healthy ? "true" : "false";
+  output += ",\"capacity\":";
+  output += static_cast<unsigned>(VeLog::kCapacity);
+  output += ",\"count\":";
+  output += static_cast<unsigned>(total);
+  output += ",\"from\":";
+  output += static_cast<unsigned>(from);
+  output += ",\"to\":";
+  output += static_cast<unsigned>(end);
+  output += ",\"hasMore\":";
+  output += end < total ? "true" : "false";
+  output += ",\"firmware\":\"";
+  output += H2G_FW_VERSION;
+  output += "\",\"records\":[";
 
-  // Batched into one string before sending: eight records per call is eight
-  // times fewer TLS-less writes to the socket, and the buffer is a fixed size on
-  // the stack rather than a String that grows with the page.
-  char chunk[512];
-  size_t used = 0;
   for (size_t i = 0; i < records.size(); ++i) {
+    if (i > 0) output += ',';
     const VeRecord& r = records[i];
-    const int written = snprintf(
-        chunk + used, sizeof(chunk) - used,
-        "%s[%lu,%u,%u,%u,%u,%d,%u,%u]",
-        i == 0 ? "" : ",", static_cast<unsigned long>(r.epochSec),
-        static_cast<unsigned>(r.rpm * 10.0f + 0.5f),
-        static_cast<unsigned>(r.mapKpa * 10.0f + 0.5f),
-        static_cast<unsigned>(r.baroKpa * 10.0f + 0.5f),
-        static_cast<unsigned>(r.loadPct * 2.0f + 0.5f),
-        static_cast<int>(r.iatC),
-        static_cast<unsigned>(r.ageMs / 100.0f + 0.5f), r.flags);
-    if (written <= 0) break;
-    used += static_cast<size_t>(written);
-    if (used + 64 >= sizeof(chunk) || i + 1 == records.size()) {
-      server_.sendContent(chunk, used);
-      used = 0;
-    }
+    output += '[';
+    output += static_cast<unsigned long>(r.epochSec);
+    output += ',';
+    output += static_cast<unsigned>(r.rpm * 10.0f + 0.5f);
+    output += ',';
+    output += static_cast<unsigned>(r.mapKpa * 10.0f + 0.5f);
+    output += ',';
+    output += static_cast<unsigned>(r.baroKpa * 10.0f + 0.5f);
+    output += ',';
+    output += static_cast<unsigned>(r.loadPct * 2.0f + 0.5f);
+    output += ',';
+    output += static_cast<int>(r.iatC);
+    output += ',';
+    output += static_cast<unsigned>(r.ageMs / 100.0f + 0.5f);
+    output += ',';
+    output += r.flags;
+    output += ']';
   }
-  server_.sendContent("]}");
+  output += "\]}";
+
+  server_.sendHeader("Cache-Control", "no-store");
+  server_.send(200, "application/json", output);
 }
 
-// Clearing the log is maintenance, not calibration: it deletes measurements and
-// changes no setting, so it needs no confirmation beyond the POST itself. It is
-// here because a full ring otherwise keeps only what it holds and the owner has
-// no way to say "start over from this drive".
 void ServicePortal::clearVe() {
   bool ok = false;
   {
