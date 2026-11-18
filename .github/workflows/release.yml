@@ -1,0 +1,52 @@
+name: Build and package release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build firmware
+        run: pio run -e esp32s3_n16r8
+
+      - name: Package release artifacts
+        run: python tools/package_firmware.py
+
+      - name: Verify packaged artifacts against fresh build
+        run: python tools/check_packaged_artifacts.py
+
+      - name: Commit and push artifacts
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f releases/h2-gauge-v*-esp32s3-n16r8*.bin \
+                     releases/SHA256SUMS-v*.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Release: Linux-built artifacts"
+            git push
+          fi
