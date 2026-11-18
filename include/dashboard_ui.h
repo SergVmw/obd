@@ -28,7 +28,8 @@ class DashboardUi {
 
   void setPage(uint8_t page) { page_ = page % kPageCount; }
   uint8_t page() const { return page_; }
-  void resetPeak() { peakBoost_ = -10.0f; }
+  void resetPeak() { peakBoost_ = -10.0f; peakHoldUntilMs_ = 0; peakLastUpdateMs_ = 0; }
+  void updatePeak(uint32_t now, float currentBoost);
   void showService(const String& ssid, const String& ip,
                    const String& runningFirmware, const String& slotVersions,
                    const ConfigData& config);
@@ -112,4 +113,10 @@ class DashboardUi {
   uint32_t restoreMicrosTotal_ = 0;
   uint32_t renderedFrames_ = 0;
   float peakBoost_ = -10.0f;
+  // Пиковый наддув: удерживается на максимуме kPeakHoldMs, потом плавно спадает
+  // со скоростью kPeakDecayBarPerSec бар/сек, пока не догонит текущее значение.
+  uint32_t peakHoldUntilMs_ = 0;
+  uint32_t peakLastUpdateMs_ = 0;
+  static constexpr uint32_t kPeakHoldMs = 60000;      // 1 минута удержания пика
+  static constexpr float kPeakDecayBarPerSec = 0.05f; // скорость спада пика
 };

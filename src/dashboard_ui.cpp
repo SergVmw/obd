@@ -678,12 +678,57 @@ uint16_t DashboardUi::boostPointerColor(float value, const ConfigData& config) {
   }
 }
 
+// Обновляет пиковый наддув с удержанием и плавным спадом.
+//
+// currentBoost — текущее отфильтрованное значение наддува (бар).
+// Логика:
+//   1. Если currentBoost выше текущего пика — пик прыгает к нему и снова
+//      удерживается на месте kPeakHoldMs (предотвращает залипание на старом пике).
+//   2. Пока не прошло kPeakHoldMs с момента последнего обновления — пик замертв.
+//   3. После удержания пик spadaет со скоростью kPeakDecayBarPerSec бар/сек,
+//      но не ниже текущего значения currentBoost.
+void DashboardUi::updatePeak(uint32_t now, float currentBoost) {
+  // Первый вызов — просто запоминаем время, не трогая значение.
+  if (peakLastUpdateMs_ == 0) {
+    peakLastUpdateMs_ = now;
+    return;
+  }
+
+  uint32_t dt = now - peakLastUpdateMs_;
+  peakLastUpdateMs_ = now;
+
+  // Новый максимум — сбрасываем hold-таймер и фиксируем пик.
+  if (currentBoost > peakBoost_) {
+    peakBoost_ = currentBoost;
+    peakHoldUntilMs_ = now + kPeakHoldMs;
+    return;
+  }
+
+  // Ещё удерживаем пик на максимуме — ничего не меняем.
+  if (now < peakHoldUntilMs_) {
+    return;
+  }
+
+  // Время удержания прошло — плавно spadaем.
+  peakBoost_ -= kPeakDecayBarPerSec * (dt / 1000.0f);
+
+  // Не опускаем пик ниже текущего наддува.
+  if (peakBoost_ < currentBoost) {
+    peakBoost_ = currentBoost;
+  }
+
+  // Нижний предел ( vacuum / отрицательный наддув ).
+  if (peakBoost_ < -10.0f) {
+    peakBoost_ = -10.0f;
+  }
+}
+
 void DashboardUi::drawMain(const TelemetryData& data,
                            const TelemetryEngine& engine,
                            const ConfigData& config, uint32_t now) {
   mainDigitSmall_ = config.mainDigit() == MainDigitSize::Small;
-  if (data.mapKpa.valid(now) && data.filteredBoostBar > peakBoost_) {
-    peakBoost_ = data.filteredBoostBar;
+  if (data.mapKpa.valid(now)) {
+    updatePeak(now, data.filteredBoostBar);
   }
   drawGaugeArc(data.filteredBoostBar, data.mapKpa.valid(now), config);
 
