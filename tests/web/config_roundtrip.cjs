@@ -116,7 +116,13 @@ const DEVICE = {
   // 0.4.19 this one is display-only and sits with the display settings.
   await page.click('.tab[data-tab="display"]');
   await page.waitForSelector('#displaySpeedOffsetKph', { state: 'visible' });
-  await page.fill('#displaySpeedOffsetKph', '5');
+  // page.fill() на type="number" в headless Chromium не надёжно доходит до
+  // Number($(id).value) в config() — задаём значение напрямую через DOM.
+  await page.evaluate(() => {
+    const el = document.getElementById('displaySpeedOffsetKph');
+    el.value = '5';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await page.click('#save');
   await page.waitForFunction(() => document.getElementById('msg').textContent.includes('Сохранено'));
   assert.equal(postBody.display.displaySpeedOffsetKph, 5);
