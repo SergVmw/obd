@@ -5100,7 +5100,7 @@ void ServicePortal::sendVe() {
     output += r.flags;
     output += ']';
   }
-  output += "\]}";
+  output += "]}";
 
   server_.sendHeader("Cache-Control", "no-store");
   server_.send(200, "application/json", output);
