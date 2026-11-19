@@ -34,6 +34,7 @@ class BleGattServer {
   bool connected() const { return connected_; }
   uint32_t rxFrames() const { return telemetry_.bleRxFrames; }
   uint32_t lostFrames() const { return telemetry_.bleLostFrames; }
+  uint32_t droppedFrames() const { return telemetry_.bleDroppedFrames; }
 
   // BLE callback dispatch points (called by free-standing callback classes).
   void onConnect();

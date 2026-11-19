@@ -143,6 +143,7 @@ struct TelemetryData {
   volatile bool bleConnected = false;
   uint32_t bleRxFrames = 0;   // total CAN frames received over BLE
   uint32_t bleLostFrames = 0; // frames lost, detected by sequence gaps
+  uint32_t bleDroppedFrames = 0; // frames dropped by full BLE queue
   uint16_t bleLastSeq = 0;    // last sequence number seen
   bool bleHasSeq = false;     // true once the first frame has arrived
   uint32_t bleLastFrameAt = 0; // millis() of the last received frame

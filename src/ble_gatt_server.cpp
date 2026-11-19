@@ -39,6 +39,7 @@ constexpr size_t kLenOffset   = 10;  // 1 byte
 constexpr size_t kFlagsOffset = 11;  // 1 byte: bit0=ext, bit1=rtr
 constexpr size_t kDataOffset  = 12;  // up to 8 bytes
 constexpr size_t kMinFrameLen = 12;  // seq+ms+id+len+flags, no data
+constexpr size_t kMaxFrameLen = 20;  // 2+4+4+1+1+8, max ATT write w/o MTU exchange
 
 }  // namespace
 
@@ -104,6 +105,10 @@ void BleGattServer::onConnect() {
   portENTER_CRITICAL(&queueMux_);
   telemetry_.bleConnected = true;
   portEXIT_CRITICAL(&queueMux_);
+  // C3 resets bleSeq = 0 on every new connection — drop any stale sequence
+  // state so the first frame of the new session does not look like a gap.
+  telemetry_.bleHasSeq = false;
+  telemetry_.bleLastSeq = 0;
   ESP_LOGI(kTag, "BLE client connected");
 }
 
@@ -119,12 +124,24 @@ void BleGattServer::onDisconnect() {
 
 void BleGattServer::onWrite(BLECharacteristic* pCharacteristic) {
   const std::string& value = pCharacteristic->getValue();
-  if (value.size() < kMinFrameLen) {
-    ESP_LOGW(kTag, "BLE write too short: %u bytes", value.size());
+
+  // P0: hard bounds on payload size. 20 bytes is the max ATT write without
+  // MTU exchange (2+4+4+1+1+8).
+  if (value.size() < kMinFrameLen || value.size() > kMaxFrameLen) {
+    ESP_LOGW(kTag, "Invalid BLE frame size: %u bytes", value.size());
     return;
   }
 
   const uint8_t* p = reinterpret_cast<const uint8_t*>(value.data());
+
+  const uint8_t len = p[kLenOffset];
+
+  // P0: the declared data length must exactly match the remaining bytes.
+  if (len > 8 || value.size() != kDataOffset + len) {
+    ESP_LOGW(kTag, "Invalid CAN payload length: declared=%u size=%u", len,
+             value.size());
+    return;
+  }
 
   QueuedFrame f;
   f.seq = static_cast<uint16_t>(p[kSeqOffset] << 8 | p[kSeqOffset + 1]);
@@ -141,25 +158,29 @@ void BleGattServer::onWrite(BLECharacteristic* pCharacteristic) {
          (static_cast<uint32_t>(p[kIdOffset + 2]) << 16) |
          (static_cast<uint32_t>(p[kIdOffset + 3]) << 24);
 
-  f.len = p[kLenOffset];
-  if (f.len > 8) f.len = 8;
+  f.len = len;
   f.ext = (p[kFlagsOffset] & 0x01) != 0;
   f.rtr = (p[kFlagsOffset] & 0x02) != 0;
   memcpy(f.data, p + kDataOffset, f.len);
   f.valid = true;
 
-  // enqueue() itself takes queueMux_ — do not nest portENTER_CRITICAL.
+  // P1: enqueue() is itself protected by queueMux_ — do not nest.
   enqueue(f);
 }
 
 void BleGattServer::enqueue(const QueuedFrame& frame) {
+  portENTER_CRITICAL(&queueMux_);
+
   size_t next = (queueHead_ + 1) % kFrameQueueCapacity;
   if (next == queueTail_) {
-    // Queue full — drop the oldest frame.
+    // P1: queue full — drop the oldest frame and count it.
     queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
+    telemetry_.bleDroppedFrames++;
   }
   queue_[queueHead_] = frame;
   queueHead_ = next;
+
+  portEXIT_CRITICAL(&queueMux_);
 }
 
 bool BleGattServer::dequeue(QueuedFrame& out) {
@@ -175,6 +196,9 @@ bool BleGattServer::dequeue(QueuedFrame& out) {
 }
 
 void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
+  // P1: account every accepted frame.
+  telemetry_.bleRxFrames++;
+
   // Seq-based loss detection.
   if (telemetry_.bleHasSeq) {
     uint16_t expected = static_cast<uint16_t>(telemetry_.bleLastSeq + 1);
