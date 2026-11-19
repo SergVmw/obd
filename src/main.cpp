@@ -626,6 +626,9 @@ void loop() {
     obdClient.loop(now);
 #endif
     bleGattServer.loop(now);
+    // Single owner of telemetry_.bleConnected writes: main loop, via the
+    // synchronized connected() getter.
+    telemetry.bleConnected = bleGattServer.connected();
     serviceDtcPersistence(now);
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
