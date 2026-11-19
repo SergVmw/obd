@@ -64,8 +64,19 @@ class BleGattServer {
     return v;
   }
 
-  // Forward declaration — QueuedFrame is defined in the private section below.
-  struct QueuedFrame;
+  // Frame carried between the BLE callback task (enqueue) and the main loop
+  // (publishFrame). Members are public for simple aggregate initialization.
+  struct QueuedFrame {
+    uint16_t seq = 0;
+    uint32_t ms = 0;
+    uint32_t id = 0;
+    uint8_t data[8] = {0};
+    uint8_t len = 0;
+    uint32_t sessionId = 0; // BLE session that enqueued this frame
+    bool ext = false;
+    bool rtr = false;
+    bool valid = false;
+  };
 
   // Atomically publish a received CAN frame into TelemetryData. Returns false
   // if the frame belongs to a stale BLE session and was skipped.
@@ -96,17 +107,11 @@ class BleGattServer {
   // Small ring buffer for frames arriving in the BLE write callback
   // (which runs on the BLE task) and consumed in the main loop.
   static constexpr size_t kFrameQueueCapacity = 32;
-  struct QueuedFrame {
-    uint16_t seq = 0;
-    uint32_t ms = 0;
-    uint32_t id = 0;
-    uint8_t data[8] = {0};
-    uint8_t len = 0;
-    uint32_t sessionId = 0; // BLE session that enqueued this frame
-    bool ext = false;
-    bool rtr = false;
-    bool valid = false;
-  };
+  QueuedFrame queue_[kFrameQueueCapacity];
+  size_t queueHead_ = 0;
+  size_t queueTail_ = 0;
+  // mutable so const methods (connected()) can acquire the lock for a
+  // consistent read — the spinlock itself does not change the logical state.
   QueuedFrame queue_[kFrameQueueCapacity];
   size_t queueHead_ = 0;
   size_t queueTail_ = 0;
