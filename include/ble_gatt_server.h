@@ -64,6 +64,9 @@ class BleGattServer {
     return v;
   }
 
+  // Forward declaration — QueuedFrame is defined in the private section below.
+  struct QueuedFrame;
+
   // Atomically publish a received CAN frame into TelemetryData. Returns false
   // if the frame belongs to a stale BLE session and was skipped.
   bool publishFrame(const QueuedFrame& f, uint32_t now);
