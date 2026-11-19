@@ -185,6 +185,12 @@ void BleGattServer::enqueue(const QueuedFrame& frame) {
   queue_[queueHead_] = tagged;
   queueHead_ = next;
 
+  // P2: count every frame accepted into the queue, not just every frame
+  // processed by the main loop. Dropped frames (queue full) are counted in
+  // bleDroppedFrames, frames from old sessions are dropped without being
+  // counted here — they were never usable.
+  telemetry_.bleRxFrames++;
+
   portEXIT_CRITICAL(&queueMux_);
 }
 
@@ -201,13 +207,11 @@ bool BleGattServer::dequeue(QueuedFrame& out) {
 }
 
 void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
-  // P1: account every accepted frame.
-  telemetry_.bleRxFrames++;
-
   // Loss accounting: three distinct counters:
-  //   bleRxFrames   — frames accepted by the BLE callback (enqueued).
+  //   bleRxFrames     — frames accepted by the BLE callback (enqueued),
+  //                     counted in enqueue().
   //   bleDroppedFrames — frames dropped because the local queue was full.
-  //   bleLostFrames — seq discontinuities between *processed* frames. These
+  //   bleLostFrames   — seq discontinuities between *processed* frames. These
   //   may reflect radio losses OR frames dropped by queue overflow (the gap
   //   appears when the next frame is processed). Do not sum bleLostFrames and
   //   bleDroppedFrames for a total loss figure — they can overlap.
@@ -242,25 +246,24 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
 void BleGattServer::loop(uint32_t now) {
   if (!initialized_) return;
 
-  // Handle a newly connected BLE client on the main task: reset sequence
-  // state so the C3's seq=0 restart does not look like a gap. Frames from the
-  // previous session are dropped individually below (by session id) rather
-  // than flushing the whole queue, so no frames are lost between connect and
-  // the first main-loop pass.
-  uint8_t currentSession = 0;
-  if (bleNewSession_) {
-    portENTER_CRITICAL(&queueMux_);
+  // Atomically snapshot session state under queueMux_: whether a new session
+  // started and the current session id. Reading bleNewSession_ outside the
+  // lock while it is written from the BLE callback task can race: the flag
+  // could be set between the read and the session-id read, causing us to
+  // process new-session frames with stale sequence state.
+  uint32_t currentSession;
+  bool resetSequence;
+  portENTER_CRITICAL(&queueMux_);
+  currentSession = bleSessionId_;
+  resetSequence = bleNewSession_;
+  bleNewSession_ = false;
+  portEXIT_CRITICAL(&queueMux_);
+
+  if (resetSequence) {
     telemetry_.bleHasSeq = false;
     telemetry_.bleLastSeq = 0;
-    bleNewSession_ = false;
-    currentSession = bleSessionId_;
-    portEXIT_CRITICAL(&queueMux_);
     ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
              currentSession);
-  } else {
-    portENTER_CRITICAL(&queueMux_);
-    currentSession = bleSessionId_;
-    portEXIT_CRITICAL(&queueMux_);
   }
 
   // P1: bound the work per iteration so a flood of BLE frames cannot starve
