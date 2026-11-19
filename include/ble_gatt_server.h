@@ -37,10 +37,31 @@ class BleGattServer {
     portEXIT_CRITICAL(&queueMux_);
     return c;
   }
-  uint32_t rxFrames() const { return telemetry_.bleRxFrames; }
-  uint32_t lostFrames() const { return telemetry_.bleLostFrames; }
-  uint32_t droppedFrames() const { return telemetry_.bleDroppedFrames; }
-  uint32_t staleSessionFrames() const { return telemetry_.bleStaleSessionFrames; }
+  // All statistics are read under queueMux_ for inter-task consistency.
+  uint32_t rxFrames() const {
+    portENTER_CRITICAL(&queueMux_);
+    uint32_t v = telemetry_.bleRxFrames;
+    portEXIT_CRITICAL(&queueMux_);
+    return v;
+  }
+  uint32_t lostFrames() const {
+    portENTER_CRITICAL(&queueMux_);
+    uint32_t v = telemetry_.bleLostFrames;
+    portEXIT_CRITICAL(&queueMux_);
+    return v;
+  }
+  uint32_t droppedFrames() const {
+    portENTER_CRITICAL(&queueMux_);
+    uint32_t v = telemetry_.bleDroppedFrames;
+    portEXIT_CRITICAL(&queueMux_);
+    return v;
+  }
+  uint32_t staleSessionFrames() const {
+    portENTER_CRITICAL(&queueMux_);
+    uint32_t v = telemetry_.bleStaleSessionFrames;
+    portEXIT_CRITICAL(&queueMux_);
+    return v;
+  }
 
   // BLE callback dispatch points (called by free-standing callback classes).
   void onConnect();
@@ -86,5 +107,7 @@ class BleGattServer {
   mutable portMUX_TYPE queueMux_ = portMUX_INITIALIZER_UNLOCKED;
 
   void enqueue(const QueuedFrame& frame);
-  void processFrame(const QueuedFrame& f, uint32_t now);
+  // processFrame() returns false if the frame belongs to a stale session and
+  // was skipped — the caller should not count it toward telemetry.
+  bool processFrame(const QueuedFrame& f, uint32_t now);
 };

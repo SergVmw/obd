@@ -194,11 +194,24 @@ void BleGattServer::enqueue(const QueuedFrame& frame) {
   portEXIT_CRITICAL(&queueMux_);
 }
 
-void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
+bool BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
+  // Re-check the session under the lock: a new BLE connection may have arrived
+  // between dequeuing this frame and calling processFrame(). If the frame is
+  // stale, skip it entirely — it must not update telemetry from a new session.
+  uint32_t sessionNow;
+  portENTER_CRITICAL(&queueMux_);
+  sessionNow = bleSessionId_;
+  portEXIT_CRITICAL(&queueMux_);
+
+  if (f.sessionId != sessionNow) {
+    return false;
+  }
+
   // Loss accounting: three distinct counters:
   //   bleRxFrames     — frames accepted by the BLE callback (enqueued),
   //                     counted in enqueue().
   //   bleDroppedFrames — frames dropped because the local queue was full.
+  //   bleStaleSessionFrames — frames dropped due to a BLE session change.
   //   bleLostFrames   — seq discontinuities between *processed* frames. These
   //   may reflect radio losses OR frames dropped by queue overflow (the gap
   //   appears when the next frame is processed). Do not sum bleLostFrames and
@@ -229,6 +242,7 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
   telemetry_.bleLastFrameLen = f.len;
   telemetry_.bleLastFrameExt = f.ext;
   memcpy(telemetry_.bleLastFrameData, f.data, f.len);
+  return true;
 }
 
 void BleGattServer::loop(uint32_t now) {
@@ -277,6 +291,8 @@ void BleGattServer::loop(uint32_t now) {
       break;
     }
     if (!haveFrame) break;
-    processFrame(f, now);
+    // processFrame() returns false if a new session arrived between dequeue
+    // and processing — the frame is stale and must not update telemetry.
+    if (!processFrame(f, now)) continue;
   }
 }
