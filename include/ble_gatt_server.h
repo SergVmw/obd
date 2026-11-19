@@ -45,6 +45,10 @@ class BleGattServer {
   TelemetryData& telemetry_;
   bool initialized_ = false;
   volatile bool connected_ = false;
+  // Set from the BLE callback task when a new client connects; consumed in the
+  // main loop so queue flush and sequence reset happen on the same task that
+  // processes frames.
+  volatile bool bleNewSession_ = false;
 
   // Small ring buffer for frames arriving in the BLE write callback
   // (which runs on the BLE task) and consumed in the main loop.

@@ -105,10 +105,10 @@ void BleGattServer::onConnect() {
   portENTER_CRITICAL(&queueMux_);
   telemetry_.bleConnected = true;
   portEXIT_CRITICAL(&queueMux_);
-  // C3 resets bleSeq = 0 on every new connection — drop any stale sequence
-  // state so the first frame of the new session does not look like a gap.
-  telemetry_.bleHasSeq = false;
-  telemetry_.bleLastSeq = 0;
+  // Signal a new BLE session to the main loop. The actual sequence-state reset
+  // and queue flush happen there, on the same task that processes frames, so
+  // there is no cross-task race on bleHasSeq / bleLastSeq.
+  bleNewSession_ = true;
   ESP_LOGI(kTag, "BLE client connected");
 }
 
@@ -199,6 +199,16 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
   // P1: account every accepted frame.
   telemetry_.bleRxFrames++;
 
+  // Note on loss accounting: bleLostFrames counts gaps in the C3's sequence
+  // numbers (frames lost over the air / not received). bleDroppedFrames counts
+  // frames dropped by this side's full queue. They measure different failure
+  // modes and must NOT be added together to derive a total loss figure.
+
+  // NOTE: This path stores raw CAN frame metadata in TelemetryData
+  // (bleLastFrameId, bleLastFrameData, bleLastFrameLen). Decoding those raw
+  // CAN frames into H2 Gauge physical parameters (RPM, speed, temperature,
+  // etc.) requires a vehicle-specific CAN ID → signal mapping and is a separate
+  // architectural task — raw frame reception alone does not update the gauges.
   // Seq-based loss detection.
   if (telemetry_.bleHasSeq) {
     uint16_t expected = static_cast<uint16_t>(telemetry_.bleLastSeq + 1);
@@ -224,8 +234,27 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
 void BleGattServer::loop(uint32_t now) {
   if (!initialized_) return;
 
-  QueuedFrame f;
-  while (dequeue(f)) {
+  // Handle a newly connected BLE client on the main task: flush stale frames
+  // from the previous session and reset sequence state so the C3's seq=0
+  // restart does not look like a gap. Done here (not in the callback) so the
+  // reset and queue flush are on the same task that processes frames.
+  if (bleNewSession_) {
+    portENTER_CRITICAL(&queueMux_);
+    queueHead_ = 0;
+    queueTail_ = 0;
+    telemetry_.bleHasSeq = false;
+    telemetry_.bleLastSeq = 0;
+    portEXIT_CRITICAL(&queueMux_);
+    bleNewSession_ = false;
+    ESP_LOGI(kTag, "BLE session reset complete");
+  }
+
+  // P1: bound the work per iteration so a flood of BLE frames cannot starve
+  // the rest of the gauge loop (OBD poller, dashboard, Wi-Fi, etc.).
+  constexpr uint8_t kMaxFramesPerLoop = 16;
+  for (uint8_t i = 0; i < kMaxFramesPerLoop; ++i) {
+    QueuedFrame f;
+    if (!dequeue(f)) break;
     processFrame(f, now);
   }
 }
