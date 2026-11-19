@@ -101,13 +101,17 @@ void BleGattServer::begin() {
 
 void BleGattServer::onConnect() {
   connected_ = true;
+  portENTER_CRITICAL(&queueMux_);
   telemetry_.bleConnected = true;
+  portEXIT_CRITICAL(&queueMux_);
   ESP_LOGI(kTag, "BLE client connected");
 }
 
 void BleGattServer::onDisconnect() {
   connected_ = false;
+  portENTER_CRITICAL(&queueMux_);
   telemetry_.bleConnected = false;
+  portEXIT_CRITICAL(&queueMux_);
   ESP_LOGI(kTag, "BLE client disconnected");
   // Restart advertising so the C3 can reconnect.
   BLEDevice::getAdvertising()->start();
@@ -144,10 +148,8 @@ void BleGattServer::onWrite(BLECharacteristic* pCharacteristic) {
   memcpy(f.data, p + kDataOffset, f.len);
   f.valid = true;
 
-  portENTER_CRITICAL(&queueMux_);
-  telemetry_.bleRxFrames++;
+  // enqueue() itself takes queueMux_ — do not nest portENTER_CRITICAL.
   enqueue(f);
-  portEXIT_CRITICAL(&queueMux_);
 }
 
 void BleGattServer::enqueue(const QueuedFrame& frame) {

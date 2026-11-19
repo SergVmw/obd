@@ -138,7 +138,9 @@ struct TelemetryData {
   // BLE GATT server state (ESP32-C3 CAN listener → ESP32-S3 gauge).
   // The C3 listens on CAN and forwards each frame as a BLE write to the
   // characteristic below; this side receives, displays and tracks loss.
-  bool bleConnected = false;
+  // bleConnected is written from the BLE callback task and read from the
+  // main loop task — volatile so the compiler does not cache it in a register.
+  volatile bool bleConnected = false;
   uint32_t bleRxFrames = 0;   // total CAN frames received over BLE
   uint32_t bleLostFrames = 0; // frames lost, detected by sequence gaps
   uint16_t bleLastSeq = 0;    // last sequence number seen
