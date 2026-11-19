@@ -115,5 +115,4 @@ class BleGattServer {
   mutable portMUX_TYPE queueMux_ = portMUX_INITIALIZER_UNLOCKED;
 
   void enqueue(const QueuedFrame& frame);
-  bool publishFrame(const QueuedFrame& f, uint32_t now);
 };

@@ -238,8 +238,9 @@ bool BleGattServer::publishFrame(const QueuedFrame& f, uint32_t now) {
     return false;
   }
   if (have_gap) {
+    // f.seq is a local copy — safe to read after releasing the lock.
     ESP_LOGW(kTag, "BLE seq gap: last=%u got=%u lost=%u",
-             last_seq_before, telemetry_.bleLastSeq, gap);
+             last_seq_before, f.seq, gap);
   }
   return true;
 }

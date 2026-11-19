@@ -850,9 +850,6 @@ void loop() {
         configStore.data(), tripClock.nowEpochSec(rtcNowSec));
     historyCardPtr = &activeHistoryCard;
   }
-  // Publish BLE connection state under lock before rendering so the dashboard
-  // reads a synchronized value.
-  telemetry.bleConnected = bleGattServer.connected();
   dashboard.render(now, telemetry, telemetryEngine, configStore.data(),
                    historyCardPtr);
 
