@@ -113,8 +113,8 @@ void BleGattServer::onConnect() {
 }
 
 void BleGattServer::onDisconnect() {
-  connected_ = false;
   portENTER_CRITICAL(&queueMux_);
+  connected_ = false;
   telemetry_.bleConnected = false;
   portEXIT_CRITICAL(&queueMux_);
   ESP_LOGI(kTag, "BLE client disconnected");
@@ -270,23 +270,40 @@ void BleGattServer::loop(uint32_t now) {
   // the rest of the gauge loop (OBD poller, dashboard, Wi-Fi, etc.).
   constexpr uint8_t kMaxFramesPerLoop = 16;
   for (uint8_t i = 0; i < kMaxFramesPerLoop; ++i) {
-    // Re-read the session id under the lock each iteration: a new BLE
-    // connection may arrive while we are processing, and frames from the
-    // previous session must not update telemetry after a session reset is
-    // pending. If a new session started, break so the next loop() pass
-    // performs the agreed sequence-state reset.
+    // Extract a frame and check its session under the same lock, so a new BLE
+    // connection cannot slip in between reading the session id and extracting
+    // the frame. processFrame() stays outside the lock.
+    QueuedFrame f;
+    bool haveFrame = false;
+    bool newSession = false;
+
     portENTER_CRITICAL(&queueMux_);
-    uint32_t sessionNow = bleSessionId_;
-    bool newSessionNow = bleNewSession_;
+    if (bleNewSession_) {
+      // New BLE session: reset sequence state so the C3's seq=0 restart does
+      // not look like a gap. Stale frames from the previous session are dropped
+      // one by one below.
+      bleNewSession_ = false;
+      telemetry_.bleHasSeq = false;
+      telemetry_.bleLastSeq = 0;
+      newSession = true;
+      ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
+               bleSessionId_);
+    } else if (queueTail_ != queueHead_) {
+      const uint32_t sessionNow = bleSessionId_;
+      if (queue_[queueTail_].sessionId == sessionNow) {
+        f = queue_[queueTail_];
+        queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
+        haveFrame = true;
+      } else {
+        // Stale frame from a previous session — drop it atomically.
+        queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
+        telemetry_.bleDroppedFrames++;
+      }
+    }
     portEXIT_CRITICAL(&queueMux_);
 
-    if (newSessionNow) break;
-
-    QueuedFrame f;
-    if (!dequeue(f)) break;
-    // Drop frames enqueued under a previous BLE session: they were received
-    // before the session reset and must not corrupt seq-based accounting.
-    if (f.sessionId != sessionNow) continue;
+    if (newSession) break;
+    if (!haveFrame) break;
     processFrame(f, now);
   }
 }

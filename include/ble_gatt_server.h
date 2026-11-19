@@ -31,7 +31,12 @@ class BleGattServer {
   // Call every loop iteration from the main task.
   void loop(uint32_t now);
 
-  bool connected() const { return connected_; }
+  bool connected() const {
+    portENTER_CRITICAL(&queueMux_);
+    bool c = connected_;
+    portEXIT_CRITICAL(&queueMux_);
+    return c;
+  }
   uint32_t rxFrames() const { return telemetry_.bleRxFrames; }
   uint32_t lostFrames() const { return telemetry_.bleLostFrames; }
   uint32_t droppedFrames() const { return telemetry_.bleDroppedFrames; }
@@ -44,6 +49,9 @@ class BleGattServer {
  private:
   TelemetryData& telemetry_;
   bool initialized_ = false;
+  // Written from the BLE callback task, read from the main loop task — volatile
+  // so the compiler does not cache it across loop() iterations. All accesses
+  // are protected by queueMux_ for full inter-task synchronization.
   volatile bool connected_ = false;
   // Incremented on every new BLE connection; frames carry the session id that
   // was current when they were enqueued. Frames from a previous session are
