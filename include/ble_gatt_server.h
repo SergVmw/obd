@@ -1,6 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLECharacteristic.h>
 #include "telemetry.h"
 
 // BLE GATT server for the ESP32-S3 H2 Gauge.
@@ -32,6 +35,11 @@ class BleGattServer {
   uint32_t rxFrames() const { return telemetry_.bleRxFrames; }
   uint32_t lostFrames() const { return telemetry_.bleLostFrames; }
 
+  // BLE callback dispatch points (called by free-standing callback classes).
+  void onConnect();
+  void onDisconnect();
+  void onWrite(BLECharacteristic* pCharacteristic);
+
  private:
   TelemetryData& telemetry_;
   bool initialized_ = false;
@@ -58,10 +66,4 @@ class BleGattServer {
   void enqueue(const QueuedFrame& frame);
   bool dequeue(QueuedFrame& out);
   void processFrame(const QueuedFrame& f, uint32_t now);
-
-  // BLE callback implementations (defined in the .cpp file as free-standing
-  // classes holding a BleGattServer pointer).
-  void onConnect();
-  void onDisconnect();
-  void onWrite(BLECharacteristic* pCharacteristic);
 };
