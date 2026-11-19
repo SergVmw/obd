@@ -40,6 +40,7 @@ class BleGattServer {
   uint32_t rxFrames() const { return telemetry_.bleRxFrames; }
   uint32_t lostFrames() const { return telemetry_.bleLostFrames; }
   uint32_t droppedFrames() const { return telemetry_.bleDroppedFrames; }
+  uint32_t staleSessionFrames() const { return telemetry_.bleStaleSessionFrames; }
 
   // BLE callback dispatch points (called by free-standing callback classes).
   void onConnect();
@@ -85,6 +86,5 @@ class BleGattServer {
   mutable portMUX_TYPE queueMux_ = portMUX_INITIALIZER_UNLOCKED;
 
   void enqueue(const QueuedFrame& frame);
-  bool dequeue(QueuedFrame& out);
   void processFrame(const QueuedFrame& f, uint32_t now);
 };

@@ -194,18 +194,6 @@ void BleGattServer::enqueue(const QueuedFrame& frame) {
   portEXIT_CRITICAL(&queueMux_);
 }
 
-bool BleGattServer::dequeue(QueuedFrame& out) {
-  portENTER_CRITICAL(&queueMux_);
-  if (queueTail_ == queueHead_) {
-    portEXIT_CRITICAL(&queueMux_);
-    return false;
-  }
-  out = queue_[queueTail_];
-  queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
-  portEXIT_CRITICAL(&queueMux_);
-  return true;
-}
-
 void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
   // Loss accounting: three distinct counters:
   //   bleRxFrames     — frames accepted by the BLE callback (enqueued),
@@ -246,36 +234,17 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
 void BleGattServer::loop(uint32_t now) {
   if (!initialized_) return;
 
-  // Atomically snapshot session state under queueMux_: whether a new session
-  // started and the current session id. Reading bleNewSession_ outside the
-  // lock while it is written from the BLE callback task can race: the flag
-  // could be set between the read and the session-id read, causing us to
-  // process new-session frames with stale sequence state.
-  uint32_t currentSession;
-  bool resetSequence;
-  portENTER_CRITICAL(&queueMux_);
-  currentSession = bleSessionId_;
-  resetSequence = bleNewSession_;
-  bleNewSession_ = false;
-  portEXIT_CRITICAL(&queueMux_);
-
-  if (resetSequence) {
-    telemetry_.bleHasSeq = false;
-    telemetry_.bleLastSeq = 0;
-    ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
-             currentSession);
-  }
-
   // P1: bound the work per iteration so a flood of BLE frames cannot starve
   // the rest of the gauge loop (OBD poller, dashboard, Wi-Fi, etc.).
   constexpr uint8_t kMaxFramesPerLoop = 16;
   for (uint8_t i = 0; i < kMaxFramesPerLoop; ++i) {
     // Extract a frame and check its session under the same lock, so a new BLE
     // connection cannot slip in between reading the session id and extracting
-    // the frame. processFrame() stays outside the lock.
+    // the frame. Session reset and stale-frame drop are centralized here.
     QueuedFrame f;
     bool haveFrame = false;
     bool newSession = false;
+    uint32_t resetSessionId = 0;
 
     portENTER_CRITICAL(&queueMux_);
     if (bleNewSession_) {
@@ -286,8 +255,7 @@ void BleGattServer::loop(uint32_t now) {
       telemetry_.bleHasSeq = false;
       telemetry_.bleLastSeq = 0;
       newSession = true;
-      ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
-               bleSessionId_);
+      resetSessionId = bleSessionId_;
     } else if (queueTail_ != queueHead_) {
       const uint32_t sessionNow = bleSessionId_;
       if (queue_[queueTail_].sessionId == sessionNow) {
@@ -297,12 +265,17 @@ void BleGattServer::loop(uint32_t now) {
       } else {
         // Stale frame from a previous session — drop it atomically.
         queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
-        telemetry_.bleDroppedFrames++;
+        telemetry_.bleStaleSessionFrames++;
       }
     }
     portEXIT_CRITICAL(&queueMux_);
 
-    if (newSession) break;
+    // Logging outside the critical section.
+    if (newSession) {
+      ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
+               resetSessionId);
+      break;
+    }
     if (!haveFrame) break;
     processFrame(f, now);
   }
