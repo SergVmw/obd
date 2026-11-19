@@ -30,6 +30,7 @@
 #include "sta_readonly.h"
 #include "storage_mutex.h"
 #include "telemetry.h"
+#include "ble_gatt_server.h"
 #include "trip_boundary.h"
 #include "trip_clock.h"
 #include "trip_context.h"
@@ -59,6 +60,7 @@ ObdClient obdClient(telemetry, configStore.data(), canMonitor);
 ObdTraceRecorder diagnosticTrace;
 #endif
 DashboardUi dashboard;
+BleGattServer bleGattServer(telemetry);
 OneButton button;
 LpgValveInput lpgInput;
 PowerManager powerManager;
@@ -513,6 +515,7 @@ void setup() {
     ESP_LOGE(kTag, "CAN/OBD initialization failed");
   }
 #endif
+  bleGattServer.begin();
   // Attach TripHistory pointer only; never spawn STA tasks or touch Wi-Fi in
   // setup(), so power-on button hold (bootService) enters ServicePortal with
   // zero STA code executed.
@@ -622,6 +625,7 @@ void loop() {
     // Requests are paused, but RX stays active for the bounded CAN Monitor.
     obdClient.loop(now);
 #endif
+    bleGattServer.loop(now);
     serviceDtcPersistence(now);
     const bool lpgActive = lpgInput.update(now, configStore.data());
     telemetryEngine.refreshLiveTelemetry(now, configStore.data(), lpgActive);
@@ -711,6 +715,7 @@ void loop() {
 #else
   obdClient.loop(now);
 #endif
+  bleGattServer.loop(now);
   serviceDtcPersistence(now);
 
   const uint32_t rtcNowSec = currentRtcSec();

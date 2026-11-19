@@ -134,6 +134,21 @@ struct TelemetryData {
   uint32_t canTec = 0;
   uint32_t canRec = 0;
   uint32_t canRxMissedCount = 0;
+
+  // BLE GATT server state (ESP32-C3 CAN listener → ESP32-S3 gauge).
+  // The C3 listens on CAN and forwards each frame as a BLE write to the
+  // characteristic below; this side receives, displays and tracks loss.
+  bool bleConnected = false;
+  uint32_t bleRxFrames = 0;   // total CAN frames received over BLE
+  uint32_t bleLostFrames = 0; // frames lost, detected by sequence gaps
+  uint16_t bleLastSeq = 0;    // last sequence number seen
+  bool bleHasSeq = false;     // true once the first frame has arrived
+  uint32_t bleLastFrameAt = 0; // millis() of the last received frame
+  uint32_t bleLastFrameId = 0; // identifier of the last received frame
+  uint8_t bleLastFrameData[8] = {0};
+  uint8_t bleLastFrameLen = 0;
+  bool bleLastFrameExt = false;
+
   // How many times the controller was found erroring fast enough that the
   // client stopped the poller, and how much of the current hold-off is left.
   // The error count alone cannot tell a bus that failed once from a bus that

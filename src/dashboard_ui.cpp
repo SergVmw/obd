@@ -965,6 +965,17 @@ void DashboardUi::drawStatusRow(const TelemetryData& data,
   sprite_.fillCircle(config.lpgBadge ? 131 : 105, 211, 3, obdColor);
   drawText("OBD", config.lpgBadge ? 139 : 113, 211, ML_DATUM, kMuted,
            FontRole::Small, FSS9);
+
+  // BLE CAN-over-BLE status on the right side of the status row.
+  const bool bleConn = data.bleConnected;
+  const uint16_t bleColor = bleConn ? config.colorBoost : config.colorDanger;
+  sprite_.fillCircle(198, 211, 3, bleColor);
+  drawText("BLE", 206, 211, ML_DATUM, kMuted, FontRole::Small, FSS9);
+  if (bleConn) {
+    char bleId[8];
+    snprintf(bleId, sizeof(bleId), "%03X", data.bleLastFrameId);
+    drawText(bleId, 228, 211, ML_DATUM, bleColor, FontRole::Small, FSS9);
+  }
 }
 
 void DashboardUi::drawFuel(const TelemetryData& data,

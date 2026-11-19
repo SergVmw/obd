@@ -119,4 +119,5 @@ class DashboardUi {
   uint32_t peakLastUpdateMs_ = 0;
   static constexpr uint32_t kPeakHoldMs = 60000;      // 1 минута удержания пика
   static constexpr float kPeakDecayBarPerSec = 0.05f; // скорость спада пика
+
 };
