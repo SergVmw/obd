@@ -59,7 +59,9 @@ class BleGattServer {
   bool dequeue(QueuedFrame& out);
   void processFrame(const QueuedFrame& f, uint32_t now);
 
-  // BLE callback implementations (defined in the .cpp file)
-  friend class ServerCallbacks;
-  friend class CharacteristicCallbacks;
+  // BLE callback implementations (defined in the .cpp file as free-standing
+  // classes holding a BleGattServer pointer).
+  void onConnect();
+  void onDisconnect();
+  void onWrite(BLECharacteristic* pCharacteristic);
 };

@@ -42,7 +42,8 @@ constexpr size_t kMinFrameLen = 12;  // seq+ms+id+len+flags, no data
 
 }  // namespace
 
-class BleGattServer::ServerCallbacks : public BLEServerCallbacks {
+// BLE server connection/disconnection callbacks.
+class ServerCallbacks : public BLEServerCallbacks {
  public:
   explicit ServerCallbacks(BleGattServer* server) : server_(server) {}
   void onConnect(BLEServer* pServer) override {
@@ -56,7 +57,8 @@ class BleGattServer::ServerCallbacks : public BLEServerCallbacks {
   BleGattServer* server_;
 };
 
-class BleGattServer::CharacteristicCallbacks : public BLECharacteristicCallbacks {
+// BLE characteristic write callbacks.
+class CharacteristicCallbacks : public BLECharacteristicCallbacks {
  public:
   explicit CharacteristicCallbacks(BleGattServer* server) : server_(server) {}
   void onWrite(BLECharacteristic* pCharacteristic) override {
