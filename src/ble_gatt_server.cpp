@@ -103,7 +103,6 @@ void BleGattServer::begin() {
 void BleGattServer::onConnect() {
   portENTER_CRITICAL(&queueMux_);
   connected_ = true;
-  telemetry_.bleConnected = true;
   // New BLE session: bump the session id so frames from the previous session
   // can be identified and dropped in the main loop.
   ++bleSessionId_;
@@ -115,7 +114,6 @@ void BleGattServer::onConnect() {
 void BleGattServer::onDisconnect() {
   portENTER_CRITICAL(&queueMux_);
   connected_ = false;
-  telemetry_.bleConnected = false;
   portEXIT_CRITICAL(&queueMux_);
   ESP_LOGI(kTag, "BLE client disconnected");
   // Restart advertising so the C3 can reconnect.

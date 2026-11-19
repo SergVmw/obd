@@ -850,6 +850,10 @@ void loop() {
         configStore.data(), tripClock.nowEpochSec(rtcNowSec));
     historyCardPtr = &activeHistoryCard;
   }
+  // Single owner of telemetry_.bleConnected writes: main loop, via the
+  // synchronized connected() getter. BLE callback updates only internal
+  // connected_ under queueMux_ — no cross-task concurrent writes.
+  telemetry.bleConnected = bleGattServer.connected();
   dashboard.render(now, telemetry, telemetryEngine, configStore.data(),
                    historyCardPtr);
 
