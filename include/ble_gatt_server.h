@@ -80,7 +80,9 @@ class BleGattServer {
   QueuedFrame queue_[kFrameQueueCapacity];
   size_t queueHead_ = 0;
   size_t queueTail_ = 0;
-  portMUX_TYPE queueMux_ = portMUX_INITIALIZER_UNLOCKED;
+  // mutable so const methods (connected()) can acquire the lock for a
+  // consistent read — the spinlock itself does not change the logical state.
+  mutable portMUX_TYPE queueMux_ = portMUX_INITIALIZER_UNLOCKED;
 
   void enqueue(const QueuedFrame& frame);
   bool dequeue(QueuedFrame& out);
