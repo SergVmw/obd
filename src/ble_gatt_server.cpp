@@ -194,54 +194,53 @@ void BleGattServer::enqueue(const QueuedFrame& frame) {
   portEXIT_CRITICAL(&queueMux_);
 }
 
-bool BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
-  // Re-check the session under the lock: a new BLE connection may have arrived
-  // between dequeuing this frame and calling processFrame(). If the frame is
-  // stale, skip it entirely — it must not update telemetry from a new session.
+bool BleGattServer::publishFrame(const QueuedFrame& f, uint32_t now) {
+  // Session check and telemetry update under the same lock — a new BLE
+  // connection cannot slip in between checking the session and publishing
+  // the frame. ESP_LOGW stays outside the critical section.
   uint32_t sessionNow;
+  bool stale = false;
+  bool have_gap = false;
+  uint16_t gap = 0;
+  uint32_t last_seq_before = 0;
+
   portENTER_CRITICAL(&queueMux_);
   sessionNow = bleSessionId_;
+  if (f.sessionId != sessionNow) {
+    // Stale frame from a previous session — count and skip.
+    telemetry_.bleStaleSessionFrames++;
+    stale = true;
+  } else {
+    // Loss accounting and telemetry update under the same lock.
+    if (telemetry_.bleHasSeq) {
+      uint16_t expected = static_cast<uint16_t>(telemetry_.bleLastSeq + 1);
+      if (f.seq != expected) {
+        gap = static_cast<uint16_t>(f.seq - expected);
+        if (gap > 0 && gap < 0x8000) {
+          telemetry_.bleLostFrames += gap;
+          have_gap = true;
+          last_seq_before = telemetry_.bleLastSeq;
+        }
+      }
+    } else {
+      telemetry_.bleHasSeq = true;
+    }
+    telemetry_.bleLastSeq = f.seq;
+    telemetry_.bleLastFrameAt = now;
+    telemetry_.bleLastFrameId = f.id;
+    telemetry_.bleLastFrameLen = f.len;
+    telemetry_.bleLastFrameExt = f.ext;
+    memcpy(telemetry_.bleLastFrameData, f.data, f.len);
+  }
   portEXIT_CRITICAL(&queueMux_);
 
-  if (f.sessionId != sessionNow) {
+  if (stale) {
     return false;
   }
-
-  // Loss accounting: three distinct counters:
-  //   bleRxFrames     — frames accepted by the BLE callback (enqueued),
-  //                     counted in enqueue().
-  //   bleDroppedFrames — frames dropped because the local queue was full.
-  //   bleStaleSessionFrames — frames dropped due to a BLE session change.
-  //   bleLostFrames   — seq discontinuities between *processed* frames. These
-  //   may reflect radio losses OR frames dropped by queue overflow (the gap
-  //   appears when the next frame is processed). Do not sum bleLostFrames and
-  //   bleDroppedFrames for a total loss figure — they can overlap.
-
-  // NOTE: This path stores raw CAN frame metadata in TelemetryData
-  // (bleLastFrameId, bleLastFrameData, bleLastFrameLen). Decoding those raw
-  // CAN frames into H2 Gauge physical parameters (RPM, speed, temperature,
-  // etc.) requires a vehicle-specific CAN ID → signal mapping and is a separate
-  // architectural task — raw frame reception alone does not update the gauges.
-  // Seq-based loss detection.
-  if (telemetry_.bleHasSeq) {
-    uint16_t expected = static_cast<uint16_t>(telemetry_.bleLastSeq + 1);
-    if (f.seq != expected) {
-      uint16_t gap = static_cast<uint16_t>(f.seq - expected);
-      if (gap > 0 && gap < 0x8000) {
-        telemetry_.bleLostFrames += gap;
-        ESP_LOGW(kTag, "BLE seq gap: last=%u got=%u lost=%u",
-                 telemetry_.bleLastSeq, f.seq, gap);
-      }
-    }
-  } else {
-    telemetry_.bleHasSeq = true;
+  if (have_gap) {
+    ESP_LOGW(kTag, "BLE seq gap: last=%u got=%u lost=%u",
+             last_seq_before, telemetry_.bleLastSeq, gap);
   }
-  telemetry_.bleLastSeq = f.seq;
-  telemetry_.bleLastFrameAt = now;
-  telemetry_.bleLastFrameId = f.id;
-  telemetry_.bleLastFrameLen = f.len;
-  telemetry_.bleLastFrameExt = f.ext;
-  memcpy(telemetry_.bleLastFrameData, f.data, f.len);
   return true;
 }
 
@@ -291,8 +290,9 @@ void BleGattServer::loop(uint32_t now) {
       break;
     }
     if (!haveFrame) break;
-    // processFrame() returns false if a new session arrived between dequeue
-    // and processing — the frame is stale and must not update telemetry.
-    if (!processFrame(f, now)) continue;
+    // publishFrame() re-checks the session under the lock before updating
+    // telemetry — a frame dequeued just before a new BLE connection is
+    // skipped and counted in bleStaleSessionFrames.
+    if (!publishFrame(f, now)) continue;
   }
 }

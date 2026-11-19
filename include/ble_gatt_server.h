@@ -37,7 +37,8 @@ class BleGattServer {
     portEXIT_CRITICAL(&queueMux_);
     return c;
   }
-  // All statistics are read under queueMux_ for inter-task consistency.
+  // All statistics and connection state are read under queueMux_ for
+  // inter-task consistency.
   uint32_t rxFrames() const {
     portENTER_CRITICAL(&queueMux_);
     uint32_t v = telemetry_.bleRxFrames;
@@ -62,6 +63,10 @@ class BleGattServer {
     portEXIT_CRITICAL(&queueMux_);
     return v;
   }
+
+  // Atomically publish a received CAN frame into TelemetryData. Returns false
+  // if the frame belongs to a stale BLE session and was skipped.
+  bool publishFrame(const QueuedFrame& f, uint32_t now);
 
   // BLE callback dispatch points (called by free-standing callback classes).
   void onConnect();
