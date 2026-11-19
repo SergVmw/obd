@@ -270,11 +270,23 @@ void BleGattServer::loop(uint32_t now) {
   // the rest of the gauge loop (OBD poller, dashboard, Wi-Fi, etc.).
   constexpr uint8_t kMaxFramesPerLoop = 16;
   for (uint8_t i = 0; i < kMaxFramesPerLoop; ++i) {
+    // Re-read the session id under the lock each iteration: a new BLE
+    // connection may arrive while we are processing, and frames from the
+    // previous session must not update telemetry after a session reset is
+    // pending. If a new session started, break so the next loop() pass
+    // performs the agreed sequence-state reset.
+    portENTER_CRITICAL(&queueMux_);
+    uint32_t sessionNow = bleSessionId_;
+    bool newSessionNow = bleNewSession_;
+    portEXIT_CRITICAL(&queueMux_);
+
+    if (newSessionNow) break;
+
     QueuedFrame f;
     if (!dequeue(f)) break;
     // Drop frames enqueued under a previous BLE session: they were received
     // before the session reset and must not corrupt seq-based accounting.
-    if (f.sessionId != currentSession) continue;
+    if (f.sessionId != sessionNow) continue;
     processFrame(f, now);
   }
 }

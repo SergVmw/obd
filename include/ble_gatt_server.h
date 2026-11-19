@@ -48,7 +48,9 @@ class BleGattServer {
   // Incremented on every new BLE connection; frames carry the session id that
   // was current when they were enqueued. Frames from a previous session are
   // dropped in the main loop so they cannot corrupt seq-based loss accounting.
-  uint32_t bleSessionId_ = 0;
+  // Written from the BLE callback task, read from the main loop task — volatile
+  // so the compiler does not cache it across loop() iterations.
+  volatile uint32_t bleSessionId_ = 0;
   // Set from the BLE callback task; consumed in the main loop so the sequence
   // state reset happens on the same task that processes frames.
   volatile bool bleNewSession_ = false;
