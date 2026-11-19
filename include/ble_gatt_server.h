@@ -45,9 +45,12 @@ class BleGattServer {
   TelemetryData& telemetry_;
   bool initialized_ = false;
   volatile bool connected_ = false;
-  // Set from the BLE callback task when a new client connects; consumed in the
-  // main loop so queue flush and sequence reset happen on the same task that
-  // processes frames.
+  // Incremented on every new BLE connection; frames carry the session id that
+  // was current when they were enqueued. Frames from a previous session are
+  // dropped in the main loop so they cannot corrupt seq-based loss accounting.
+  uint8_t bleSessionId_ = 0;
+  // Set from the BLE callback task; consumed in the main loop so the sequence
+  // state reset happens on the same task that processes frames.
   volatile bool bleNewSession_ = false;
 
   // Small ring buffer for frames arriving in the BLE write callback
@@ -59,6 +62,7 @@ class BleGattServer {
     uint32_t id = 0;
     uint8_t data[8] = {0};
     uint8_t len = 0;
+    uint8_t sessionId = 0; // BLE session that enqueued this frame
     bool ext = false;
     bool rtr = false;
     bool valid = false;

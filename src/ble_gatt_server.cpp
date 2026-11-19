@@ -101,15 +101,15 @@ void BleGattServer::begin() {
 }
 
 void BleGattServer::onConnect() {
-  connected_ = true;
   portENTER_CRITICAL(&queueMux_);
+  connected_ = true;
   telemetry_.bleConnected = true;
-  portEXIT_CRITICAL(&queueMux_);
-  // Signal a new BLE session to the main loop. The actual sequence-state reset
-  // and queue flush happen there, on the same task that processes frames, so
-  // there is no cross-task race on bleHasSeq / bleLastSeq.
+  // New BLE session: bump the session id so frames from the previous session
+  // can be identified and dropped in the main loop.
+  ++bleSessionId_;
   bleNewSession_ = true;
-  ESP_LOGI(kTag, "BLE client connected");
+  portEXIT_CRITICAL(&queueMux_);
+  ESP_LOGI(kTag, "BLE client connected, session=%u", bleSessionId_);
 }
 
 void BleGattServer::onDisconnect() {
@@ -171,13 +171,18 @@ void BleGattServer::onWrite(BLECharacteristic* pCharacteristic) {
 void BleGattServer::enqueue(const QueuedFrame& frame) {
   portENTER_CRITICAL(&queueMux_);
 
+  // Tag the frame with the session that enqueued it, so frames from a
+  // previous BLE session can be dropped in the main loop.
+  QueuedFrame tagged = frame;
+  tagged.sessionId = bleSessionId_;
+
   size_t next = (queueHead_ + 1) % kFrameQueueCapacity;
   if (next == queueTail_) {
     // P1: queue full — drop the oldest frame and count it.
     queueTail_ = (queueTail_ + 1) % kFrameQueueCapacity;
     telemetry_.bleDroppedFrames++;
   }
-  queue_[queueHead_] = frame;
+  queue_[queueHead_] = tagged;
   queueHead_ = next;
 
   portEXIT_CRITICAL(&queueMux_);
@@ -199,10 +204,13 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
   // P1: account every accepted frame.
   telemetry_.bleRxFrames++;
 
-  // Note on loss accounting: bleLostFrames counts gaps in the C3's sequence
-  // numbers (frames lost over the air / not received). bleDroppedFrames counts
-  // frames dropped by this side's full queue. They measure different failure
-  // modes and must NOT be added together to derive a total loss figure.
+  // Loss accounting: three distinct counters:
+  //   bleRxFrames   — frames accepted by the BLE callback (enqueued).
+  //   bleDroppedFrames — frames dropped because the local queue was full.
+  //   bleLostFrames — seq discontinuities between *processed* frames. These
+  //   may reflect radio losses OR frames dropped by queue overflow (the gap
+  //   appears when the next frame is processed). Do not sum bleLostFrames and
+  //   bleDroppedFrames for a total loss figure — they can overlap.
 
   // NOTE: This path stores raw CAN frame metadata in TelemetryData
   // (bleLastFrameId, bleLastFrameData, bleLastFrameLen). Decoding those raw
@@ -234,19 +242,25 @@ void BleGattServer::processFrame(const QueuedFrame& f, uint32_t now) {
 void BleGattServer::loop(uint32_t now) {
   if (!initialized_) return;
 
-  // Handle a newly connected BLE client on the main task: flush stale frames
-  // from the previous session and reset sequence state so the C3's seq=0
-  // restart does not look like a gap. Done here (not in the callback) so the
-  // reset and queue flush are on the same task that processes frames.
+  // Handle a newly connected BLE client on the main task: reset sequence
+  // state so the C3's seq=0 restart does not look like a gap. Frames from the
+  // previous session are dropped individually below (by session id) rather
+  // than flushing the whole queue, so no frames are lost between connect and
+  // the first main-loop pass.
+  uint8_t currentSession = 0;
   if (bleNewSession_) {
     portENTER_CRITICAL(&queueMux_);
-    queueHead_ = 0;
-    queueTail_ = 0;
     telemetry_.bleHasSeq = false;
     telemetry_.bleLastSeq = 0;
-    portEXIT_CRITICAL(&queueMux_);
     bleNewSession_ = false;
-    ESP_LOGI(kTag, "BLE session reset complete");
+    currentSession = bleSessionId_;
+    portEXIT_CRITICAL(&queueMux_);
+    ESP_LOGI(kTag, "BLE session reset: seq state cleared, session=%u",
+             currentSession);
+  } else {
+    portENTER_CRITICAL(&queueMux_);
+    currentSession = bleSessionId_;
+    portEXIT_CRITICAL(&queueMux_);
   }
 
   // P1: bound the work per iteration so a flood of BLE frames cannot starve
@@ -255,6 +269,9 @@ void BleGattServer::loop(uint32_t now) {
   for (uint8_t i = 0; i < kMaxFramesPerLoop; ++i) {
     QueuedFrame f;
     if (!dequeue(f)) break;
+    // Drop frames enqueued under a previous BLE session: they were received
+    // before the session reset and must not corrupt seq-based accounting.
+    if (f.sessionId != currentSession) continue;
     processFrame(f, now);
   }
 }
